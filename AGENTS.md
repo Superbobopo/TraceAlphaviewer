@@ -25,6 +25,7 @@ Git workflow target:
 - `TraceAlphaViewer/Parser/trace_parser.py`: `.old` parser, event creation, box lifecycle, T5 list parsing.
 - `TraceAlphaViewer/Models/state.py`: `MachineState`, `BoxInfo`, `MachineEvent`.
 - `TraceAlphaViewer/Models/diagnostic.py`: diagnostic incident extraction.
+- `TraceAlphaViewer/Models/diagnostic_knowledge.py`: terrain knowledge base used to explain recurring symptoms.
 - `TraceAlphaViewer/TracAlpha1_001.old`: reference trace used for visual checks.
 
 ## Current T5 Decisions

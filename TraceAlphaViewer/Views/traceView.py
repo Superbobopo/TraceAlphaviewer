@@ -196,11 +196,6 @@ class TraceView(BaseView):
         mid = ctk.CTkFrame(parent, fg_color='#12121f', corner_radius=0)
         mid.pack(fill='both', expand=True)
 
-        # Tableau capteurs + tapis (droite, prend le reste de la largeur)
-        self._state_table = StateTable(mid)
-        self._state_table.pack(side='right', fill='both', expand=True,
-                                padx=(3, 6), pady=6)
-
         # Graphique machine (gauche, largeur fixe = taille native du canvas)
         canvas_frame = ctk.CTkFrame(mid, fg_color='#1a1a2e',
                                     width=CANVAS_W + 8, corner_radius=6)
@@ -209,6 +204,10 @@ class TraceView(BaseView):
 
         self._canvas = MachineCanvas(canvas_frame, width=CANVAS_W, height=CANVAS_H)
         self._canvas.pack(padx=2, pady=2)
+
+        analysis_frame = ctk.CTkFrame(mid, fg_color='#12121f', corner_radius=0)
+        analysis_frame.pack(side='right', fill='both', expand=True, padx=(3, 6), pady=6)
+        self._build_analysis_tabs(analysis_frame)
 
     # ── Zone bas : navigation + trace complète ────────────────────────────────
     def _build_bottom(self, parent) -> None:
@@ -300,7 +299,7 @@ class TraceView(BaseView):
         self._details_frame = ctk.CTkFrame(bottom, fg_color='#12121f', corner_radius=0)
         self._details_frame.pack(fill='both', expand=True, side='top')
         self._details_frame.pack_propagate(False)
-        self._build_detail_tabs(self._details_frame)
+        self._build_trace_area(self._details_frame)
 
         # Raccourcis clavier
         self.master.bind('<Left>',  lambda e: self._step_back())
@@ -311,7 +310,7 @@ class TraceView(BaseView):
         self.master.bind('e',       lambda e: self._next_error())
         self.master.bind('E',       lambda e: self._prev_error())
 
-    def _build_detail_tabs(self, parent) -> None:
+    def _build_analysis_tabs(self, parent) -> None:
         if hasattr(ctk, 'CTkTabview'):
             tabs = ctk.CTkTabview(parent, fg_color='#12121f',
                                   segmented_button_fg_color='#1e1e30',
@@ -322,10 +321,12 @@ class TraceView(BaseView):
                                   text_color='#aabbcc',
                                   height=250)
             tabs.pack(fill='both', expand=True)
+            state_tab = tabs.add('Capteurs & Tapis')
             diag_tab = tabs.add('Diagnostic')
             error_tab = tabs.add('Erreur')
             events_tab = tabs.add('Evenements')
-            trace_tab = tabs.add('Trace')
+            self._state_table = StateTable(state_tab)
+            self._state_table.pack(fill='both', expand=True, padx=0, pady=0)
             self._diagnostic_panel = DiagnosticPanel(
                 diag_tab, self._diagnostics,
                 on_incident_click=self._on_incident_click,
@@ -343,67 +344,65 @@ class TraceView(BaseView):
                 on_event_click=self._on_event_click,
             )
             self._event_panel.pack(fill='both', expand=True, padx=0, pady=0)
-            self._trace_panel = TracePanel(
-                trace_tab,
-                on_line_click=self._on_trace_click,
-                height=240,
-            )
-            self._trace_panel.pack(fill='both', expand=True, padx=0, pady=0)
             tabs.set('Diagnostic')
-            self._tabs = tabs
+            self._analysis_tabs = tabs
             return
 
-        self._build_fallback_tabs(parent)
+        self._build_analysis_fallback_tabs(parent)
 
-    def _build_fallback_tabs(self, parent) -> None:
+    def _build_analysis_fallback_tabs(self, parent) -> None:
         header = ctk.CTkFrame(parent, fg_color='#1e1e30', height=32, corner_radius=0)
         header.pack(fill='x')
         header.pack_propagate(False)
         content = ctk.CTkFrame(parent, fg_color='#12121f', corner_radius=0)
         content.pack(fill='both', expand=True)
 
-        self._fallback_tab_frames = {}
-        for name in ('Diagnostic', 'Erreur', 'Evenements', 'Trace'):
+        self._analysis_fallback_tab_frames = {}
+        for name in ('Capteurs & Tapis', 'Diagnostic', 'Erreur', 'Evenements'):
             frame = ctk.CTkFrame(content, fg_color='#12121f', corner_radius=0)
-            self._fallback_tab_frames[name] = frame
+            self._analysis_fallback_tab_frames[name] = frame
             ctk.CTkButton(
                 header, text=name, width=110, height=26,
                 fg_color='#252538', hover_color='#353555',
                 text_color='#aabbcc', font=('Consolas', 10),
-                command=lambda n=name: self._show_fallback_tab(n),
+                command=lambda n=name: self._show_analysis_fallback_tab(n),
             ).pack(side='left', padx=4, pady=3)
 
+        self._state_table = StateTable(self._analysis_fallback_tab_frames['Capteurs & Tapis'])
+        self._state_table.pack(fill='both', expand=True)
         self._diagnostic_panel = DiagnosticPanel(
-            self._fallback_tab_frames['Diagnostic'], self._diagnostics,
+            self._analysis_fallback_tab_frames['Diagnostic'], self._diagnostics,
             on_incident_click=self._on_incident_click,
         )
         self._diagnostic_panel.pack(fill='both', expand=True)
         self._error_panel = EventPanel(
-            self._fallback_tab_frames['Erreur'], self._error_events,
+            self._analysis_fallback_tab_frames['Erreur'], self._error_events,
             on_event_click=self._on_event_click,
             title='ERREURS',
             empty_text='Aucune erreur detectee',
         )
         self._error_panel.pack(fill='both', expand=True)
         self._event_panel = EventPanel(
-            self._fallback_tab_frames['Evenements'], self._events,
+            self._analysis_fallback_tab_frames['Evenements'], self._events,
             on_event_click=self._on_event_click,
         )
         self._event_panel.pack(fill='both', expand=True)
-        self._trace_panel = TracePanel(
-            self._fallback_tab_frames['Trace'],
-            on_line_click=self._on_trace_click,
-            height=240,
-        )
-        self._trace_panel.pack(fill='both', expand=True)
-        self._show_fallback_tab('Diagnostic')
+        self._show_analysis_fallback_tab('Diagnostic')
 
-    def _show_fallback_tab(self, name: str) -> None:
-        for tab_name, frame in self._fallback_tab_frames.items():
+    def _show_analysis_fallback_tab(self, name: str) -> None:
+        for tab_name, frame in self._analysis_fallback_tab_frames.items():
             if tab_name == name:
                 frame.pack(fill='both', expand=True)
             else:
                 frame.pack_forget()
+
+    def _build_trace_area(self, parent) -> None:
+        self._trace_panel = TracePanel(
+            parent,
+            on_line_click=self._on_trace_click,
+            height=240,
+        )
+        self._trace_panel.pack(fill='both', expand=True)
 
     def _toggle_details(self) -> None:
         if self._details_visible:

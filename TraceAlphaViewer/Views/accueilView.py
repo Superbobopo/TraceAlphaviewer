@@ -99,12 +99,22 @@ class AccueilView(BaseView):
             text_color='#445566',
         )
 
+        footer = ctk.CTkFrame(self, fg_color='transparent')
+        footer.place(relx=1.0, rely=1.0, anchor='se', x=-8, y=-6)
+
         ctk.CTkLabel(
-            self,
+            footer,
+            text='by Nitr0r & Superbobopo',
+            font=('Consolas', 10),
+            text_color='#3c4d62',
+        ).pack(anchor='e')
+
+        ctk.CTkLabel(
+            footer,
             text='v1.0',
             font=('Consolas', 9),
             text_color='#2a2a3a',
-        ).place(relx=1.0, rely=1.0, anchor='se', x=-6, y=-4)
+        ).pack(anchor='e', pady=(1, 0))
 
     def _open_file(self) -> None:
         trace_files = _find_trace_files()
