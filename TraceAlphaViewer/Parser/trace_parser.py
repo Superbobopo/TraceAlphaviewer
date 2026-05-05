@@ -232,11 +232,21 @@ def _track_motor_error(
 
 def _track_signal_edges(state: MachineState, line_num: int, ctx: dict) -> None:
     sensors = {
+        'C0': state.C0,
+        'C2': state.C2,
+        'C3': state.C3,
+        'C4': state.C4,
+        'C5': state.C5,
         'C6': state.C6,
         'C9': state.C9,
         'Poubelle': state.flag_poubelle_pleine,
     }
     labels = {
+        'C0': 'Presence T1 entree detectee',
+        'C2': 'Presence T2 sortie detectee',
+        'C3': 'Presence T2 chargee detectee',
+        'C4': 'Presence EA detectee',
+        'C5': 'Presence T3 detectee',
         'C6': 'Presence T4 detectee',
         'C9': 'Laser T5 actif',
         'Poubelle': 'Poubelle pleine',
@@ -250,6 +260,28 @@ def _track_signal_edges(state: MachineState, line_num: int, ctx: dict) -> None:
         if previous == 0 and value == 1:
             severity = 'warning' if name == 'Poubelle' else 'info'
             _add_event(state, line_num, severity, 'CAPTEUR', labels[name])
+
+
+def _track_belt_task_edge(
+    state: MachineState,
+    line_num: int,
+    ctx: dict,
+    belt: str,
+    et: int,
+    state_name: str,
+) -> None:
+    key = f'last_{belt}_et'
+    previous = ctx.get(key)
+    ctx[key] = et
+    if previous is None or previous == et:
+        return
+    if abs(et) <= 2:
+        return
+    severity = 'error' if et < 0 else 'info'
+    _add_event(
+        state, line_num, severity, belt,
+        f'{belt} eT:{et} {state_name}'
+    )
 
 
 def _track_t4_cycle(state: MachineState, line_num: int, ctx: dict) -> None:
@@ -311,6 +343,19 @@ def _track_t4_cycle(state: MachineState, line_num: int, ctx: dict) -> None:
             f'C6 declenche longueur {state.LgBtT4:.0f}mm',
             f'{current_box} pT4:{state.pT4}mm'
         )
+
+
+def _update_t4_direction(state: MachineState, new_pT4: int, ctx: dict) -> None:
+    previous_pT4 = ctx.get('last_pT4')
+    if abs(state.eT4) <= 2 or state.eT4 in (5, 51, 85):
+        state.t4_direction = 0
+    elif previous_pT4 is not None and new_pT4 != previous_pT4:
+        delta = new_pT4 - previous_pT4
+        state.t4_direction = 1 if delta < 0 else -1
+        ctx['last_t4_direction'] = state.t4_direction
+    else:
+        state.t4_direction = int(ctx.get('last_t4_direction') or 0)
+    ctx['last_pT4'] = new_pT4
 
 
 def _apply_t5_list_pack(state: MachineState, text: str, ctx: Optional[dict] = None) -> bool:
@@ -404,6 +449,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         state.eT0 = int(mo.group(2))
         state.C0 = int(mo.group(3))
         _track_motor_error(state, line_num, ctx, 'T0', state.eT0, text)
+        _track_belt_task_edge(state, line_num, ctx, 'T0', state.eT0, state.state_T0)
 
     # T1
     mo = _T1.search(text)
@@ -411,6 +457,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         state.state_T1 = mo.group(1)
         state.eT1 = int(mo.group(2))
         _track_motor_error(state, line_num, ctx, 'T1', state.eT1, text)
+        _track_belt_task_edge(state, line_num, ctx, 'T1', state.eT1, state.state_T1)
 
     # T2
     mo = _T2.search(text)
@@ -423,6 +470,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         state.C4 = int(mo.group(6))
         _track_motor_error(state, line_num, ctx, 'T2', state.eT2, text)
         _track_motor_error(state, line_num, ctx, 'T3', state.eT3, text)
+        _track_belt_task_edge(state, line_num, ctx, 'T2', state.eT2, state.state_T2)
 
     # tEA-T3
     mo = _TEA.search(text)
@@ -443,7 +491,9 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         state.C5 = int(mo.group(3))
         state.C6 = int(mo.group(4))
         state.pT3 = int(mo.group(5))
-        state.pT4 = int(mo.group(6))
+        new_pT4 = int(mo.group(6))
+        _update_t4_direction(state, new_pT4, ctx)
+        state.pT4 = new_pT4
         state.LgBtT4 = float(mo.group(7).replace(',', '.'))
         _track_motor_error(state, line_num, ctx, 'T4', state.eT4, text)
         _track_t4_cycle(state, line_num, ctx)
@@ -454,7 +504,9 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         state.state_tT4_T5 = mo.group(1)
         state.C6 = int(mo.group(2))
         state.fgBfinT4 = int(mo.group(3))
-        state.pT4 = int(mo.group(4))
+        new_pT4 = int(mo.group(4))
+        _update_t4_direction(state, new_pT4, ctx)
+        state.pT4 = new_pT4
 
     # T5
     mo = _T5.search(text)
@@ -463,7 +515,18 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         state.eT5 = int(mo.group(2))
         state.larg_T5 = int(mo.group(3))
         state.C9 = int(mo.group(4))
-        state.pT5 = int(mo.group(5))
+        new_pT5 = int(mo.group(5))
+        previous_pT5 = ctx.get('last_pT5')
+        if abs(state.eT5) <= 2 or state.eT5 in (5, 51):
+            state.t5_direction = 0
+        elif previous_pT5 is not None and new_pT5 != previous_pT5:
+            delta = new_pT5 - previous_pT5
+            state.t5_direction = -1 if delta > 0 else 1
+            ctx['last_t5_direction'] = state.t5_direction
+        else:
+            state.t5_direction = int(ctx.get('last_t5_direction') or 0)
+        state.pT5 = new_pT5
+        ctx['last_pT5'] = new_pT5
         state.eT5useO = int(mo.group(6))
         state.eT5useA = int(mo.group(7))
         _track_motor_error(state, line_num, ctx, 'T5', state.eT5, text)
@@ -835,6 +898,10 @@ def _is_significant(prev: MachineState, curr: MachineState) -> bool:
     ):
         if a != b:
             return True
+    if prev.t4_direction != curr.t4_direction:
+        return True
+    if prev.t5_direction != curr.t5_direction:
+        return True
     return False
 
 

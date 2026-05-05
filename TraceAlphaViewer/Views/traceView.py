@@ -44,10 +44,11 @@ RESIZE_HANDLE_H = 7
 
 class TraceView(BaseView):
 
-    def __init__(self, master, filepath: str, frames: List[MachineState], **kwargs):
+    def __init__(self, master, filepath: str, frames: List[MachineState], return_view: BaseView | None = None, **kwargs):
         super().__init__(master, fg_color='#12121f', **kwargs)
         self._filepath    = filepath
         self._frames      = frames
+        self._return_view = return_view
         self._events      = self._collect_events(frames)
         self._diagnostics = build_diagnostics(frames, self._events)
         self._error_events = [e for e in self._events if e.severity == 'error']
@@ -342,6 +343,7 @@ class TraceView(BaseView):
             self._event_panel = EventPanel(
                 events_tab, self._events,
                 on_event_click=self._on_event_click,
+                show_belt_filters=True,
             )
             self._event_panel.pack(fill='both', expand=True, padx=0, pady=0)
             tabs.set('Diagnostic')
@@ -385,6 +387,7 @@ class TraceView(BaseView):
         self._event_panel = EventPanel(
             self._analysis_fallback_tab_frames['Evenements'], self._events,
             on_event_click=self._on_event_click,
+            show_belt_filters=True,
         )
         self._event_panel.pack(fill='both', expand=True)
         self._show_analysis_fallback_tab('Diagnostic')
@@ -603,5 +606,8 @@ class TraceView(BaseView):
     # ── Fermeture ─────────────────────────────────────────────────────────────
     def _close(self) -> None:
         self._stop_playback()
+        if self._return_view is not None:
+            self.master.switch_view(self._return_view)
+            return
         from Views.accueilView import AccueilView
         self.master.switch_view(AccueilView(self.master))

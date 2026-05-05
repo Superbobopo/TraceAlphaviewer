@@ -111,6 +111,8 @@ class MachineState:
     fgBfinT4: int = 0
     eT5useO: int = 0
     eT5useA: int = 0
+    t4_direction: int = 0  # -1=haut/retour, 1=bas/T5, 0=arret/inconnu
+    t5_direction: int = 0  # -1=gauche/poubelle, 1=droite/butee, 0=arret/inconnu
 
     # -- Identification -------------------------------------------------------
     idCB1_state: str = ""

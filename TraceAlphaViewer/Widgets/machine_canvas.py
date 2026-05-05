@@ -334,10 +334,41 @@ def _conn(cv: tk.Canvas, *pts: int) -> None:
                    arrow=tk.LAST, arrowshape=(8, 10, 4))
 
 
-def _dir_arrow(cv: tk.Canvas, x1: int, y1: int, x2: int, y2: int) -> None:
+def _dir_arrow(
+    cv: tk.Canvas,
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    color: str = C['dir_arr'],
+) -> None:
     """Flèche verte indiquant le sens de rotation du tapis."""
-    cv.create_line(x1, y1, x2, y2, fill=C['dir_arr'],
+    cv.create_line(x1, y1, x2, y2, fill=color,
                    arrow=tk.LAST, arrowshape=(6, 8, 3), width=2)
+
+
+def _draw_t5_dir_arrow(cv: tk.Canvas, st: MachineState) -> None:
+    cx = (L['T5'][0] + L['T5'][2]) // 2
+    cy = L['T5'][3] - 8
+    span = 28
+    if st.t5_direction < 0:
+        _dir_arrow(cv, cx + span, cy, cx - span, cy, C['sens_C9'])
+    elif st.t5_direction > 0:
+        _dir_arrow(cv, cx - span, cy, cx + span, cy, C['sens_C9'])
+    else:
+        _dir_arrow(cv, cx - span, cy, cx + span, cy, '#335566')
+
+
+def _draw_t4_dir_arrow(cv: tk.Canvas, st: MachineState) -> None:
+    cx = L['T4'][2] - 10
+    cy = (L['T4'][1] + L['T4'][3]) // 2
+    span = 18
+    if st.t4_direction < 0:
+        _dir_arrow(cv, cx, cy + span, cx, cy - span, C['sens_C6'])
+    elif st.t4_direction > 0:
+        _dir_arrow(cv, cx, cy - span, cx, cy + span, C['sens_C6'])
+    else:
+        _dir_arrow(cv, cx, cy - span, cx, cy + span, '#335566')
 
 
 # ── Widget principal ──────────────────────────────────────────────────────────
@@ -502,14 +533,10 @@ class MachineCanvas(tk.Canvas):
             _dir_arrow(cv, cx - dx, cy + dy, cx + dx, cy + dy)
 
         # T4 ↓ (flèche verticale sur le côté droit du tapis)
-        cx4 = L['T4'][2] - 10
-        cy4 = (L['T4'][1] + L['T4'][3]) // 2
-        _dir_arrow(cv, cx4, cy4 - 18, cx4, cy4 + 18)
+        _draw_t4_dir_arrow(cv, st)
 
-        # T5 → (vers butée droite)
-        cx5 = (L['T5'][0] + L['T5'][2]) // 2
-        cy5 = L['T5'][3] - 8
-        _dir_arrow(cv, cx5 - 28, cy5, cx5 + 28, cy5)
+        # T5: sens dynamique deduit du deplacement encodeur pT5.
+        _draw_t5_dir_arrow(cv, st)
 
         # ── Boîte en EA ──────────────────────────────────────────────────────
         if st.C4 or st.box_in_EA:

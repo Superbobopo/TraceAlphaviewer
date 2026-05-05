@@ -10,6 +10,7 @@ from tkinter import filedialog
 
 import customtkinter as ctk
 
+from Models.folder_report import build_folder_report
 from Views.BaseView import BaseView
 
 
@@ -83,6 +84,18 @@ class AccueilView(BaseView):
             command=self._open_file,
         ).pack(pady=8)
 
+        ctk.CTkButton(
+            center,
+            text='Ouvrir un dossier de traces',
+            font=('Consolas', 14),
+            width=300, height=44,
+            fg_color='#252538',
+            hover_color='#353555',
+            text_color='#aaccff',
+            corner_radius=10,
+            command=self._open_folder,
+        ).pack(pady=(4, 8))
+
         self._progress_frame = ctk.CTkFrame(center, fg_color='transparent')
         self._progress_frame.pack(pady=(20, 0), fill='x')
 
@@ -132,6 +145,16 @@ class AccueilView(BaseView):
         if path:
             self._load(path)
 
+    def _open_folder(self) -> None:
+        trace_files = _find_trace_files()
+        initial_dir = str(trace_files[0].parent if trace_files else PROJECT_ROOT)
+        path = filedialog.askdirectory(
+            title='Ouvrir un dossier de traces AlphaV2',
+            initialdir=initial_dir,
+        )
+        if path:
+            self._load_folder(path)
+
     def _load(self, path: str) -> None:
         """Lance le parsing dans un thread et affiche la progression."""
         self._show_progress(True)
@@ -155,6 +178,33 @@ class AccueilView(BaseView):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def _load_folder(self, path: str) -> None:
+        self._show_progress(True)
+        self._progress_bar.set(0)
+        self._progress_lbl.configure(text=f'Dossier : {os.path.basename(path)}')
+
+        min_dt = 0.0
+
+        def worker():
+            def on_progress(done, total, current_name):
+                ratio = done / max(total, 1) if total else 1.0
+                self.after(0, self._progress_bar.set, ratio)
+                self.after(
+                    0,
+                    lambda: self._progress_lbl.configure(
+                        text=f'Dossier : {current_name} ({done}/{total})',
+                        text_color='#445566',
+                    ),
+                )
+
+            try:
+                report = build_folder_report(path, progress_cb=on_progress, min_dt=min_dt)
+                self.after(0, self._on_folder_loaded, report)
+            except Exception as exc:
+                self.after(0, self._on_error, str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _show_progress(self, visible: bool) -> None:
         if visible:
             self._progress_bar.pack(pady=(4, 2))
@@ -167,6 +217,12 @@ class AccueilView(BaseView):
         self._show_progress(False)
         from Views.traceView import TraceView
         view = TraceView(self.master, filepath=path, frames=frames)
+        self.master.switch_view(view)
+
+    def _on_folder_loaded(self, report) -> None:
+        self._show_progress(False)
+        from Views.folderTraceView import FolderTraceView
+        view = FolderTraceView(self.master, report=report)
         self.master.switch_view(view)
 
     def _on_error(self, msg: str) -> None:
