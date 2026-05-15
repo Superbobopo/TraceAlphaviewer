@@ -141,6 +141,13 @@ class TracePanel(ctk.CTkFrame):
             self._text.tag_add('hi_linenum', f'{ln}.0', f'{ln}.9')
         self._text.see(s)
 
+    def clear_highlight(self) -> None:
+        """Retire le surlignage courant de la trace."""
+        self._hi_start = 0
+        self._hi_end = 0
+        self._text.tag_remove('hi', '1.0', 'end')
+        self._text.tag_remove('hi_linenum', '1.0', 'end')
+
     def mark_unknown_lines(self, file_lines: List[int]) -> None:
         """Colore en gris les lignes non reconnues par le parser."""
         for ln in file_lines:

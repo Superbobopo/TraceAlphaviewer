@@ -45,7 +45,9 @@ class BoxInfo:
     id_b: int = 0        # identifiant de cheminement Alpha (Nboite / idB)
     id_alpha: int = 0    # identifiant BdD alpha
     x_pos: int = 0       # position X sur T5 (mm, coordonnées machine)
+    t5_visual_x_pos: int = 0  # position X visuelle continue sur T5
     t5_entry_aligned: bool = False  # arrivee T5 a afficher dans l'axe T4
+    t5_after_c9: bool = False  # boite deja passee par C9 dans le cycle T5
     color: str = "#4FC3F7"
 
     def short_label(self) -> str:
@@ -113,6 +115,9 @@ class MachineState:
     eT5useA: int = 0
     t4_direction: int = 0  # -1=haut/retour, 1=bas/T5, 0=arret/inconnu
     t5_direction: int = 0  # -1=gauche/poubelle, 1=droite/butee, 0=arret/inconnu
+    t5_active_id_alpha: int = 0  # boite T5 en cours de cycle mesure/repos
+    t5_x_butee: int = 0  # X butee observe dans la trace courante
+    t5_visual_offset_mm: int = 0  # decalage temporaire deduit du delta pT5
 
     # -- Identification -------------------------------------------------------
     idCB1_state: str = ""

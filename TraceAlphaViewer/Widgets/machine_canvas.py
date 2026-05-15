@@ -45,7 +45,9 @@ C = {
     'sens_C5':    '#44cc44',
     'sens_C6':    '#ffaa00',
     'sens_C9':    '#00aaff',
-    'dir_arr':    '#2a6a2a',
+    'dir_run':    '#44cc44',
+    'dir_idle':   '#335566',
+    'dir_error':  '#ff5555',
     'box_bdr':    '#111122',
 }
 
@@ -68,27 +70,30 @@ L = {
     name: (x1 + X_SHIFT, y1, x2 + X_SHIFT, y2)
     for name, (x1, y1, x2, y2) in L0.items()
 }
-T4_C6_Y = L['T4'][3] - 18
+T4_PHYSICAL_MM = 500
+T4_C6_FROM_BUTEE_MM = 436
+T4_C6_Y = int(L['T4'][1] + (L['T4'][3] - L['T4'][1]) * T4_C6_FROM_BUTEE_MM / T4_PHYSICAL_MM)
 
 # Dimensions physiques pour mise à l'échelle
 T3_MM       = 220    # longueur T3 (mm)
-T4_MM       = 530    # hauteur T4 (mm) — pT4 décroît de T4_MM→0 en descendant
+T4_MM       = T4_PHYSICAL_MM    # hauteur T4 physique (mm)
 T3_C5_X     = 320 + X_SHIFT
 T3_BOX_SCALE = 0.60
 T3_BOX_HEIGHT = 22
 T4_BOX_SCALE = 1.00
 T4_BOX_WIDTH_RATIO = 0.30
-T4_T5_TRANSFER_START_PT4 = 455
+T4_T5_TRANSFER_START_PT4 = T4_C6_FROM_BUTEE_MM
 # T5 : coordonnées machine (x diminue vers la droite / butée, augmente vers la gauche / Poubelle)
+T5_PHYSICAL_MM = 770
+T5_C9_FROM_BUTEE_MM = 310
 # X:942 est observe sur les lignes MAJ (BUTEE-T5), quand la boite est contre la butee.
 # Boîte arrivant de T4 ≈ 1011 mm (lu dans la trace : sur T5: … x=1011)
 # T5_X_MAX = extent gauche estimé (zone Poubelle) — ajuster si les boîtes sortent du canvas
 T5_X_BUTEE = 942    # X apres MAJ (BUTEE-T5), cote butee / mesure hauteur
-# Chaque nouveau cycle de tassement décale les boîtes existantes de +89 mm net (+361 retour
-# − ~272 poussée) + micro-ajustements de +27 mm intercycles. Avec 3 boîtes simultanées la
-# plus ancienne peut atteindre ~1600 mm, déclenchant un clamp visuel indésirable avec 1600.
-# 3200 garde une marge visuelle cote C9/Poubelle sur les longues sequences.
+# La plage metier reste large pour accepter les positions Alpha cote poubelle
+# sans ajouter de contrainte geometrique artificielle cote C9 ou butee.
 T5_X_MAX   = 1750   # plage visuelle rendue: dezoom position T5, sans changer les dimensions produit
+T5_ENTRY_X = 1060
 T5_BOX_DIM_SCALE = 0.75
 T5_BOX_Y_PAD = 8
 
@@ -328,6 +333,50 @@ def _t5_entry_aligned_x(w_px: int) -> int:
     return t4_center_x - w_px // 2
 
 
+def _t5_visual_origin(st: MachineState) -> int:
+    if 0 < st.t5_x_butee <= T5_X_MAX:
+        return int(st.t5_x_butee)
+    return T5_X_BUTEE
+
+
+def _t5_normalized_x(st: MachineState, x_pos: int) -> int:
+    """Ramene les grands X Alpha dans le repere visuel sans perdre la distance a la butee."""
+    x_pos = int(x_pos)
+    butee_x = int(st.t5_x_butee or 0)
+    if butee_x > T5_X_MAX and x_pos > T5_X_MAX:
+        return T5_X_BUTEE + abs(x_pos - butee_x)
+    return x_pos
+
+
+def _t5_physical_scale() -> float:
+    return (L['T5'][2] - L['T5'][0]) / max(T5_PHYSICAL_MM, 1)
+
+
+def _t5_c9_x() -> int:
+    return L['T5'][2] - int(T5_C9_FROM_BUTEE_MM * _t5_physical_scale())
+
+
+def _t5_render_x_pos(
+    st: MachineState,
+    box: BoxInfo,
+    include_visual_offset: bool = True,
+) -> int:
+    """Retourne la position T5 stable, puis l'animation signee du tapis."""
+    x_pos = _t5_normalized_x(st, int(box.t5_visual_x_pos or box.x_pos or T5_X_BUTEE))
+    if include_visual_offset:
+        x_pos += int(st.t5_visual_offset_mm or 0)
+    return x_pos
+
+
+def _t5_is_initial_entry(box: BoxInfo, st: MachineState) -> bool:
+    return (
+        box.t5_entry_aligned
+        and not st.t5_visual_offset_mm
+        and not box.t5_visual_x_pos
+        and abs(int(box.x_pos or T5_ENTRY_X) - T5_ENTRY_X) <= 10
+    )
+
+
 def _conn(cv: tk.Canvas, *pts: int) -> None:
     """Ligne de connexion entre tapis (avec flèche)."""
     cv.create_line(*pts, fill='#445566', width=2,
@@ -340,35 +389,67 @@ def _dir_arrow(
     y1: int,
     x2: int,
     y2: int,
-    color: str = C['dir_arr'],
+    color: str = C['dir_run'],
 ) -> None:
     """Flèche verte indiquant le sens de rotation du tapis."""
     cv.create_line(x1, y1, x2, y2, fill=color,
                    arrow=tk.LAST, arrowshape=(6, 8, 3), width=2)
 
 
+def _arrow_color(eT: int, is_running: bool) -> str:
+    if eT < 0:
+        return C['dir_error']
+    return C['dir_run'] if is_running else C['dir_idle']
+
+
+def _is_fixed_belt_running(state_str: str, eT: int) -> bool:
+    if eT < 0:
+        return False
+    if eT in (0, 1, 2, 5, 11, 43, 46, 49, 51, 83, 85, 89):
+        return False
+    s = state_str.upper()
+    return any(token in s for token in ('AUTO', 'CHG', 'TRSF', 'VIDAGE', 'LOAD'))
+
+
+def _is_t2_running(st: MachineState) -> bool:
+    if st.eT2 < 0:
+        return False
+    if st.eT2 in (41, 42, 44, 45, 47, 61, 81, 82):
+        return True
+    return st.eT2 == 6 and 'VIDAGE' in st.state_T2.upper()
+
+
+def _draw_t2_dir_arrow(cv: tk.Canvas, st: MachineState) -> None:
+    cx = (L['T2'][0] + L['T2'][2]) // 2
+    cy = L['T2'][3] - 8
+    span = 22
+    _dir_arrow(cv, cx + span, cy, cx - span, cy, _arrow_color(st.eT2, _is_t2_running(st)))
+
+
 def _draw_t5_dir_arrow(cv: tk.Canvas, st: MachineState) -> None:
     cx = (L['T5'][0] + L['T5'][2]) // 2
     cy = L['T5'][3] - 8
     span = 28
+    color = _arrow_color(st.eT5, st.t5_direction != 0)
     if st.t5_direction < 0:
-        _dir_arrow(cv, cx + span, cy, cx - span, cy, C['sens_C9'])
+        _dir_arrow(cv, cx + span, cy, cx - span, cy, color)
     elif st.t5_direction > 0:
-        _dir_arrow(cv, cx - span, cy, cx + span, cy, C['sens_C9'])
+        _dir_arrow(cv, cx - span, cy, cx + span, cy, color)
     else:
-        _dir_arrow(cv, cx - span, cy, cx + span, cy, '#335566')
+        _dir_arrow(cv, cx - span, cy, cx + span, cy, color)
 
 
 def _draw_t4_dir_arrow(cv: tk.Canvas, st: MachineState) -> None:
     cx = L['T4'][2] - 10
     cy = (L['T4'][1] + L['T4'][3]) // 2
     span = 18
+    color = _arrow_color(st.eT4, st.t4_direction != 0)
     if st.t4_direction < 0:
-        _dir_arrow(cv, cx, cy + span, cx, cy - span, C['sens_C6'])
+        _dir_arrow(cv, cx, cy + span, cx, cy - span, color)
     elif st.t4_direction > 0:
-        _dir_arrow(cv, cx, cy - span, cx, cy + span, C['sens_C6'])
+        _dir_arrow(cv, cx, cy - span, cx, cy + span, color)
     else:
-        _dir_arrow(cv, cx, cy - span, cx, cy + span, '#335566')
+        _dir_arrow(cv, cx, cy - span, cx, cy + span, color)
 
 
 # ── Widget principal ──────────────────────────────────────────────────────────
@@ -503,7 +584,7 @@ class MachineCanvas(tk.Canvas):
             cv.create_text(L['T5'][0] + 35, L['T5'][1] - 17, text='PLEINE',
                            fill='#ff8800', font=('Consolas', 6, 'bold'), anchor='s')
 
-        c9_x = L['T5'][0] + 410
+        c9_x = _t5_c9_x()
         _sensor_vbar(cv, 'C9', c9_x, L['T5'], st.C9)
 
         # Mesure Hauteur (LzB) : hors tapis pour ne pas etre masquee par les boites.
@@ -522,15 +603,18 @@ class MachineCanvas(tk.Canvas):
                        fill='#889900', font=('Consolas', 6), anchor='s')
 
         # ── Flèches sens de rotation (vertes, bas des tapis) ─────────────────
-        for rect, dx, dy in [
-            (L['T0'],  22,  0),   # T0 →
-            (L['T1'],  22,  0),   # T1 →
-            (L['T2'], -22,  0),   # T2 ←
-            (L['T3'],  18,  0),   # T3 →
+        for rect, dx, dy, state_str, eT in [
+            (L['T0'], 22, 0, st.state_T0, st.eT0),          # T0 →
+            (L['T1'], 22, 0, st.state_T1, st.eT1),          # T1 →
+            (L['T3'], 18, 0, st.state_tT3_T4, st.eT3),      # T3 →
         ]:
             cx = (rect[0] + rect[2]) // 2
             cy = rect[3] - 8
-            _dir_arrow(cv, cx - dx, cy + dy, cx + dx, cy + dy)
+            color = _arrow_color(eT, _is_fixed_belt_running(state_str, eT))
+            _dir_arrow(cv, cx - dx, cy + dy, cx + dx, cy + dy, color)
+
+        # T2: sens physique vers EA, couleur selon activite moteur.
+        _draw_t2_dir_arrow(cv, st)
 
         # T4 ↓ (flèche verticale sur le côté droit du tapis)
         _draw_t4_dir_arrow(cv, st)
@@ -601,15 +685,16 @@ class MachineCanvas(tk.Canvas):
         # ── Boîtes sur T5 ────────────────────────────────────────────────────
         # Coord. machine : x diminue vers la droite (butee=942), augmente vers la gauche.
         t5       = L['T5']
-        t5_w     = t5[2] - t5[0]
-        scale_t5 = t5_w / max(T5_X_MAX - T5_X_BUTEE, 1)
+        t5_origin = _t5_visual_origin(st)
+        scale_t5 = _t5_physical_scale()
 
         for box in st.boxes_on_T5:
             w_px, h_px = _t5_box_dims_px(box, t5, scale_t5)
-            if box.t5_entry_aligned:
+            if _t5_is_initial_entry(box, st):
                 x_px = _t5_entry_aligned_x(w_px)
             else:
-                x_px = t5[2] - int((box.x_pos - T5_X_BUTEE) * scale_t5) - w_px
+                animated_x = _t5_render_x_pos(st, box, include_visual_offset=True)
+                x_px = t5[2] - int((animated_x - t5_origin) * scale_t5) - w_px
             bbox = _draw_t5_box(cv, t5, x_px, w_px, h_px, box)
             if bbox:
                 self._t5_hitboxes.append((bbox, box))

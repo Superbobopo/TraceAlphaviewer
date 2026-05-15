@@ -25,7 +25,7 @@ _HDR = re.compile(
 _T0 = re.compile(r'\bT0:\s+(\S+)\s+eT0:(-?\d+)\s+C0:(\d+)')
 _T1 = re.compile(r'\bT1:\s+(\S+)\s+eT1:(-?\d+)')
 _T2 = re.compile(
-    r'\bT2:\s+(\S+)\s+eT2:(-?\d+)\s+eT3:(-?\d+)\s+C2:(\d+)\s+C3:(\d+)\s+C4:(\d+)'
+    r'\bT2:\s+(\S+)\s+eT2:(-?\d+)(?:\s+eT3:(-?\d+))?\s+C2:(\d+)\s+C3:(\d+)\s+C4:(\d+)'
 )
 _TEA = re.compile(
     r'tEA-T3:\s+(\S+)\s+C4:(\d+)\s+C5:(\d+)\s+fgBfinT3:(\d+)'
@@ -42,6 +42,7 @@ _T5 = re.compile(
     r'\bT5:\s+(\S+)\s+eT5=(-?\d+).*?larg:(-?\d+).*?C9:(\d+)'
     r'.*?pT5:(-?\d+).*?eT5useO:(\d+).*?eT5useA:(\d+)'
 )
+T4_DIRECTION_MIN_DELTA_MM = 2
 
 # ── Regex d'événements boîtes ─────────────────────────────────────────────────
 _BOX_INIT_T5 = re.compile(
@@ -97,8 +98,12 @@ _ERROR_WORD = re.compile(r'\b(err|erreur|timeout|alarme|defaut|défaut)\b', re.I
 _ERROR_REPEAT_DELAY = 300.0
 # Position approximative d'arrivée depuis T4 (mm, coord machine) — lue dans les traces
 _T5_ENTRY_X = 1060
+_T5_LIST_SEP = chr(182)
 _DEPL_T5 = re.compile(
     r'D[eé]place toutes les boites.*?sur (-?\d+) mm'
+)
+_DEPL_T5_ACTIVE = re.compile(
+    r'DeplBtSurT5\.(-?\d+)mm\.Ref\S+\.idA(\d+)', re.IGNORECASE
 )
 _C1_SENSOR = re.compile(r'capteurC1=(\d+)')
 _POUBELLE  = re.compile(r'FlagPoubellePleine\s*=\s*(\w+)', re.IGNORECASE)
@@ -181,6 +186,21 @@ def _find_t5_box(
             if box.id_b == id_b:
                 return box
     return _find_unique_barcode(state.boxes_on_T5, barcode)
+
+
+def _clear_missing_active_t5(state: MachineState) -> None:
+    if not state.t5_active_id_alpha:
+        return
+    if any(b.id_alpha == state.t5_active_id_alpha for b in state.boxes_on_T5):
+        return
+    state.t5_active_id_alpha = 0
+    _commit_t5_visual_motion(state)
+
+
+def _set_t5_after_c9(state: MachineState, id_alpha: int) -> None:
+    box = _find_t5_box(state, id_alpha=id_alpha)
+    if box:
+        box.t5_after_c9 = True
 
 
 def _box_label(box: Optional[BoxInfo]) -> str:
@@ -351,11 +371,66 @@ def _update_t4_direction(state: MachineState, new_pT4: int, ctx: dict) -> None:
         state.t4_direction = 0
     elif previous_pT4 is not None and new_pT4 != previous_pT4:
         delta = new_pT4 - previous_pT4
-        state.t4_direction = 1 if delta < 0 else -1
-        ctx['last_t4_direction'] = state.t4_direction
+        if abs(delta) >= T4_DIRECTION_MIN_DELTA_MM:
+            state.t4_direction = 1 if delta < 0 else -1
+            ctx['last_t4_direction'] = state.t4_direction
+        else:
+            state.t4_direction = int(ctx.get('last_t4_direction') or 0)
     else:
         state.t4_direction = int(ctx.get('last_t4_direction') or 0)
     ctx['last_pT4'] = new_pT4
+
+
+def _t5_visual_base(box: BoxInfo) -> int:
+    return int(box.t5_visual_x_pos or box.x_pos or 0)
+
+
+def _commit_t5_visual_motion(state: MachineState) -> None:
+    offset = int(state.t5_visual_offset_mm or 0)
+    if offset:
+        for box in state.boxes_on_T5:
+            if not box.t5_entry_aligned:
+                box.t5_visual_x_pos = _t5_visual_base(box) + offset
+    state.t5_visual_offset_mm = 0
+
+
+def _reset_t5_visual_offset(
+    state: MachineState,
+    ctx: Optional[dict],
+    commit: bool = True,
+) -> None:
+    if commit:
+        _commit_t5_visual_motion(state)
+    else:
+        state.t5_visual_offset_mm = 0
+    if ctx is None:
+        return
+    ctx['t5_visual_anchor_pT5'] = state.pT5
+    ctx['t5_visual_anchor_pending'] = True
+
+
+def _update_t5_visual_offset(state: MachineState, new_pT5: int, ctx: dict) -> None:
+    if ctx.pop('t5_visual_anchor_pending', False):
+        ctx['t5_visual_anchor_pT5'] = new_pT5
+        state.t5_visual_offset_mm = 0
+        return
+
+    has_positioned_box = any(not b.t5_entry_aligned for b in state.boxes_on_T5)
+    anchor = ctx.get('t5_visual_anchor_pT5')
+    if anchor is None or not has_positioned_box:
+        ctx['t5_visual_anchor_pT5'] = new_pT5
+        state.t5_visual_offset_mm = 0
+        return
+
+    state.t5_visual_offset_mm = new_pT5 - int(anchor)
+
+
+def _t5_list_values(chunk: str) -> list[str]:
+    if chunk.startswith('<Dc2>'):
+        return chunk.split('<Dc2>')[1:]
+    if chunk.startswith(_T5_LIST_SEP):
+        return chunk.split(_T5_LIST_SEP)[1:]
+    return []
 
 
 def _apply_t5_list_pack(state: MachineState, text: str, ctx: Optional[dict] = None) -> bool:
@@ -365,9 +440,9 @@ def _apply_t5_list_pack(state: MachineState, text: str, ctx: Optional[dict] = No
 
     parsed: list[BoxInfo] = []
     for chunk in text.split('@'):
-        if not chunk.startswith('<Dc2>'):
+        values = _t5_list_values(chunk)
+        if not values:
             continue
-        values = chunk.split('<Dc2>')[1:]
         if len(values) < 14:
             continue
         try:
@@ -401,12 +476,20 @@ def _apply_t5_list_pack(state: MachineState, text: str, ctx: Optional[dict] = No
             id_b=id_b,
             id_alpha=id_a,
             x_pos=x_pos,
+            t5_visual_x_pos=x_pos,
             t5_entry_aligned=False,
+            t5_after_c9=True,
             color=box_color(bc),
         ))
 
     if parsed or text.rstrip().endswith('@FP'):
         state.boxes_on_T5 = parsed
+        if (
+            state.t5_active_id_alpha
+            and not any(b.id_alpha == state.t5_active_id_alpha for b in state.boxes_on_T5)
+        ):
+            state.t5_active_id_alpha = 0
+        _reset_t5_visual_offset(state, ctx, commit=False)
         return True
     return False
 
@@ -464,12 +547,14 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
     if mo:
         state.state_T2 = mo.group(1)
         state.eT2 = int(mo.group(2))
-        state.eT3 = int(mo.group(3))
+        if mo.group(3) is not None:
+            state.eT3 = int(mo.group(3))
         state.C2 = int(mo.group(4))
         state.C3 = int(mo.group(5))
         state.C4 = int(mo.group(6))
         _track_motor_error(state, line_num, ctx, 'T2', state.eT2, text)
-        _track_motor_error(state, line_num, ctx, 'T3', state.eT3, text)
+        if mo.group(3) is not None:
+            _track_motor_error(state, line_num, ctx, 'T3', state.eT3, text)
         _track_belt_task_edge(state, line_num, ctx, 'T2', state.eT2, state.state_T2)
 
     # tEA-T3
@@ -515,6 +600,8 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         state.eT5 = int(mo.group(2))
         state.larg_T5 = int(mo.group(3))
         state.C9 = int(mo.group(4))
+        if state.C9 and state.t5_active_id_alpha:
+            _set_t5_after_c9(state, state.t5_active_id_alpha)
         new_pT5 = int(mo.group(5))
         previous_pT5 = ctx.get('last_pT5')
         if abs(state.eT5) <= 2 or state.eT5 in (5, 51):
@@ -526,6 +613,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         else:
             state.t5_direction = int(ctx.get('last_t5_direction') or 0)
         state.pT5 = new_pT5
+        _update_t5_visual_offset(state, new_pT5, ctx)
         ctx['last_pT5'] = new_pT5
         state.eT5useO = int(mo.group(6))
         state.eT5useA = int(mo.group(7))
@@ -537,7 +625,10 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         bc, name, lot, x = mo.group(1), mo.group(2), mo.group(3), int(mo.group(4))
         if not any(b.barcode == bc for b in state.boxes_on_T5):
             state.boxes_on_T5.append(
-                BoxInfo(barcode=bc, name=name, lot=lot, x_pos=x, color=box_color(bc))
+                BoxInfo(
+                    barcode=bc, name=name, lot=lot, x_pos=x,
+                    t5_visual_x_pos=x, color=box_color(bc)
+                )
             )
         _add_event(state, line_num, 'info', 'BOITE', f'Boite deja sur T5 {bc}', text.strip())
 
@@ -559,6 +650,8 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         _apply_identity(box, bc, name=name, dims=(w, hh, lg))
         if not box.t5_entry_aligned:
             box.x_pos = x
+            box.t5_visual_x_pos = x
+            box.t5_after_c9 = False
         box.id_alpha = id_a
         if id_b:
             box.id_b = id_b
@@ -583,6 +676,9 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         bc   = mo.group(2)        # ref: (barcode)
         if id_a:
             state.boxes_on_T5 = [b for b in state.boxes_on_T5 if b.id_alpha != id_a]
+            if state.t5_active_id_alpha == id_a:
+                state.t5_active_id_alpha = 0
+                _reset_t5_visual_offset(state, ctx)
         else:
             victim = _find_unique_barcode(state.boxes_on_T5, bc)
             if victim:
@@ -597,6 +693,9 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
             b for b in state.boxes_on_T5
             if b.id_alpha != id_a
         ]
+        if state.t5_active_id_alpha == id_a:
+            state.t5_active_id_alpha = 0
+            _reset_t5_visual_offset(state, ctx)
         _add_event(state, line_num, 'warning', 'BOITE', f'Robot supprime IdA={id_a}')
 
     # ── Suppression boîte (format "Suppr. la boite IdA:X") ─────────────────
@@ -607,6 +706,9 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
             b for b in state.boxes_on_T5
             if b.id_alpha != id_a
         ]
+        if state.t5_active_id_alpha == id_a:
+            state.t5_active_id_alpha = 0
+            _reset_t5_visual_offset(state, ctx)
         _add_event(state, line_num, 'warning', 'BOITE', f'Suppression boite IdA:{id_a}')
 
     # ── Mise à jour position X sur T5 (après tassement) ────────────────────
@@ -616,11 +718,16 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         bc   = mo.group(2)
         h    = int(mo.group(3))   # nvlle dim: WxH -> H = hauteur mesuree (mm)
         x    = int(mo.group(4))
+        state.t5_active_id_alpha = id_a
+        state.t5_x_butee = x
+        _reset_t5_visual_offset(state, ctx)
         b = _find_t5_box(state, id_alpha=id_a, barcode=bc)
         id_b = ctx.get('ida_to_idb', {}).get(id_a, 0)
         if b:
             b.x_pos = x
+            b.t5_visual_x_pos = x
             b.t5_entry_aligned = False
+            b.t5_after_c9 = False
             b.id_alpha = id_a
             if id_b:
                 b.id_b = id_b
@@ -630,7 +737,9 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
             # Boîte pas encore suivie (ex: arrivée non capturée) — on la crée
             state.boxes_on_T5.append(BoxInfo(
                 barcode=bc, id_alpha=id_a, x_pos=x,
-                id_b=id_b, height_mm=h, t5_entry_aligned=False, color=box_color(bc)
+                t5_visual_x_pos=x,
+                id_b=id_b, height_mm=h, t5_entry_aligned=False,
+                t5_after_c9=False, color=box_color(bc)
             ))
         _add_event(state, line_num, 'info', 'BOITE', f'MAJ butee T5 {bc}', f'IdA:{id_a} X:{x} haut:{h}')
 
@@ -643,11 +752,15 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         height = int(mo.group(4))
         length = int(mo.group(5))
         x = int(mo.group(6))
+        state.t5_active_id_alpha = id_a
+        _reset_t5_visual_offset(state, ctx)
         b = _find_t5_box(state, id_alpha=id_a, barcode=bc)
         id_b = ctx.get('ida_to_idb', {}).get(id_a, 0)
         if b:
             b.x_pos = x
+            b.t5_visual_x_pos = x
             b.t5_entry_aligned = False
+            b.t5_after_c9 = True
             b.id_alpha = id_a
             if id_b:
                 b.id_b = id_b
@@ -660,7 +773,9 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
                 id_b=id_b,
                 width_mm=width, height_mm=height, length_mm=length,
                 t5_footprint_mm=width,
+                t5_visual_x_pos=x,
                 t5_entry_aligned=False,
+                t5_after_c9=True,
                 color=box_color(bc),
             ))
         _add_event(state, line_num, 'info', 'BOITE', f'MAJ mesure T5 {bc}', f'IdA:{id_a} X:{x} {width}x{height}x{length}')
@@ -670,8 +785,17 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         delta = int(mo.group(1))
         for b in state.boxes_on_T5:
             b.x_pos += delta
+            if not b.t5_entry_aligned:
+                b.t5_visual_x_pos = b.x_pos
+        _reset_t5_visual_offset(state, ctx, commit=False)
 
     # ── Mémorisation du code-barres cherché en BdD ──────────────────────────
+    mo = _DEPL_T5_ACTIVE.search(text)
+    if mo:
+        delta = int(mo.group(1))
+        id_a = int(mo.group(2))
+        state.t5_active_id_alpha = id_a
+
     mo = _RECH_INFOS.search(text)
     if mo:
         ctx['pending_bc'] = mo.group(1)
@@ -810,13 +934,17 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
                     t5_footprint_mm=b.t5_footprint_mm,
                     id_b=b.id_b, id_alpha=b.id_alpha,
                     x_pos=_T5_ENTRY_X,
+                    t5_visual_x_pos=0,
                     t5_entry_aligned=True,
+                    t5_after_c9=False,
                     color=b.color,
                 )
                 state.boxes_on_T5.append(box)
             else:
                 box.x_pos = _T5_ENTRY_X
+                box.t5_visual_x_pos = 0
                 box.t5_entry_aligned = True
+                box.t5_after_c9 = False
         _add_event(state, line_num, 'info', 'TRANSFERT', f'T4 vers T5 {_box_label(state.box_on_T4)}')
         state.box_on_T4 = None
 
@@ -871,6 +999,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
             seen_error_lines.add(line_num)
             _add_event(state, line_num, 'warning', 'TRACE', 'Message erreur trace', text.strip())
 
+    _clear_missing_active_t5(state)
     _track_signal_edges(state, line_num, ctx)
 
 
@@ -889,6 +1018,14 @@ def _is_significant(prev: MachineState, curr: MachineState) -> bool:
     # Changement de nombre de boîtes T5 (création / suppression)
     if len(prev.boxes_on_T5) != len(curr.boxes_on_T5):
         return True
+    if [
+        (b.id_alpha, b.id_b, b.x_pos, b.t5_visual_x_pos, b.t5_after_c9)
+        for b in prev.boxes_on_T5
+    ] != [
+        (b.id_alpha, b.id_b, b.x_pos, b.t5_visual_x_pos, b.t5_after_c9)
+        for b in curr.boxes_on_T5
+    ]:
+        return True
     # Transition d'état important d'un convoyeur
     for a, b in (
         (prev.state_tEA_T3, curr.state_tEA_T3),
@@ -901,6 +1038,12 @@ def _is_significant(prev: MachineState, curr: MachineState) -> bool:
     if prev.t4_direction != curr.t4_direction:
         return True
     if prev.t5_direction != curr.t5_direction:
+        return True
+    if (
+        prev.t5_active_id_alpha != curr.t5_active_id_alpha
+        or prev.t5_x_butee != curr.t5_x_butee
+        or prev.t5_visual_offset_mm != curr.t5_visual_offset_mm
+    ):
         return True
     return False
 
@@ -937,7 +1080,7 @@ def parse_file(
                 'boite est charg', 'BOITE-LOAD', 'EA->T3', 'rendu',
                 'supp.', 'suppression', 'Suppr.', 'D\xe9place', 'MAJ (BUTEE', 'MAJ (APRES',
                 'ALPHA:T5-LIST-PACK', 'Cr\xe9ation',
-                'AjoutBtT5', 'capteurC1', 'FlagPoubelle', 'LzB', 'longueur boite',
+                'AjoutBtT5', 'DeplBtSurT5', 'capteurC1', 'FlagPoubelle', 'LzB', 'longueur boite',
                 'mesure de longueur', 'tassement', 'diffT4')
 
     file_line = 0

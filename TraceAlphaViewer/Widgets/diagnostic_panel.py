@@ -205,6 +205,17 @@ class DiagnosticPanel(ctk.CTkFrame):
     def _remember_current_width(self, width: int) -> None:
         self._split_widths[self._window_mode] = max(_DETAILS_MIN_WIDTH, int(width))
 
+    def _set_sash_pos(self, index: int, x: int) -> None:
+        if hasattr(self._paned, 'sashpos'):
+            self._paned.sashpos(index, x)
+        else:
+            self._paned.sash_place(index, x, 0)
+
+    def _get_sash_pos(self, index: int) -> int:
+        if hasattr(self._paned, 'sashpos'):
+            return int(self._paned.sashpos(index))
+        return int(self._paned.sash_coord(index)[0])
+
     def _apply_mode_width(self) -> None:
         if not self._split_ready:
             return
@@ -214,9 +225,9 @@ class DiagnosticPanel(ctk.CTkFrame):
                 return
             max_left = max(_DETAILS_MIN_WIDTH, total_width - _INCIDENTS_MIN_WIDTH)
             target = min(max(self._current_split_width(), _DETAILS_MIN_WIDTH), max_left)
-            self._paned.sashpos(0, target)
+            self._set_sash_pos(0, target)
             self._remember_current_width(target)
-        except tk.TclError:
+        except (tk.TclError, AttributeError):
             return
 
     def _on_host_configure(self, _event) -> None:
@@ -235,10 +246,10 @@ class DiagnosticPanel(ctk.CTkFrame):
                 return
             max_left = max(_DETAILS_MIN_WIDTH, total_width - _INCIDENTS_MIN_WIDTH)
             target = min(max(self._current_split_width(), _DETAILS_MIN_WIDTH), max_left)
-            self._paned.sashpos(0, target)
+            self._set_sash_pos(0, target)
             self._remember_current_width(target)
             self._split_ready = True
-        except tk.TclError:
+        except (tk.TclError, AttributeError):
             return
 
     def _clamp_split_width(self) -> None:
@@ -249,12 +260,12 @@ class DiagnosticPanel(ctk.CTkFrame):
             if total_width <= (_DETAILS_MIN_WIDTH + _INCIDENTS_MIN_WIDTH):
                 return
             max_left = max(_DETAILS_MIN_WIDTH, total_width - _INCIDENTS_MIN_WIDTH)
-            current = self._paned.sashpos(0)
+            current = self._get_sash_pos(0)
             target = min(max(current, _DETAILS_MIN_WIDTH), max_left)
             if target != current:
-                self._paned.sashpos(0, target)
+                self._set_sash_pos(0, target)
             self._remember_current_width(target)
-        except tk.TclError:
+        except (tk.TclError, AttributeError):
             return
 
     def _on_split_release(self, _event) -> None:
@@ -262,9 +273,9 @@ class DiagnosticPanel(ctk.CTkFrame):
             return
         self._clamp_split_width()
         try:
-            self._remember_current_width(self._paned.sashpos(0))
+            self._remember_current_width(self._get_sash_pos(0))
             _save_split_widths(self._split_widths)
-        except tk.TclError:
+        except (tk.TclError, AttributeError):
             return
 
     def set_incidents(self, incidents: list[DiagnosticIncident]) -> None:

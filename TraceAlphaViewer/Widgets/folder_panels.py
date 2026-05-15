@@ -66,7 +66,7 @@ class TraceListPanel(ctk.CTkFrame):
 
         self._text.tag_configure('title', foreground='#ddeeff')
         self._text.tag_configure('meta', foreground='#667788')
-        self._text.tag_configure('selected', background='#1a2d45')
+        self._text.tag_configure('selected', background='#23496d', foreground='#ffffff')
         self._text.tag_configure('error', foreground='#ff8888')
         self._text.bind('<Button-1>', self._on_click)
 
@@ -117,6 +117,7 @@ class GroupedItemPanel(ctk.CTkFrame, Generic[T]):
         title: str,
         item_label: Callable[[T], str],
         detail_label: Callable[[T], str],
+        item_tags: Callable[[T], tuple[str, ...]] | None = None,
         on_item_click: Callable[[T], None] | None = None,
         empty_text: str = 'Aucun element',
         **kwargs,
@@ -126,9 +127,11 @@ class GroupedItemPanel(ctk.CTkFrame, Generic[T]):
         super().__init__(master, **kwargs)
         self._item_label = item_label
         self._detail_label = detail_label
+        self._item_tags = item_tags
         self._on_item_click = on_item_click
         self._empty_text = empty_text
         self._line_to_item: dict[int, T] = {}
+        self._item_id_to_line: dict[int, int] = {}
         self._build(title)
 
     def _build(self, title: str) -> None:
@@ -195,13 +198,17 @@ class GroupedItemPanel(ctk.CTkFrame, Generic[T]):
         )
         self._details.pack(fill='both', expand=True, padx=8, pady=8)
 
-        self._list.tag_configure('group', foreground='#88aacc', font=('Consolas', 10, 'bold'))
-        self._list.tag_configure('meta', foreground='#667788')
-        self._list.tag_configure('selected', background='#1a2d45')
+        self._list.tag_configure('group', foreground='#9cc7ff', font=('Consolas', 10, 'bold'))
+        self._list.tag_configure('meta', foreground='#7c8a99')
+        self._list.tag_configure('selected', background='#23496d', foreground='#ffffff')
+        self._list.tag_configure('error', foreground='#ff8f8f')
+        self._list.tag_configure('warning', foreground='#ffc46b')
+        self._list.tag_configure('info', foreground='#9ecbff')
         self._list.bind('<Button-1>', self._on_click)
 
     def set_groups(self, groups: list[GroupSection[T]], summary: str = '') -> None:
         self._line_to_item = {}
+        self._item_id_to_line = {}
         self._summary.configure(text=summary)
         self._list.configure(state='normal')
         self._list.delete('1.0', 'end')
@@ -220,12 +227,38 @@ class GroupedItemPanel(ctk.CTkFrame, Generic[T]):
             for item in section.items:
                 display_line = int(self._list.index('end-1c').split('.')[0])
                 self._line_to_item[display_line] = item
-                self._list.insert('end', f'  {self._item_label(item)}\n')
+                self._item_id_to_line[id(item)] = display_line
+                tags = self._item_tags(item) if self._item_tags else ()
+                self._list.insert('end', f'  {self._item_label(item)}\n', tags)
                 if first_item is None:
                     first_item = item
             self._list.insert('end', '\n', ('meta',))
         self._list.configure(state='disabled')
         self._show_details(first_item)
+
+    def select_item(self, item: T | None, trigger_callback: bool = False) -> bool:
+        if item is None:
+            return False
+        display_line = self._item_id_to_line.get(id(item))
+        if display_line is None:
+            for line, candidate in self._line_to_item.items():
+                if candidate == item:
+                    display_line = line
+                    break
+        if display_line is None:
+            return False
+        self._select_display_line(display_line, trigger_callback=trigger_callback)
+        return True
+
+    def select_first(self, predicate: Callable[[T], bool], trigger_callback: bool = False) -> T | None:
+        for display_line, item in self._line_to_item.items():
+            if predicate(item):
+                self._select_display_line(display_line, trigger_callback=trigger_callback)
+                return item
+        return None
+
+    def clear_selection(self) -> None:
+        self._list.tag_remove('selected', '1.0', 'end')
 
     def _show_details(self, item: T | None) -> None:
         self._details.configure(state='normal')
@@ -242,8 +275,15 @@ class GroupedItemPanel(ctk.CTkFrame, Generic[T]):
         selected = self._line_to_item.get(display_line)
         if selected is None:
             return
+        self._select_display_line(display_line, trigger_callback=True)
+
+    def _select_display_line(self, display_line: int, trigger_callback: bool = False) -> None:
+        selected = self._line_to_item.get(display_line)
+        if selected is None:
+            return
         self._list.tag_remove('selected', '1.0', 'end')
         self._list.tag_add('selected', f'{display_line}.0', f'{display_line}.end')
+        self._list.see(f'{display_line}.0')
         self._show_details(selected)
-        if self._on_item_click:
+        if trigger_callback and self._on_item_click:
             self._on_item_click(selected)
