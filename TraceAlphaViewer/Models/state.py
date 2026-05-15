@@ -44,10 +44,10 @@ class BoxInfo:
     t5_footprint_mm: int = 0  # largeur occupee sur T5/goulotte (mm)
     id_b: int = 0        # identifiant de cheminement Alpha (Nboite / idB)
     id_alpha: int = 0    # identifiant BdD alpha
-    x_pos: int = 0       # position X sur T5 (mm, coordonnées machine)
-    t5_visual_x_pos: int = 0  # position X visuelle continue sur T5
-    t5_entry_aligned: bool = False  # arrivee T5 a afficher dans l'axe T4
-    t5_after_c9: bool = False  # boite deja passee par C9 dans le cycle T5
+    x_pos: int = 0       # position stable Alpha sur T5 (mm, source trace/BdD)
+    t5_visual_x_pos: int = 0  # base de rendu continue, separee de la verite Alpha
+    t5_entry_aligned: bool = False  # arrivee T4->T5 encore alignee sous T4
+    t5_after_c9: bool = False  # etat de cycle, pas une contrainte de placement
     color: str = "#4FC3F7"
 
     def short_label(self) -> str:
@@ -106,7 +106,7 @@ class MachineState:
     # -- Positions des boîtes (mm) -------------------------------------------
     pT3: int = 0          # ≤ 0 : boîte présente sur T3 (0 = référence départ)
     pT4: int = 0          # > 0 : boîte sur T4 ; ≤ 0 : passée sur T5
-    pT5: int = 0          # position encodeur T5
+    pT5: int = 0          # encodeur moteur T5, jamais une coordonnee de boite
     LgBtT4: float = 0.0   # longueur boîte mesurée sur T4 (mm)
     larg_T5: int = 0      # largeur mesurée sur T5
     fgBfinT3: int = 0
@@ -117,7 +117,7 @@ class MachineState:
     t5_direction: int = 0  # -1=gauche/poubelle, 1=droite/butee, 0=arret/inconnu
     t5_active_id_alpha: int = 0  # boite T5 en cours de cycle mesure/repos
     t5_x_butee: int = 0  # X butee observe dans la trace courante
-    t5_visual_offset_mm: int = 0  # decalage temporaire deduit du delta pT5
+    t5_visual_offset_mm: int = 0  # delta temporaire deduit de pT5 pour animer T5
 
     # -- Identification -------------------------------------------------------
     idCB1_state: str = ""

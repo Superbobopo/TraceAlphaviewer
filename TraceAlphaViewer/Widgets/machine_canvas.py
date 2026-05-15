@@ -334,6 +334,8 @@ def _t5_entry_aligned_x(w_px: int) -> int:
 
 
 def _t5_visual_origin(st: MachineState) -> int:
+    # Origine du repere visuel T5 : normalement le X de butee lu dans la trace.
+    # Si la trace utilise un grand repere Alpha, on revient a la butee canonique.
     if 0 < st.t5_x_butee <= T5_X_MAX:
         return int(st.t5_x_butee)
     return T5_X_BUTEE
@@ -344,6 +346,9 @@ def _t5_normalized_x(st: MachineState, x_pos: int) -> int:
     x_pos = int(x_pos)
     butee_x = int(st.t5_x_butee or 0)
     if butee_x > T5_X_MAX and x_pos > T5_X_MAX:
+        # Certaines traces ont une butee a plusieurs milliers de mm. La seule
+        # valeur utile pour le canvas est la distance entre la boite et cette
+        # butee, surtout quand X > butee apres passage C9.
         return T5_X_BUTEE + abs(x_pos - butee_x)
     return x_pos
 
@@ -362,6 +367,8 @@ def _t5_render_x_pos(
     include_visual_offset: bool = True,
 ) -> int:
     """Retourne la position T5 stable, puis l'animation signee du tapis."""
+    # Le rendu part de la position visuelle continue quand elle existe, puis
+    # ajoute seulement l'offset temporaire signe issu de pT5.
     x_pos = _t5_normalized_x(st, int(box.t5_visual_x_pos or box.x_pos or T5_X_BUTEE))
     if include_visual_offset:
         x_pos += int(st.t5_visual_offset_mm or 0)

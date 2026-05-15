@@ -1,6 +1,6 @@
-# TraceAlphaViewer Agent Notes
+# Notes agent TraceAlphaViewer
 
-## Project Snapshot
+## Vue du projet
 TraceAlphaViewer est un viewer local Python/customtkinter pour traces Alpha `.old`.
 Le flux principal est :
 - parser les lignes de trace en `MachineState` ;
@@ -9,7 +9,7 @@ Le flux principal est :
 - aider a comprendre les incidents sans inventer de positions ou d'identites.
 Ce fichier est la memoire projet versionnee. Les regles techniques ci-dessous doivent rester ici, pas dans une memoire personnelle Codex.
 
-## How To Run
+## Lancement et commandes
 Depuis la racine du projet :
 ```powershell
 python Main.py
@@ -24,7 +24,7 @@ rg -n "motif" Parser Widgets Models Views
 rg --files
 ```
 
-## Architecture Map
+## Carte d'architecture
 - `Main.py` lance l'application customtkinter.
 - `Models/state.py` contient `MachineState`, `BoxInfo` et `MachineEvent`.
 - `Parser/trace_parser.py` lit les `.old`, applique les transitions et construit les frames.
@@ -33,7 +33,7 @@ rg --files
 - `Views/traceView.py` gere le viewer principal, navigation, player et callbacks.
 - `Models/diagnostic.py` et `Models/diagnostic_knowledge.py` extraient et expliquent les incidents.
 
-## Coding Rules
+## Regles de codage
 - Lire le code existant avant de modifier ; ne pas supposer les conventions.
 - Garder les changements scopes au bug ou a la fonctionnalite demandee.
 - Utiliser `apply_patch` pour les editions manuelles.
@@ -48,14 +48,14 @@ rg --files
 - Si un bug revient, renforcer l'invariant dans ce fichier au lieu de refaire une correction fragile.
 - Les fleches tapis utilisent les couleurs communes actif/repos/erreur ; ne pas reutiliser les couleurs capteurs pour elles.
 
-## Baseline Workflow
+## Workflow de base
 - Clarifier le but, le critere d'acceptation et les contraintes de securite/scope.
 - Lire les fichiers concernes avant de modifier ; verifier les invariants applicables dans ce fichier.
 - Si la demande depend d'une information recente externe, verifier une source officielle avant de repondre.
 - Faire le plus petit changement sur les bons objets metier, pas sur les symptomes visuels.
 - Verifier avec la commande ou le scenario trace adapte avant de conclure.
 
-## Parser Invariants
+## Invariants du parser
 - L'identite boite suit le cycle Alpha, pas seulement le CIP/barcode.
 - Priorite de matching : `id_alpha`, puis `id_b`, puis barcode uniquement si unique.
 - Ne jamais mettre a jour ou supprimer toutes les boites qui partagent le meme barcode.
@@ -74,7 +74,7 @@ rg --files
 - `ALPHA:T5-LIST-PACK` peut utiliser `<Dc2>` ou le separateur reel `chr(182)`.
 - Une boite issue de `ALPHA:T5-LIST-PACK` a une position robot stable fiable.
 
-## T5 Rendering Rules
+## Regles de rendu T5
 - `pT5` est un encodeur moteur, jamais une coordonnee absolue de boite.
 - `pT5` peut seulement fournir un offset visuel temporaire entre deux positions stables.
 - Les positions T5 stables viennent des lignes `MAJ`, de `ALPHA:T5-LIST-PACK`, ou des deplacements BdD confirmes.
@@ -104,7 +104,7 @@ rg --files
 - La ligne jaune de position `pT5` ne doit pas etre reintroduite dans le canvas.
 - Le point `Mesure H.` / `LzB` reste hors tapis pour ne pas etre masque par les boites.
 
-## Validation Checklist
+## Checklist de validation
 - Compiler les fichiers principaux avec la commande `py_compile` indiquee plus haut apres toute modification Python.
 - Controler `TracAlpha1_012.old` autour de `24|08:31:15` a `08:31:18` : l'IBUPROFENE suit le mouvement T5 sans saut visuel.
 - Controler `TracAlpha1_012.old` autour de `24|08:31:52` a `08:31:55` : meme invariant sur le second IBUPROFENE.
@@ -115,7 +115,7 @@ rg --files
 - Controler visuellement T2 si modifie : fleche grise a l'arret, coloree pendant les codes moteur actifs.
 - Si un controle echoue, inspecter d'abord l'etat parser (`BoxInfo`, `MachineState`) avant de toucher aux constantes canvas.
 
-## Definition of Done
+## Definition de termine
 - Le changement demande est implemente ou la question est repondue clairement.
 - Si du code Python a change, la compilation `py_compile` a ete lancee ou l'impossibilite est expliquee.
 - Si T5, le parser ou le canvas a change, les scenarios trace critiques ont ete controles.
@@ -123,7 +123,7 @@ rg --files
 - La documentation projet est mise a jour quand une nouvelle regle evite une repetition d'erreur.
 - Les fichiers hors depot ou les memoires personnelles ne sont pas modifies sans demande explicite.
 
-## Memory Policy
+## Politique memoire
 - `AGENTS.md` contient les regles techniques partagees du projet.
 - Les memoires Codex personnelles ne doivent contenir que des preferences stables de travail.
 - Exemple acceptable en memoire personnelle : repondre en francais pour ce projet.

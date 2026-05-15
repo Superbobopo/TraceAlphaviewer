@@ -382,10 +382,14 @@ def _update_t4_direction(state: MachineState, new_pT4: int, ctx: dict) -> None:
 
 
 def _t5_visual_base(box: BoxInfo) -> int:
+    # Base de rendu continue : on privilegie la position visuelle deja suivie,
+    # puis la position stable Alpha si la boite vient d'etre creee.
     return int(box.t5_visual_x_pos or box.x_pos or 0)
 
 
 def _commit_t5_visual_motion(state: MachineState) -> None:
+    # Avant de reinitialiser l'offset deduit de pT5, on l'integre dans chaque
+    # boite deja positionnee sur T5. Cela evite un saut visuel au prochain MAJ.
     offset = int(state.t5_visual_offset_mm or 0)
     if offset:
         for box in state.boxes_on_T5:
@@ -399,6 +403,9 @@ def _reset_t5_visual_offset(
     ctx: Optional[dict],
     commit: bool = True,
 ) -> None:
+    # commit=True conserve le mouvement anime avant de repartir d'une nouvelle
+    # ancre pT5. commit=False est reserve aux lignes BdD qui confirment deja le
+    # deplacement global dans x_pos/t5_visual_x_pos.
     if commit:
         _commit_t5_visual_motion(state)
     else:
@@ -410,6 +417,8 @@ def _reset_t5_visual_offset(
 
 
 def _update_t5_visual_offset(state: MachineState, new_pT5: int, ctx: dict) -> None:
+    # pT5 est un encodeur moteur : on ne l'utilise jamais comme coordonnee de
+    # boite, uniquement comme delta temporaire entre deux positions Alpha stables.
     if ctx.pop('t5_visual_anchor_pending', False):
         ctx['t5_visual_anchor_pT5'] = new_pT5
         state.t5_visual_offset_mm = 0
@@ -757,6 +766,9 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         b = _find_t5_box(state, id_alpha=id_a, barcode=bc)
         id_b = ctx.get('ida_to_idb', {}).get(id_a, 0)
         if b:
+            # La mesure largeur fournit un vrai X Alpha apres passage C9 :
+            # on recale aussi la base visuelle pour ne pas conserver une
+            # ancienne position de butee.
             b.x_pos = x
             b.t5_visual_x_pos = x
             b.t5_entry_aligned = False
@@ -783,6 +795,8 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
     mo = _DEPL_T5.search(text)
     if mo:
         delta = int(mo.group(1))
+        # Ligne BdD confirmee : tout T5 est un seul tapis, donc toutes les
+        # boites se deplacent du meme delta et la base visuelle est resynchronisee.
         for b in state.boxes_on_T5:
             b.x_pos += delta
             if not b.t5_entry_aligned:
