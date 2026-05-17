@@ -16,6 +16,9 @@ Git workflow target:
 - `main` should represent the latest usable version of the project.
 - Preserve older states through normal commit history and version tags, not archive branches by default.
 - Use a short-lived branch only for risky work, then merge back into `main`.
+- Do not push trace files to GitHub: no `*.old`, no large trace `.txt` files.
+- Before every commit, inspect `git status --short` and the staged file list. If traces are staged, unstage them before committing.
+- Keep trace files local for validation unless the user explicitly asks to version a specific small sample.
 
 ## Important Files
 
@@ -26,7 +29,9 @@ Git workflow target:
 - `TraceAlphaViewer/Models/state.py`: `MachineState`, `BoxInfo`, `MachineEvent`.
 - `TraceAlphaViewer/Models/diagnostic.py`: diagnostic incident extraction.
 - `TraceAlphaViewer/Models/diagnostic_knowledge.py`: terrain knowledge base used to explain recurring symptoms.
-- `TraceAlphaViewer/TracAlpha1_001.old`: reference trace used for visual checks.
+- `TraceAlphaViewer/Models/reference_index.py`: reference/box index used by the References tab.
+- `TraceAlphaViewer/Widgets/reference_panel.py`: reference/box list and navigation to first occurrence.
+- Local `.old` and large `.txt` traces are validation inputs only. They must stay out of GitHub commits.
 
 ## Current T5 Decisions
 
