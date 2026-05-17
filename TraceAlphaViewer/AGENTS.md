@@ -56,6 +56,11 @@ rg --files
 - Faire le plus petit changement sur les bons objets metier, pas sur les symptomes visuels.
 - Verifier avec la commande ou le scenario trace adapte avant de conclure.
 
+## Regles Git
+- Ne pas pousser les fichiers de traces (`*.old`, gros `.txt` de trace) sur GitHub.
+- Les traces servent aux validations locales ; les garder hors commit sauf demande explicite.
+- Avant un commit, verifier les fichiers indexes avec `git status --short` et retirer les traces ajoutees par erreur.
+
 ## Invariants du parser
 - L'identite boite suit le cycle Alpha, pas seulement le CIP/barcode.
 - Priorite de matching : `id_alpha`, puis `id_b`, puis barcode uniquement si unique.
