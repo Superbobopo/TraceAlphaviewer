@@ -29,6 +29,7 @@ rg --files
 - `Models/state.py` contient `MachineState`, `BoxInfo` et `MachineEvent`.
 - `Parser/trace_parser.py` lit les `.old`, applique les transitions et construit les frames.
 - `Widgets/machine_canvas.py` dessine le schema machine, les capteurs, les fleches et les boites.
+- `Widgets/reference_panel.py` liste les references/boites et permet de revenir a leur premiere apparition dans la trace.
 - `Widgets/state_table.py` affiche les etats tapis, capteurs et codes firmware.
 - `Views/traceView.py` gere le viewer principal, navigation, player et callbacks.
 - `Models/diagnostic.py` et `Models/diagnostic_knowledge.py` extraient et expliquent les incidents.
@@ -84,20 +85,21 @@ rg --files
 - Calibrage physique T5 : longueur `770 mm`, C9 a `310 mm` depuis la butee T5.
 - Conserver les calibrages T5 metier sauf demande explicite : `T5_X_BUTEE = 942`, `T5_X_MAX = 1750`, `T5_BOX_DIM_SCALE = 0.75`, `_T5_ENTRY_X = 1060`.
 - `T5_X_BUTEE` correspond au cote butee / mesure hauteur, a droite du tapis.
-- C9 est l'entree T4 vers T5 ; sa position canvas vient du calibrage physique T5.
+- C9 est l'entree T4 vers T5 ; il est aligne visuellement sur le bord gauche de T4, sans changer l'echelle physique T5.
 - Certaines traces utilisent de grands `X` Alpha pour T5 : les normaliser par distance a la butee observee, jamais avec un clamp qui transforme `X > butee` en butee.
+- Une suppression T5 par le robot signifie normalement que la boite a ete prise physiquement ; la classer en evenement `info`, pas en erreur.
 - `BoxInfo.t5_after_c9=True` est un etat de cycle/diagnostic, pas une contrainte geometrique.
 - Les boites T5 suivent toutes le meme tapis : tout mouvement signe de T5 deplace le groupe, y compris les boites deja passees par C9.
 - Le rendu doit conserver les positions relatives issues de `x_pos`, `t5_visual_x_pos`, `ALPHA:T5-LIST-PACK` et des deplacements BdD confirmes.
 - Avant tout reset de `t5_visual_offset_mm`, committer l'offset courant dans `t5_visual_x_pos`.
-- Exception : une ligne BdD `Deplace toutes les boites ...` resynchronise `t5_visual_x_pos` sur le nouveau `x_pos`, car elle confirme le mouvement deja anime.
+- Exception : une ligne BdD `Deplace toutes les boites ...` resynchronise seulement les boites deja etablies sur T5 ; une nouvelle boite `t5_entry_aligned=True` attend sa premiere `MAJ` stable.
 - Ne pas ajouter de clamp final sur C9 ou sur la butee : les dimensions physiques et les positions Alpha doivent porter le rendu.
 - `MAJ (BUTEE-T5)` peut remettre `t5_after_c9=False` seulement pour la meme boite active revenue en cycle butee.
 - `MAJ (APRES-MESURE-LARG)` recale toujours `x_pos` et `t5_visual_x_pos` sur le `X` trace de la boite mesuree, puis marque cette boite `t5_after_c9=True`.
 - Une activation C9 de la boite active marque cette boite `t5_after_c9=True`.
 - Une nouvelle arrivee T4->T5 demarre `t5_after_c9=False` et `t5_entry_aligned=True` jusqu'a position stable.
-- Une boite `t5_entry_aligned=True` reste sous l'axe T4 seulement a l'entree initiale (`x_pos` proche de `_T5_ENTRY_X` et offset nul).
-- Si une ligne BdD ou un offset a deja deplace cette boite, elle doit etre rendue depuis son X T5, pas depuis le placement fixe T4.
+- Une boite `t5_entry_aligned=True` reste sous l'axe T4 tant qu'aucun offset visuel T5 n'existe ; si `pT5` fournit un offset, elle peut suivre ce mouvement sans changer son `x_pos` stable.
+- L'interpolation de lecture est autorisee, mais jamais a travers les evenements T5 discrets (`MAJ`, `Deplace toutes`, `AjoutBtT5`, suppression robot, `ALPHA:T5-LIST-PACK`).
 - C9/`width_mm` se dessine sur l'axe horizontal T5.
 - C6/`length_mm` se dessine dans l'epaisseur verticale T5.
 - `t5_footprint_mm` de `ALPHA:T5-LIST-PACK` est seulement un fallback si les dimensions C6/C9 manquent.
@@ -112,6 +114,7 @@ rg --files
 - Controler une sequence de tassage : une nouvelle boite T4->T5 va vers la butee, et les boites deja sur T5 reculent aussi selon le meme mouvement physique.
 - Controler les lignes `MAJ (APRES-MESURE-LARG)` : elles changent la position stable/dimensions sans saut visuel brutal.
 - Controler visuellement T5 : transfert T4->T5, tassage butee, passage C9, retour repos, espacement multi-boites.
+- Controler les lectures inconnues : beaucoup de `ALPHA-INC`, `ALPHA-DET` ou `-unknow` doivent etre visibles comme indice camera/datamatrix.
 - Controler visuellement T2 si modifie : fleche grise a l'arret, coloree pendant les codes moteur actifs.
 - Si un controle echoue, inspecter d'abord l'etat parser (`BoxInfo`, `MachineState`) avant de toucher aux constantes canvas.
 

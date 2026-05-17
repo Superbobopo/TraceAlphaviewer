@@ -51,7 +51,10 @@ def _event_belts(event: MachineEvent) -> set[str]:
         if token in text:
             belts.add(belt)
     if event.kind.upper() == 'BOITE' and (
-        'ROBOT SUPPRIME' in text or 'SUPPRESSION BOITE IDA' in text
+        'ROBOT PREND' in text
+        or 'ROBOT SUPPRIME' in text
+        or 'SUPPRESSION BOITE IDA' in text
+        or 'BOITE RETIREE DE T5' in text
     ):
         belts.add('T5')
     return belts

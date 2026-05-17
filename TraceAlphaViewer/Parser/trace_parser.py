@@ -29,10 +29,10 @@ _T2 = re.compile(
 )
 _TEA = re.compile(
     r'tEA-T3:\s+(\S+)\s+C4:(\d+)\s+C5:(\d+)\s+fgBfinT3:(\d+)'
-    r'\s+eT3:(-?\d+)\s+pT3:(-?\d+)mm\s+IdCB1:(\S+)'
+    r'\s+eT3:(-?\d+)\s+pT3:(-?\d+)mm(?:\s+IdCB1:(\S+))?'
 )
 _TT3T4 = re.compile(
-    r'tT3/T4:\s+(\S+)\s+eT4:(-?\d+)\s+C5:(\d+)\s+C6:(\d+)'
+    r'tT3/T4:\s+(\S+)\s+eT4:(-?\d+)(?:\s+C5:(\d+))?\s+C6:(\d+)'
     r'\s+pT3:(-?\d+)mm\s+pT4:(-?\d+)mm\s+LgBtT4:(-?[\d,]+)mm'
 )
 _TT4T5 = re.compile(
@@ -49,7 +49,7 @@ _BOX_INIT_T5 = re.compile(
     r'sur T5:\s+(\S+)\s+(\S+)\s+lot:(\S+)\s+\S+\s+x=(\d+)'
 )
 _BOX_CREATE = re.compile(
-    r"Cr[eé]ation de la boite '([^']+)'\s+(.+?)\s+x=(\d+)"
+    r"Cr[eé]ation de la boite '([^']*)'\s+(.+?)\s+x=(\d+)"
     r'\s+\((\d+)x(\d+)x(\d+)\)\s+IdA:(\d+)'
 )
 _BOX_REMOVE = re.compile(
@@ -88,10 +88,10 @@ _RECH_INFOS = re.compile(
     r'Rech\. infos.*?pour (\S+)'
 )
 _MAJ_T5_POS = re.compile(
-    r'MAJ \(BUTEE-T5\) boite Id:(\d+) ref:(\S+).*?nvlle dim:\d+x(\d+)\s+X:(\d+)'
+    r'MAJ \(BUTEE-T5\) boite Id:(\d+) ref:(\S*).*?nvlle dim:\d+x(\d+)\s+X:(\d+)'
 )
 _MAJ_T5_MESURE = re.compile(
-    r"MAJ \(APRES-MESURE-LARG\) bt IdA:(\d+) '([^']+)'.*?"
+    r"MAJ \(APRES-MESURE-LARG\) bt IdA:(\d+) '([^']*)'.*?"
     r"nvlle lxH:(\d+)x(\d+) \[x(\d+)\] X:(\d+)"
 )
 _ERROR_WORD = re.compile(r'\b(err|erreur|timeout|alarme|defaut|défaut)\b', re.IGNORECASE)
@@ -365,6 +365,22 @@ def _track_t4_cycle(state: MachineState, line_num: int, ctx: dict) -> None:
         )
 
 
+def _move_t3_box_to_t4_when_loaded(state: MachineState, line_num: int) -> None:
+    if state.box_on_T4 is not None or state.box_on_T3 is None:
+        return
+    if state.C5 != 0 or state.eT4 not in (41, 42, 43):
+        return
+    if state.pT4 <= 0:
+        return
+    state.box_on_T4 = state.box_on_T3
+    state.box_on_T3 = None
+    _add_event(
+        state, line_num, 'info', 'TRANSFERT',
+        f'T3->T4 en cours {_box_label(state.box_on_T4)}',
+        f'eT4:{state.eT4} pT4:{state.pT4}mm'
+    )
+
+
 def _update_t4_direction(state: MachineState, new_pT4: int, ctx: dict) -> None:
     previous_pT4 = ctx.get('last_pT4')
     if abs(state.eT4) <= 2 or state.eT4 in (5, 51, 85):
@@ -424,7 +440,7 @@ def _update_t5_visual_offset(state: MachineState, new_pT5: int, ctx: dict) -> No
         state.t5_visual_offset_mm = 0
         return
 
-    has_positioned_box = any(not b.t5_entry_aligned for b in state.boxes_on_T5)
+    has_positioned_box = bool(state.boxes_on_T5)
     anchor = ctx.get('t5_visual_anchor_pT5')
     if anchor is None or not has_positioned_box:
         ctx['t5_visual_anchor_pT5'] = new_pT5
@@ -582,7 +598,8 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
     if mo:
         state.state_tT3_T4 = mo.group(1)
         state.eT4 = int(mo.group(2))
-        state.C5 = int(mo.group(3))
+        if mo.group(3) is not None:
+            state.C5 = int(mo.group(3))
         state.C6 = int(mo.group(4))
         state.pT3 = int(mo.group(5))
         new_pT4 = int(mo.group(6))
@@ -590,6 +607,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         state.pT4 = new_pT4
         state.LgBtT4 = float(mo.group(7).replace(',', '.'))
         _track_motor_error(state, line_num, ctx, 'T4', state.eT4, text)
+        _move_t3_box_to_t4_when_loaded(state, line_num)
         _track_t4_cycle(state, line_num, ctx)
 
     # tT4*T5
@@ -692,7 +710,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
             victim = _find_unique_barcode(state.boxes_on_T5, bc)
             if victim:
                 state.boxes_on_T5 = [b for b in state.boxes_on_T5 if b is not victim]
-        _add_event(state, line_num, 'warning', 'BOITE', f'Robot supprime IdA={id_a}', bc)
+        _add_event(state, line_num, 'info', 'BOITE', f'Robot prend IdA={id_a}', bc)
 
     # ── Suppression boîte de T5 (format long) ──────────────────────────────
     mo = _BOX_REMOVE2.search(text)
@@ -705,7 +723,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         if state.t5_active_id_alpha == id_a:
             state.t5_active_id_alpha = 0
             _reset_t5_visual_offset(state, ctx)
-        _add_event(state, line_num, 'warning', 'BOITE', f'Robot supprime IdA={id_a}')
+        _add_event(state, line_num, 'info', 'BOITE', f'Robot prend IdA={id_a}')
 
     # ── Suppression boîte (format "Suppr. la boite IdA:X") ─────────────────
     mo = _BOX_REMOVE3.search(text)
@@ -718,7 +736,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         if state.t5_active_id_alpha == id_a:
             state.t5_active_id_alpha = 0
             _reset_t5_visual_offset(state, ctx)
-        _add_event(state, line_num, 'warning', 'BOITE', f'Suppression boite IdA:{id_a}')
+        _add_event(state, line_num, 'info', 'BOITE', f'Boite retiree de T5 IdA:{id_a}')
 
     # ── Mise à jour position X sur T5 (après tassement) ────────────────────
     mo = _MAJ_T5_POS.search(text)
@@ -795,12 +813,16 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
     mo = _DEPL_T5.search(text)
     if mo:
         delta = int(mo.group(1))
-        # Ligne BdD confirmee : tout T5 est un seul tapis, donc toutes les
-        # boites se deplacent du meme delta et la base visuelle est resynchronisee.
+        # Ligne BdD confirmee : les boites deja etablies sur T5 sont deplacees
+        # par la BdD. Une nouvelle arrivee T4->T5 reste en base stable d'entree
+        # jusqu'a sa premiere MAJ, sinon elle saute X entree -> BdD -> butee.
         for b in state.boxes_on_T5:
+            if b.t5_entry_aligned:
+                if state.t5_visual_offset_mm:
+                    b.t5_visual_x_pos = _t5_visual_base(b) + int(state.t5_visual_offset_mm)
+                continue
             b.x_pos += delta
-            if not b.t5_entry_aligned:
-                b.t5_visual_x_pos = b.x_pos
+            b.t5_visual_x_pos = b.x_pos
         _reset_t5_visual_offset(state, ctx, commit=False)
 
     # ── Mémorisation du code-barres cherché en BdD ──────────────────────────
@@ -918,14 +940,17 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
     if mo:
         length = float(mo.group(1).replace(',', '.'))
         id_b = int(mo.group(2))
-        if state.box_on_T3 is None:
+        if state.box_on_T4 is None and state.box_on_T3 is None:
             state.box_on_T3 = ctx.get('idb_to_box', {}).get(id_b)
-        if state.box_on_T3:
-            state.box_on_T3.id_b = id_b
+        if state.box_on_T4 is None and state.box_on_T3:
             if length > 0:
                 state.box_on_T3.length_mm = int(round(length))
             state.box_on_T4 = state.box_on_T3
             state.box_on_T3 = None
+        if state.box_on_T4:
+            state.box_on_T4.id_b = id_b
+            if length > 0:
+                state.box_on_T4.length_mm = int(round(length))
             ctx.setdefault('idb_to_box', {})[id_b] = state.box_on_T4
             _add_event(
                 state, line_num, 'info', 'TRANSFERT',

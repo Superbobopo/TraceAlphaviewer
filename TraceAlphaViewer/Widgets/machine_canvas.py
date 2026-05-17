@@ -83,6 +83,9 @@ T3_BOX_HEIGHT = 22
 T4_BOX_SCALE = 1.00
 T4_BOX_WIDTH_RATIO = 0.30
 T4_T5_TRANSFER_START_PT4 = T4_C6_FROM_BUTEE_MM
+T4_TASSEMMENT_MAX_PT4 = T4_PHYSICAL_MM + 450
+T4_LOADING_TOP_PT4 = 850
+T4_LOADING_C6_PT4 = 500
 # T5 : coordonnées machine (x diminue vers la droite / butée, augmente vers la gauche / Poubelle)
 T5_PHYSICAL_MM = 770
 T5_C9_FROM_BUTEE_MM = 310
@@ -327,6 +330,18 @@ def _t4_t5_transfer_bottom_y(st: MachineState) -> int:
     return int(T4_C6_Y + travel_px * progress)
 
 
+def _t4_loading_bottom_y(st: MachineState) -> int:
+    """Trajectoire visuelle continue du tassement T4 vers C6."""
+    top_y = L['T4'][1] + 18
+    span_pt4 = max(1, T4_LOADING_TOP_PT4 - T4_LOADING_C6_PT4)
+    progress = (T4_LOADING_TOP_PT4 - st.pT4) / span_pt4
+    progress = max(0.0, min(1.0, progress))
+    bottom_y = int(top_y + (T4_C6_Y - top_y) * progress)
+    if st.C6:
+        bottom_y = min(bottom_y, T4_C6_Y)
+    return bottom_y
+
+
 def _t5_entry_aligned_x(w_px: int) -> int:
     """Aligne l'entree T5 sur l'axe visuel central de T4."""
     t4_center_x = (L['T4'][0] + L['T4'][2]) // 2
@@ -358,7 +373,9 @@ def _t5_physical_scale() -> float:
 
 
 def _t5_c9_x() -> int:
-    return L['T5'][2] - int(T5_C9_FROM_BUTEE_MM * _t5_physical_scale())
+    # C9 est aligne visuellement sur l'entree T4->T5 pour faciliter la lecture.
+    # L'echelle physique T5 reste utilisee pour les boites.
+    return L['T4'][0]
 
 
 def _t5_render_x_pos(
@@ -375,13 +392,15 @@ def _t5_render_x_pos(
     return x_pos
 
 
-def _t5_is_initial_entry(box: BoxInfo, st: MachineState) -> bool:
-    return (
-        box.t5_entry_aligned
-        and not st.t5_visual_offset_mm
-        and not box.t5_visual_x_pos
-        and abs(int(box.x_pos or T5_ENTRY_X) - T5_ENTRY_X) <= 10
-    )
+def _t5_entry_visual_x(st: MachineState, box: BoxInfo, w_px: int) -> int:
+    base_x = _t5_entry_aligned_x(w_px)
+    visual_delta = int(st.t5_visual_offset_mm or 0)
+    if box.t5_visual_x_pos:
+        visual_delta += int(box.t5_visual_x_pos) - int(box.x_pos or T5_ENTRY_X)
+    if not visual_delta:
+        return base_x
+    x_px = base_x - int(visual_delta * _t5_physical_scale())
+    return max(L['T5'][0], min(L['T5'][2] - w_px, x_px))
 
 
 def _conn(cv: tk.Canvas, *pts: int) -> None:
@@ -661,14 +680,15 @@ class MachineCanvas(tk.Canvas):
             and st.fgBfinT4 == 1
             and 'TRANSFERT-T4/T5' in st.state_tT4_T5
         )
-        if st.box_on_T4 and (st.C6 or t4_t5_transfer or 0 < st.pT4 <= T4_MM + 50):
+        t4_loading_cycle = st.eT4 in (41, 42, 43, 46)
+        if st.box_on_T4 and (
+            st.C6
+            or t4_t5_transfer
+            or (t4_loading_cycle and 0 < st.pT4 <= T4_TASSEMMENT_MAX_PT4)
+            or 0 < st.pT4 <= T4_MM + 50
+        ):
             length_mm = st.box_on_T4.length_mm or st.LgBtT4
-            if st.C6:
-                bbox = _draw_box_v_to_y(
-                    cv, L['T4'], T4_C6_Y, T4_MM, st.box_on_T4, length_mm,
-                    T4_BOX_SCALE, T4_BOX_WIDTH_RATIO
-                )
-            elif t4_t5_transfer:
+            if t4_t5_transfer:
                 if st.pT4 <= 0:
                     bbox = None
                 else:
@@ -676,8 +696,18 @@ class MachineCanvas(tk.Canvas):
                         cv, L['T4'], _t4_t5_transfer_bottom_y(st), T4_MM,
                         st.box_on_T4, length_mm, T4_BOX_SCALE, T4_BOX_WIDTH_RATIO
                     )
+            elif t4_loading_cycle:
+                bbox = _draw_box_v_to_y(
+                    cv, L['T4'], _t4_loading_bottom_y(st), T4_MM,
+                    st.box_on_T4, length_mm, T4_BOX_SCALE, T4_BOX_WIDTH_RATIO
+                )
+            elif st.C6:
+                bbox = _draw_box_v_to_y(
+                    cv, L['T4'], T4_C6_Y, T4_MM, st.box_on_T4, length_mm,
+                    T4_BOX_SCALE, T4_BOX_WIDTH_RATIO
+                )
             else:
-                pos_from_top = T4_MM - st.pT4 if 0 < st.pT4 <= T4_MM + 50 else T4_MM - 60
+                pos_from_top = T4_MM - st.pT4 if st.pT4 > 0 else T4_MM - 60
                 bbox = _draw_box_v(
                     cv, L['T4'], pos_from_top, T4_MM, st.box_on_T4, length_mm,
                     T4_BOX_SCALE, T4_BOX_WIDTH_RATIO
@@ -697,8 +727,8 @@ class MachineCanvas(tk.Canvas):
 
         for box in st.boxes_on_T5:
             w_px, h_px = _t5_box_dims_px(box, t5, scale_t5)
-            if _t5_is_initial_entry(box, st):
-                x_px = _t5_entry_aligned_x(w_px)
+            if box.t5_entry_aligned:
+                x_px = _t5_entry_visual_x(st, box, w_px)
             else:
                 animated_x = _t5_render_x_pos(st, box, include_visual_offset=True)
                 x_px = t5[2] - int((animated_x - t5_origin) * scale_t5) - w_px

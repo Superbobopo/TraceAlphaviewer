@@ -45,6 +45,8 @@ _TRACE_T5_DEM_VIDAGE = re.compile(r'OMEGA:T5-DemVidageComplet', re.IGNORECASE)
 _TRACE_017 = re.compile(r'017-Avt:\s*boite coinc.ee sur C4 apr.s .* ejects', re.IGNORECASE)
 _TRACE_028 = re.compile(r'028-Avt:\s*d.faut communication carte moteurs', re.IGNORECASE)
 _TRACE_118 = re.compile(r'118-Vide T5 suite blocage poubelle', re.IGNORECASE)
+_UNKNOWN_CAMERA = re.compile(r'ALPHA-(?:INC|DET)|-?UNKNOW[N]?', re.IGNORECASE)
+_CAMERA_REFERENCE_EVENT = re.compile(r'\bCB[12]\b|T4->T5|Identification', re.IGNORECASE)
 
 
 def _frame_lines(frames: list[MachineState]) -> list[tuple[int, str, float, str]]:
@@ -244,7 +246,7 @@ def _build_missing_t5_creation_incidents(events: list[MachineEvent]) -> list[Dia
     incidents: list[DiagnosticIncident] = []
     creation_lines = [
         event.line_num for event in events
-        if event.kind == 'BOITE' and event.title.startswith('Creation T5')
+        if event.kind == 'BOITE' and event.title.startswith('T4->T5')
     ]
     for event in events:
         if event.kind != 'TRANSFERT' or not event.title.startswith('T4 vers T5'):
@@ -536,6 +538,63 @@ def _build_text_pattern_incidents(frames: list[MachineState]) -> list[Diagnostic
     return incidents
 
 
+def _build_unknown_camera_incident(events: list[MachineEvent]) -> list[DiagnosticIncident]:
+    candidate_events = [
+        event for event in events
+        if event.kind in {'IDENTIF', 'BOITE'}
+        and _CAMERA_REFERENCE_EVENT.search(f'{event.kind} {event.title} {event.detail}')
+    ]
+    unknown_events = [
+        event for event in candidate_events
+        if _UNKNOWN_CAMERA.search(f'{event.title} {event.detail}')
+    ]
+    if not unknown_events:
+        return []
+
+    total = max(1, len({event.line_num for event in candidate_events}))
+    unique_unknown: dict[int, MachineEvent] = {}
+    for event in unknown_events:
+        unique_unknown.setdefault(event.line_num, event)
+    group = sorted(unique_unknown.values(), key=lambda event: event.line_num)
+    count = len(group)
+    ratio = count / total
+    if count < 10 and not (count >= 3 and ratio > 0.05):
+        return []
+
+    first = group[0]
+    last = group[-1]
+    return [DiagnosticIncident(
+        severity='warning',
+        title='Camera - Taux de lectures inconnues eleve',
+        belt='IDENTIF',
+        code='UNKNOWN',
+        first_line=first.line_num,
+        last_line=last.line_num,
+        start_time=first.timestamp,
+        end_time=last.timestamp,
+        start_time_str=first.timestamp_str,
+        end_time_str=last.timestamp_str,
+        count=count,
+        summary=(
+            f'{count} lecture(s) inconnue(s) sur {total} evenement(s) '
+            f'd identification/boite ({ratio:.1%}).'
+        ),
+        symptom='Plusieurs boites restent en reference inconnue apres lecture camera/datamatrix.',
+        probable_causes=[
+            'Datamatrix non lu ou absent sur plusieurs boites.',
+            'Camera, eclairage ou mise au point a controler.',
+            'Boites mal orientees ou trop rapides pendant la lecture.',
+        ],
+        checks=[
+            'Filtrer Unknown dans l onglet References.',
+            'Verifier les lignes CB1/CB2 autour des premieres occurrences.',
+            'Comparer avec les images/lectures camera si disponibles.',
+        ],
+        confidence='possible',
+        event_lines=[event.line_num for event in group[:12]],
+    )]
+
+
 def build_diagnostics(
     frames: list[MachineState],
     events: list[MachineEvent],
@@ -549,6 +608,7 @@ def build_diagnostics(
     incidents.extend(_build_t2_blocked_before_ea_incidents(frames))
     incidents.extend(_build_t4_init_loop_incidents(frames, events))
     incidents.extend(_build_text_pattern_incidents(frames))
+    incidents.extend(_build_unknown_camera_incident(events))
 
     severity_order = {'error': 0, 'warning': 1, 'info': 2}
     return sorted(

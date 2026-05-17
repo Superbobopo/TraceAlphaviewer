@@ -16,6 +16,7 @@ Layout (fidèle au PNG Layout_app) :
 from __future__ import annotations
 
 import bisect
+import copy
 import math
 import os
 import threading
@@ -25,15 +26,31 @@ import customtkinter as ctk
 import tkinter as tk
 
 from Models.diagnostic import DiagnosticIncident, build_diagnostics
+from Models.reference_index import ReferenceRecord, build_reference_records
 from Models.state import MachineEvent, MachineState
 from Views.BaseView import BaseView
 from Widgets.diagnostic_panel import DiagnosticPanel
 from Widgets.event_panel import EventPanel
 from Widgets.machine_canvas import MachineCanvas, CANVAS_W, CANVAS_H
+from Widgets.reference_panel import ReferencePanel
 from Widgets.state_table import StateTable
 from Widgets.trace_panel import TracePanel
 
 PLAY_DELAY_DEFAULT = 300   # ms entre frames en lecture auto
+PLAY_INTERP_MAX_STEPS = 5
+T5_DISCRETE_MARKERS = (
+    'MAJ (BUTEE-T5)',
+    'MAJ (APRES-MESURE-LARG)',
+    'place toutes les boites',
+    'Creation de la boite',
+    'Création de la boite',
+    'AjoutBtT5',
+    'ALPHA:T5-LIST-PACK',
+    'T5-DEL-PACK',
+    'Suppr. la boite IdA',
+    'supp. boite T5',
+    'la boite est rendu (physiquement) sur T5',
+)
 SPEED_MIN = 0.1
 SPEED_MAX = 10.0
 SPEED_SLIDER_MIN = math.log2(SPEED_MIN)
@@ -60,6 +77,7 @@ class TraceView(BaseView):
         self._on_close    = on_close
         self._events      = self._collect_events(frames)
         self._diagnostics = build_diagnostics(frames, self._events)
+        self._references  = build_reference_records(frames, self._events)
         self._error_events = [e for e in self._events if e.severity == 'error']
         self._idx         = 0
         self._playing     = False
@@ -333,6 +351,7 @@ class TraceView(BaseView):
             tabs.pack(fill='both', expand=True)
             state_tab = tabs.add('Capteurs & Tapis')
             diag_tab = tabs.add('Diagnostic')
+            ref_tab = tabs.add('References')
             error_tab = tabs.add('Erreur')
             events_tab = tabs.add('Evenements')
             self._state_table = StateTable(state_tab)
@@ -342,6 +361,11 @@ class TraceView(BaseView):
                 on_incident_click=self._on_incident_click,
             )
             self._diagnostic_panel.pack(fill='both', expand=True, padx=0, pady=0)
+            self._reference_panel = ReferencePanel(
+                ref_tab, self._references,
+                on_reference_click=self._on_reference_click,
+            )
+            self._reference_panel.pack(fill='both', expand=True, padx=0, pady=0)
             self._error_panel = EventPanel(
                 error_tab, self._error_events,
                 on_event_click=self._on_event_click,
@@ -369,7 +393,7 @@ class TraceView(BaseView):
         content.pack(fill='both', expand=True)
 
         self._analysis_fallback_tab_frames = {}
-        for name in ('Capteurs & Tapis', 'Diagnostic', 'Erreur', 'Evenements'):
+        for name in ('Capteurs & Tapis', 'Diagnostic', 'References', 'Erreur', 'Evenements'):
             frame = ctk.CTkFrame(content, fg_color='#12121f', corner_radius=0)
             self._analysis_fallback_tab_frames[name] = frame
             ctk.CTkButton(
@@ -386,6 +410,11 @@ class TraceView(BaseView):
             on_incident_click=self._on_incident_click,
         )
         self._diagnostic_panel.pack(fill='both', expand=True)
+        self._reference_panel = ReferencePanel(
+            self._analysis_fallback_tab_frames['References'], self._references,
+            on_reference_click=self._on_reference_click,
+        )
+        self._reference_panel.pack(fill='both', expand=True)
         self._error_panel = EventPanel(
             self._analysis_fallback_tab_frames['Erreur'], self._error_events,
             on_event_click=self._on_event_click,
@@ -483,6 +512,7 @@ class TraceView(BaseView):
             end_line = start_line
         self._trace_panel.highlight_lines(start_line, end_line)
         self._event_panel.highlight_for_line(start_line)
+        self._reference_panel.highlight_for_line(start_line)
         if hasattr(self, '_error_panel'):
             self._error_panel.highlight_for_line(start_line)
         self._diagnostic_panel.highlight_for_line(start_line)
@@ -512,6 +542,14 @@ class TraceView(BaseView):
     def _on_incident_click(self, incident: DiagnosticIncident) -> None:
         """Callback clic sur un incident → navigation vers la première ligne utile."""
         idx = self._frame_for_file_line(incident.first_line)
+        self._stop_playback()
+        self._reset_error_reference()
+        self._go_to(idx)
+
+    def _on_reference_click(self, record: ReferenceRecord) -> None:
+        """Callback clic sur une reference -> navigation vers sa premiere apparition."""
+        line = record.first_line or record.robot_line or record.last_line
+        idx = self._frame_for_file_line(line)
         self._stop_playback()
         self._reset_error_reference()
         self._go_to(idx)
@@ -585,6 +623,123 @@ class TraceView(BaseView):
         self._set_speed(self._speed_value * 2)
 
     # ── Lecture automatique ───────────────────────────────────────────────────
+    def _box_key(self, box) -> Optional[tuple[str, object]]:
+        if box is None:
+            return None
+        if box.id_alpha:
+            return ('id_alpha', box.id_alpha)
+        if box.id_b:
+            return ('id_b', box.id_b)
+        if box.barcode:
+            return ('barcode', box.barcode)
+        if box.source_ref:
+            return ('source_ref', box.source_ref)
+        return None
+
+    def _same_box(self, left, right) -> bool:
+        key = self._box_key(left)
+        return key is not None and key == self._box_key(right)
+
+    def _lerp_number(self, start, end, ratio: float):
+        value = float(start) + (float(end) - float(start)) * ratio
+        return int(round(value)) if isinstance(start, int) and isinstance(end, int) else value
+
+    def _raw_texts(self, st: MachineState):
+        for raw in st.raw_lines:
+            if isinstance(raw, tuple) and len(raw) >= 2:
+                yield str(raw[1])
+            else:
+                yield str(raw)
+
+    def _has_t5_discrete_line(self, st: MachineState) -> bool:
+        return any(
+            marker in text
+            for text in self._raw_texts(st)
+            for marker in T5_DISCRETE_MARKERS
+        )
+
+    def _t5_transition_is_continuous(self, start: MachineState, end: MachineState) -> bool:
+        if self._has_t5_discrete_line(end):
+            return False
+        start_boxes = {
+            self._box_key(box): box
+            for box in start.boxes_on_T5
+            if self._box_key(box) is not None
+        }
+        end_boxes = {
+            self._box_key(box): box
+            for box in end.boxes_on_T5
+            if self._box_key(box) is not None
+        }
+        if set(start_boxes) != set(end_boxes):
+            return False
+        return all(
+            start_boxes[key].t5_entry_aligned == end_boxes[key].t5_entry_aligned
+            for key in start_boxes
+        )
+
+    def _interpolated_state(
+        self,
+        start: MachineState,
+        end: MachineState,
+        ratio: float,
+    ) -> MachineState:
+        st = end.deep_copy()
+        t5_continuous = self._t5_transition_is_continuous(start, end)
+        for attr in ('pT3', 'pT5'):
+            setattr(st, attr, self._lerp_number(getattr(start, attr), getattr(end, attr), ratio))
+        if t5_continuous:
+            st.t5_visual_offset_mm = self._lerp_number(
+                start.t5_visual_offset_mm,
+                end.t5_visual_offset_mm,
+                ratio,
+            )
+        else:
+            st.t5_visual_offset_mm = start.t5_visual_offset_mm
+            st.t5_x_butee = start.t5_x_butee
+            st.t5_active_id_alpha = start.t5_active_id_alpha
+            st.boxes_on_T5 = [copy.copy(box) for box in start.boxes_on_T5]
+        if self._same_box(start.box_on_T4, end.box_on_T4):
+            st.pT4 = self._lerp_number(start.pT4, end.pT4, ratio)
+            st.LgBtT4 = self._lerp_number(start.LgBtT4, end.LgBtT4, ratio)
+        if t5_continuous:
+            previous_t5 = {
+                self._box_key(box): box
+                for box in start.boxes_on_T5
+                if self._box_key(box) is not None
+            }
+            for box in st.boxes_on_T5:
+                prev_box = previous_t5.get(self._box_key(box))
+                if prev_box is None:
+                    continue
+                box.x_pos = self._lerp_number(prev_box.x_pos, box.x_pos, ratio)
+                box.t5_visual_x_pos = self._lerp_number(
+                    prev_box.t5_visual_x_pos,
+                    box.t5_visual_x_pos,
+                    ratio,
+                )
+        return st
+
+    def _interp_step_count(self) -> int:
+        return max(1, min(PLAY_INTERP_MAX_STEPS, self._play_delay // 50))
+
+    def _animate_to_frame(self, next_idx: int, step: int, steps: int, delay: int) -> None:
+        if not self._playing:
+            return
+        if step <= steps:
+            ratio = step / (steps + 1)
+            self._canvas.update_state(
+                self._interpolated_state(self._frames[self._idx], self._frames[next_idx], ratio)
+            )
+            self._play_job = self.after(
+                delay,
+                lambda: self._animate_to_frame(next_idx, step + 1, steps, delay),
+            )
+            return
+        self._reset_error_reference()
+        self._go_to(next_idx)
+        self._play_job = self.after(delay, self._schedule_next)
+
     def _toggle_play(self) -> None:
         if self._playing:
             self._stop_playback()
@@ -608,9 +763,9 @@ class TraceView(BaseView):
             return
         if self._idx >= len(self._frames) - 1:
             self._stop_playback(); return
-        self._reset_error_reference()
-        self._go_to(self._idx + 1)
-        self._play_job = self.after(self._play_delay, self._schedule_next)
+        steps = self._interp_step_count()
+        delay = max(10, self._play_delay // (steps + 1))
+        self._animate_to_frame(self._idx + 1, 1, steps, delay)
 
     # ── Fermeture ─────────────────────────────────────────────────────────────
     def _close(self) -> None:
