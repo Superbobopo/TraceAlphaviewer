@@ -1,76 +1,75 @@
 # TraceAlphaViewer
 
-Local Python/customtkinter viewer for Alpha machine `.old` traces.
+TraceAlphaViewer est un viewer local Python/customtkinter pour traces Alpha `.old`.
 
-It parses trace lines into `MachineState` frames, then displays:
+Il parse les lignes de trace en frames `MachineState`, puis affiche :
 
-- the machine layout and conveyors
-- sensors and belt states
-- boxes moving through EA, T3, T4, and T5
-- events and diagnostics
-- the raw trace with clickable navigation
+- le schema machine et les convoyeurs ;
+- les capteurs et les etats tapis ;
+- les boites qui circulent entre EA, T3, T4 et T5 ;
+- les evenements et diagnostics ;
+- la trace brute avec navigation cliquable.
 
-## Current Status
+## Etat actuel
 
-This repository should track the latest usable version on `main`.
+Le depot suit la derniere version utilisable sur `main`.
 
-Current UI/runtime behavior:
+Comportement UI/runtime actuel :
 
-- startup loads traces directly in full precision mode (`min_dt=0.0`)
-- the welcome screen has no quality selector
-- T4 to T5 transfer rendering is aligned under the visual axis of T4 until a stable T5 `X` arrives
+- le demarrage charge les traces directement en mode precision complete (`min_dt=0.0`) ;
+- l'ecran d'accueil n'a plus de selecteur de qualite ;
+- le rendu du transfert T4 vers T5 reste aligne sous l'axe visuel de T4 jusqu'a l'arrivee d'un `X` T5 stable ;
+- les traces `.old` et gros `.txt` restent locales et ne doivent pas etre poussees sur GitHub.
 
-## Requirements
+## Prerequis
 
 - Windows
 - Python 3.13+
 - `customtkinter`
 
-Tkinter is used from the standard Python installation.
+Tkinter est fourni par l'installation Python standard.
 
-## Run
+## Lancer l'application
 
-From the repository root:
+Depuis la racine du depot :
 
 ```powershell
 python TraceAlphaViewer\Main.py
 ```
 
-## Quick Validation
+## Validation rapide
 
-Compile the main modules:
+Compiler les modules principaux :
 
 ```powershell
 python -m py_compile TraceAlphaViewer\Main.py TraceAlphaViewer\Models\state.py TraceAlphaViewer\Parser\trace_parser.py TraceAlphaViewer\Views\traceView.py TraceAlphaViewer\Widgets\machine_canvas.py
 ```
 
-Reference trace for visual checks:
+Points de controle visuel utiles avec les traces locales :
 
-- `TraceAlphaViewer/TracAlpha1_001.old`
+- autour de `09:03:36` a `09:03:39` : le transfert T4 vers T5 doit etre aligne sous T4 ;
+- autour de `09:03:41` : `MAJ (BUTEE-T5) ... X:942` doit placer la boite cote butee ;
+- autour de `09:03:45` : les boites `178372` et `178373` doivent etre separees visuellement sur T5.
 
-Useful visual checkpoints:
+## Raccourcis clavier
 
-- around `09:03:36` to `09:03:39`: T4 to T5 transfer should appear aligned under T4
-- around `09:03:41`: `MAJ (BUTEE-T5) ... X:942` should place the box on the buttee side
-- around `09:03:45`: boxes `178372` and `178373` should be separated visually on T5
+- `Left` / `Right` : frame precedente / suivante
+- `Space` : lecture / pause
+- `Home` / `End` : premiere / derniere frame
+- `e` / `E` : incident ou erreur suivant / precedent
 
-## Keyboard Shortcuts
+## Fichiers importants
 
-- `Left` / `Right`: previous / next frame
-- `Space`: play / pause
-- `Home` / `End`: first / last frame
-- `e` / `E`: next / previous incident or error
+- `TraceAlphaViewer/Main.py` : point d'entree de l'application
+- `TraceAlphaViewer/Views/traceView.py` : viewer principal et controles
+- `TraceAlphaViewer/Widgets/machine_canvas.py` : dessin machine et logique de placement
+- `TraceAlphaViewer/Parser/trace_parser.py` : parser et cycle des boites
+- `TraceAlphaViewer/Models/reference_index.py` : index references/boites
+- `TraceAlphaViewer/Widgets/reference_panel.py` : onglet References
+- `AGENTS.md` : decisions techniques, regles de contribution et points de validation
 
-## Important Files
+## Notes
 
-- `TraceAlphaViewer/Main.py`: app entrypoint
-- `TraceAlphaViewer/Views/traceView.py`: main trace viewer and controls
-- `TraceAlphaViewer/Widgets/machine_canvas.py`: machine drawing and visual placement logic
-- `TraceAlphaViewer/Parser/trace_parser.py`: parser and box lifecycle
-- `AGENTS.md`: technical decisions and validation notes
-
-## Limits / Notes
-
-- The project is currently focused on local inspection of Alpha traces.
-- T5 business position uses trace `x_pos`, not motor encoder `pT5`.
-- For implementation details and parser/rendering decisions, see `AGENTS.md`.
+- Le projet est centre sur l'inspection locale des traces Alpha.
+- La position metier T5 utilise le `x_pos` trace, pas l'encodeur moteur `pT5`.
+- Pour les details d'implementation et les decisions parser/rendu, voir `AGENTS.md`.

@@ -1,157 +1,161 @@
-# TraceAlphaViewer Agent Notes
+# Notes agent TraceAlphaViewer
 
-## Project Snapshot
+## Vue du projet
 
-TraceAlphaViewer is a local Python/customtkinter viewer for Alpha machine `.old` traces. It parses trace lines into `MachineState` frames, then displays the machine layout, sensors, boxes, events, diagnostics, and raw trace navigation.
+TraceAlphaViewer est un viewer local Python/customtkinter pour traces Alpha `.old`.
+Il parse les lignes de trace en frames `MachineState`, puis affiche le schema machine, les capteurs, les boites, les evenements, les diagnostics et la navigation dans la trace brute.
 
-Run from the repository root:
+Ce fichier est la memoire projet versionnee. Les regles techniques partagees doivent rester ici, pas dans une memoire personnelle Codex.
+
+## Langue et documentation
+
+- `README.md` et `AGENTS.md` doivent rester en francais.
+- Les nouveaux commentaires de code doivent etre en francais.
+- Ne pas traduire les identifiants techniques, noms de fichiers, constantes, classes, fonctions ou libelles issus des traces.
+- Garder les commentaires courts et utiles ; ne pas commenter ce que le code dit deja clairement.
+
+## Lancement et commandes
+
+Depuis la racine du depot :
 
 ```powershell
 python TraceAlphaViewer\Main.py
-python -m py_compile TraceAlphaViewer\Main.py TraceAlphaViewer\Models\state.py TraceAlphaViewer\Parser\trace_parser.py TraceAlphaViewer\Views\traceView.py TraceAlphaViewer\Widgets\machine_canvas.py
 ```
 
-Git workflow target:
-
-- `main` should represent the latest usable version of the project.
-- Preserve older states through normal commit history and version tags, not archive branches by default.
-- Use a short-lived branch only for risky work, then merge back into `main`.
-- Do not push trace files to GitHub: no `*.old`, no large trace `.txt` files.
-- Before every commit, inspect `git status --short` and the staged file list. If traces are staged, unstage them before committing.
-- Keep trace files local for validation unless the user explicitly asks to version a specific small sample.
-
-## Important Files
-
-- `TraceAlphaViewer/Main.py`: customtkinter app entrypoint.
-- `TraceAlphaViewer/Views/traceView.py`: main trace viewer, player controls, tabs, navigation, callbacks.
-- `TraceAlphaViewer/Widgets/machine_canvas.py`: machine schematic drawing and all visual placement/scale logic.
-- `TraceAlphaViewer/Parser/trace_parser.py`: `.old` parser, event creation, box lifecycle, T5 list parsing.
-- `TraceAlphaViewer/Models/state.py`: `MachineState`, `BoxInfo`, `MachineEvent`.
-- `TraceAlphaViewer/Models/diagnostic.py`: diagnostic incident extraction.
-- `TraceAlphaViewer/Models/diagnostic_knowledge.py`: terrain knowledge base used to explain recurring symptoms.
-- `TraceAlphaViewer/Models/reference_index.py`: reference/box index used by the References tab.
-- `TraceAlphaViewer/Widgets/reference_panel.py`: reference/box list and navigation to first occurrence.
-- Local `.old` and large `.txt` traces are validation inputs only. They must stay out of GitHub commits.
-
-## Current T5 Decisions
-
-T5 rendering has been tuned several times. Preserve these choices unless the user explicitly asks to recalibrate:
-
-- T5 position mapping uses trace `x_pos`, not motor encoder `pT5`.
-- `T5_X_BUTEE = 942`, right side near height measurement/buttee.
-- `T5_X_MAX = 1750`, visual dezoom of the useful T5 range.
-- `T5_BOX_DIM_SCALE = 0.75`, box visual scale independent from T5 position scale.
-- `_T5_ENTRY_X = 1060` in `trace_parser.py`, used only as the initial visual entry point when a box is reported physically on T5 before real `X` updates arrive.
-- Do not initialize a T5 box with `abs(pT5)`: `pT5` is a motor encoder, not a business `X` coordinate.
-- The yellow dashed `pT5` line was removed from the canvas because it confused the box path.
-- The `Mesure H.`/`LzB` point is drawn above T5, outside the belt, so compressed boxes do not cover it.
-
-T5 box dimensions:
-
-- C9/`width_mm` is drawn on the horizontal axis of T5.
-- C6/`length_mm` is drawn on the vertical thickness of T5.
-- If the C6 length does not fit vertically, reduce the whole box proportionally to keep the ratio.
-- `t5_footprint_mm` from `ALPHA:T5-LIST-PACK` is only a fallback when C6/C9 dimensions are missing, not the main rendered size.
-
-Useful trace validation points:
-
-- Around `09:03:36` to `09:03:39`: T4 to T5 transfer should appear aligned with the T4 drop axis.
-- Around `09:03:41`: `MAJ (BUTEE-T5) ... X:942` should place the box at the buttee side.
-- Around `09:03:45`: boxes `178372` and `178373` should be positioned by `X=1419` and `X=1323`, separated visually.
-
-## UI Notes
-
-Player buttons intentionally keep compact icons:
-
-- `|<` / `>|`: first/last frame, displayed with triangle glyphs in the UI.
-- `<` / `>`: previous/next frame, displayed with triangle glyphs in the UI.
-- `Play` button uses `▶` / `⏸`.
-- `Err<` / `Err>`: previous/next error event, displayed with triangle glyphs in the UI.
-- `<<` and `>>` near the speed slider slow down/speed up playback and update the slider.
-- Speed slider is logarithmic internally for better low-speed adjustment.
-- Details resize handle sits below the player bar, not above it.
-- Startup loading now always uses `Precision trace` behavior (`min_dt=0.0`); there is no quality selector on the welcome screen anymore.
-
-Bottom tabs are `Diagnostic`, `Erreur`, `Evenements`, `Trace`. The `Erreur` tab is an `EventPanel` filtered to `severity == "error"`.
-
-Keyboard shortcuts in `traceView.py`:
-
-- Left/Right: previous/next frame.
-- Space: play/pause.
-- Home/End: beginning/end.
-- `e` / `E`: next/previous incident/error.
-
-## Parser Notes
-
-Box identity must follow the Alpha lifecycle, not just the CIP/barcode:
-
-- `box_in_EA`: physical box on C4 / CB1.
-- `box_on_T3`: physical box on T3 / C5 / CB2.
-- `box_on_T4`: physical box on T4 / C6.
-- `boxes_on_T5`: T5/BdD boxes controlled by `IdA`.
-- `BoxInfo.id_b` is `Nboite` / `idB`, the pre-T5 flow identity.
-- `BoxInfo.id_alpha` is the T5/BdD identity used by robot delete lines.
-- `BoxInfo.source_ref` preserves the initial `ALPHA-INC-xxx` reference when CB2 later identifies the real product.
-- Matching priority is `id_alpha`, then `id_b`, then barcode only if it is unique. Do not delete/update every box with the same CIP.
-- `CB1: ajout Hist_LectCB` is an EA/C4 read and must only update `box_in_EA`.
-- `CB2: ajout Hist_LectCB` is a T3/C5 read and must only update `box_on_T3`.
-- `idCB2: Identif. sur le lecteur1 Ok ... (Nboite=X)` reuses a CB1 read, but `idB=X` is assigned only when that box is already on T3.
-- Never assign `Nboite/idB` to an old cached CB2 box if `box_on_T3` is empty.
-- Canvas rendering is stricter than parser state: EA draws `box_in_EA`; T3 draws only `box_on_T3` when `C5=1`; T4 draws `box_on_T4` when `C6=1` or a T4 position is active.
-- On T3, when `C5=1`, draw the box with its leading/right edge aligned on `C5`; center it vertically in T3.
-- On T4, when `C6=1`, draw the box with its leading/bottom edge aligned on `C6`; the box extends upward because C6 is the lower/end sensor.
-- During `WAIT-FIN-TRANSFERT-T4/T5`, once `C6=0`, keep the T4 box moving down toward T5; do not interpret decreasing `pT4` as a visual move back up T4.
-- Freshly transferred T5 boxes use `t5_entry_aligned=True` and are drawn under the visual center axis of T4 until `BUTEE-T5`, `APRES-MESURE-LARG`, or `T5-LIST-PACK` provides a stable T5 `X`.
-- T3/T4 use compact visual scales distinct from the business tracking coordinates, so medication boxes do not hide belt state labels.
-- T3 state text is drawn below the belt, not inside the belt.
-- T4 box height is based on measured length (`box.length_mm` / `LgBtT4`) and the width must stay smaller than the height so a C6 box reads visually vertical; show `idB:X` next to it.
-- T5 boxes expose `IdA`, `idB`, barcode, and dimensions on canvas hover.
-
-Reference flow from `TracAlpha1_001.old`:
-
-- `idCB1 --> Ref:ALPHA-INC-001` creates/updates the EA box.
-- `le transfert (EA->T3) est termine` moves it to `box_on_T3`.
-- `idCB2 --> Ref:3400937732284` replaces the visible reference on T3 while keeping `source_ref=ALPHA-INC-001`.
-- `idCB2: (Nboite= 1)` sets `id_b=1`.
-- `transfert T3->T4 termine ... idB=1` moves the same box to `box_on_T4`.
-- `photoCamT5 'AjoutBtT5.idA178370.idB1'` links `id_b=1` to `id_alpha=178370`.
-- `T5-DEL-PACK@Ok@178370` removes only `IdA=178370`.
-
-Important T5 trace inputs:
-
-- `MAJ (BUTEE-T5) ... X:942`: box against buttee.
-- `MAJ (APRES-MESURE-LARG) ... nvlle lxH:WxH [xL] X:N`: measured C9 width/height and C6 length with real T5 `X`.
-- `ALPHA:T5-LIST-PACK`: robot-valid box list. It includes product dimensions and goulotte footprint `X990x width height`.
-- `Deplace toutes les boites ... sur N mm`: global T5 box shift.
-
-Avoid matching by barcode only when possible: repeated products often share the same barcode. Prefer `id_alpha`/`id_b` when available.
-
-## Editing Guidelines
-
-- Keep edits scoped. The app is small and mostly procedural; prefer local helpers over broad refactors.
-- Use ASCII for new comments/docs unless there is a strong reason not to.
-- Be careful with existing file encoding: some comments display mojibake. Patch functional lines when comment matching fails.
-- Do not reintroduce visual `WAIT-COND` noise on the machine canvas; belt states already appear in the right-side state table.
-- For manual changes, use `apply_patch`.
-
-## Validation Checklist
-
-Run compile after code changes:
+Compilation minimale apres modification de code :
 
 ```powershell
 python -m py_compile TraceAlphaViewer\Main.py TraceAlphaViewer\Models\state.py TraceAlphaViewer\Parser\trace_parser.py TraceAlphaViewer\Views\traceView.py TraceAlphaViewer\Widgets\machine_canvas.py
 ```
 
-For documentation/release hygiene:
+Pour explorer rapidement :
 
-- Keep `README.md` up to date for humans cloning the repository from GitHub.
-- Keep `AGENTS.md` focused on technical decisions, validation points, and implementation constraints.
-- When a stable milestone is reached, prefer creating a Git tag (for example `v0.1.0`) instead of freezing old code on `main`.
+```powershell
+rg -n "motif" TraceAlphaViewer\Parser TraceAlphaViewer\Widgets TraceAlphaViewer\Models TraceAlphaViewer\Views
+rg --files
+```
 
-For visual work, inspect these areas in the viewer:
+## Regles Git
 
-- T5 buttee/height measurement side.
-- C9 alignment versus actual activation state.
-- T4 to T5 transfer alignment.
-- T5 box spacing around `09:03:45`.
-- Player controls remain readable and not clipped.
+- `main` doit representer la derniere version utilisable du projet.
+- Conserver les anciens etats par l'historique Git normal et les tags, pas par des branches d'archive.
+- Utiliser une branche courte seulement pour un travail risque, puis revenir sur `main`.
+- Ne pas pousser les fichiers de traces sur GitHub : pas de `*.old`, pas de gros `.txt` de trace.
+- Avant chaque commit, verifier `git status --short` et la liste des fichiers indexes.
+- Si des traces sont indexees, les retirer avant de committer.
+- Les traces restent locales pour validation, sauf demande explicite de versionner un petit echantillon precis.
+
+## Fichiers importants
+
+- `TraceAlphaViewer/Main.py` : point d'entree customtkinter.
+- `TraceAlphaViewer/Views/traceView.py` : viewer principal, navigation, player et callbacks.
+- `TraceAlphaViewer/Widgets/machine_canvas.py` : dessin machine et logique de placement/echelle.
+- `TraceAlphaViewer/Widgets/reference_panel.py` : liste des references/boites et navigation vers leur premiere apparition.
+- `TraceAlphaViewer/Widgets/state_table.py` : etats tapis, capteurs et codes firmware.
+- `TraceAlphaViewer/Parser/trace_parser.py` : parser `.old`, evenements, cycle des boites, parsing T5.
+- `TraceAlphaViewer/Models/state.py` : `MachineState`, `BoxInfo`, `MachineEvent`.
+- `TraceAlphaViewer/Models/diagnostic.py` : extraction des incidents.
+- `TraceAlphaViewer/Models/diagnostic_knowledge.py` : base de connaissance terrain.
+- `TraceAlphaViewer/Models/reference_index.py` : index references/boites utilise par l'onglet References.
+
+## Regles de codage
+
+- Lire le code existant avant de modifier ; ne pas supposer les conventions.
+- Garder les changements scopes au bug ou a la fonctionnalite demandee.
+- Utiliser `apply_patch` pour les editions manuelles.
+- Ne jamais annuler des changements utilisateur non lies.
+- Ne pas faire de refactor large pendant une correction trace/rendu.
+- Pour les donnees structurees de trace, preferer regex/helpers dedies plutot que du parsing fragile par positions ad hoc.
+- Apres une correction T5, valider par script sur frames en plus du controle visuel.
+- Ne jamais afficher de secrets, tokens, cles, fichiers d'authentification ou contenu prive hors projet.
+- Pour une trace longue ou un document metier, relire les lignes sources ciblees avant de conclure.
+- Si un bug revient, renforcer l'invariant dans ce fichier au lieu de refaire une correction fragile.
+- Les fleches tapis utilisent les couleurs communes actif/repos/erreur ; ne pas reutiliser les couleurs capteurs pour elles.
+
+## Invariants parser
+
+- L'identite boite suit le cycle Alpha, pas seulement le CIP/barcode.
+- Priorite de matching : `id_alpha`, puis `id_b`, puis barcode uniquement si unique.
+- Ne jamais mettre a jour ou supprimer toutes les boites qui partagent le meme barcode.
+- `box_in_EA` represente la boite sur C4 / CB1.
+- `box_on_T3` represente la boite sur T3 / C5 / CB2.
+- `box_on_T4` represente la boite sur T4 / C6.
+- `boxes_on_T5` represente les boites T5/BdD controlees par `IdA`.
+- `BoxInfo.id_b` est l'identite pre-T5 (`Nboite` / `idB`).
+- `BoxInfo.id_alpha` est l'identite T5/BdD utilisee par les lignes robot.
+- `BoxInfo.source_ref` conserve la reference initiale `ALPHA-INC-xxx` quand CB2 identifie ensuite le vrai produit.
+- `CB1: ajout Hist_LectCB` concerne EA/C4 uniquement.
+- `CB2: ajout Hist_LectCB` concerne T3/C5 uniquement.
+- `idCB2: Identif. sur le lecteur1 Ok ... (Nboite=X)` assigne `idB=X` seulement a la boite deja sur T3.
+- Ne jamais assigner un `Nboite/idB` a une ancienne boite CB2 cachee si `box_on_T3` est vide.
+- `ALPHA:T5-LIST-PACK` est une source fiable de positions multi-boites T5.
+- `ALPHA:T5-LIST-PACK` peut utiliser `<Dc2>` ou le separateur reel `chr(182)`.
+- Une boite issue de `ALPHA:T5-LIST-PACK` a une position robot stable fiable.
+
+## Regles de rendu T5
+
+- `pT5` est un encodeur moteur, jamais une coordonnee absolue de boite.
+- `pT5` peut seulement fournir un offset visuel temporaire entre deux positions stables.
+- Les positions T5 stables viennent des lignes `MAJ`, de `ALPHA:T5-LIST-PACK`, ou des deplacements BdD confirmes.
+- `BoxInfo.x_pos` est la position stable Alpha ; `BoxInfo.t5_visual_x_pos` est seulement la base visuelle continue.
+- Ne pas changer les rectangles canvas `L['T4']` et `L['T5']` pour calibrer les tapis.
+- Calibrage physique T4 : longueur `500 mm`, C6 a `436 mm` depuis la butee/debut T4.
+- Calibrage physique T5 : longueur `770 mm`, C9 a `310 mm` depuis la butee T5.
+- Conserver les calibrages T5 metier sauf demande explicite : `T5_X_BUTEE = 942`, `T5_X_MAX = 1750`, `T5_BOX_DIM_SCALE = 0.75`, `_T5_ENTRY_X = 1060`.
+- `T5_X_BUTEE` correspond au cote butee / mesure hauteur, a droite du tapis.
+- C9 est l'entree T4 vers T5 ; il est aligne visuellement sur le bord gauche de T4, sans changer l'echelle physique T5.
+- Certaines traces utilisent de grands `X` Alpha pour T5 : les normaliser par distance a la butee observee, jamais avec un clamp qui transforme `X > butee` en butee.
+- Une suppression T5 par le robot signifie normalement que la boite a ete prise physiquement ; la classer en evenement `info`, pas en erreur.
+- `BoxInfo.t5_after_c9=True` est un etat de cycle/diagnostic, pas une contrainte geometrique.
+- Les boites T5 suivent toutes le meme tapis : tout mouvement signe de T5 deplace le groupe, y compris les boites deja passees par C9.
+- Le rendu doit conserver les positions relatives issues de `x_pos`, `t5_visual_x_pos`, `ALPHA:T5-LIST-PACK` et des deplacements BdD confirmes.
+- Avant tout reset de `t5_visual_offset_mm`, committer l'offset courant dans `t5_visual_x_pos`.
+- Exception : une ligne BdD `Deplace toutes les boites ...` resynchronise seulement les boites deja etablies sur T5 ; une nouvelle boite `t5_entry_aligned=True` attend sa premiere `MAJ` stable.
+- Ne pas ajouter de clamp final sur C9 ou sur la butee : les dimensions physiques et les positions Alpha doivent porter le rendu.
+- `MAJ (BUTEE-T5)` peut remettre `t5_after_c9=False` seulement pour la meme boite active revenue en cycle butee.
+- `MAJ (APRES-MESURE-LARG)` recale toujours `x_pos` et `t5_visual_x_pos` sur le `X` trace de la boite mesuree, puis marque cette boite `t5_after_c9=True`.
+- Une activation C9 de la boite active marque cette boite `t5_after_c9=True`.
+- Une nouvelle arrivee T4->T5 demarre `t5_after_c9=False` et `t5_entry_aligned=True` jusqu'a position stable.
+- Une boite `t5_entry_aligned=True` reste sous l'axe T4 tant qu'aucun offset visuel T5 n'existe ; si `pT5` fournit un offset, elle peut suivre ce mouvement sans changer son `x_pos` stable.
+- L'interpolation de lecture est autorisee, mais jamais a travers les evenements T5 discrets (`MAJ`, `Deplace toutes`, `AjoutBtT5`, suppression robot, `ALPHA:T5-LIST-PACK`).
+- C9/`width_mm` se dessine sur l'axe horizontal T5.
+- C6/`length_mm` se dessine dans l'epaisseur verticale T5.
+- `t5_footprint_mm` de `ALPHA:T5-LIST-PACK` est seulement un fallback si les dimensions C6/C9 manquent.
+- La ligne jaune de position `pT5` ne doit pas etre reintroduite dans le canvas.
+- Le point `Mesure H.` / `LzB` reste hors tapis pour ne pas etre masque par les boites.
+
+## UI et navigation
+
+- Les boutons player gardent des icones compactes.
+- `|<` / `>|` : premiere/derniere frame.
+- `<` / `>` : frame precedente/suivante.
+- Le bouton lecture utilise `Play` / pause selon l'etat de l'interface existante.
+- `Err<` / `Err>` : erreur precedente/suivante.
+- `<<` et `>>` pres du slider ralentissent/accelerent la lecture.
+- Le slider de vitesse est logarithmique.
+- Le resize handle des details reste sous la barre player.
+- Le chargement demarrage utilise toujours le comportement `Precision trace` (`min_dt=0.0`).
+- Les onglets bas sont `Diagnostic`, `Erreur`, `Evenements`, `Trace`, avec `Erreur` filtre sur `severity == "error"`.
+- Raccourcis clavier : Left/Right, Space, Home/End, `e` / `E`.
+
+## Checklist de validation
+
+- Compiler les fichiers principaux avec la commande `py_compile` indiquee plus haut apres toute modification Python.
+- Controler `TracAlpha1_012.old` autour de `24|08:31:15` a `08:31:18` : l'IBUPROFENE suit le mouvement T5 sans saut visuel.
+- Controler `TracAlpha1_012.old` autour de `24|08:31:52` a `08:31:55` : meme invariant sur le second IBUPROFENE.
+- Controler une sequence multi-boites vers `08:15:02` : les boites suivent le meme tapis et gardent leur espacement relatif.
+- Controler une sequence de tassage : une nouvelle boite T4->T5 va vers la butee, et les boites deja sur T5 reculent aussi selon le meme mouvement physique.
+- Controler les lignes `MAJ (APRES-MESURE-LARG)` : elles changent la position stable/dimensions sans saut visuel brutal.
+- Controler visuellement T5 : transfert T4->T5, tassage butee, passage C9, retour repos, espacement multi-boites.
+- Controler les lectures inconnues : beaucoup de `ALPHA-INC`, `ALPHA-DET` ou `-unknow` doivent etre visibles comme indice camera/datamatrix.
+- Controler visuellement T2 si modifie : fleche grise a l'arret, coloree pendant les codes moteur actifs.
+- Si un controle echoue, inspecter d'abord l'etat parser (`BoxInfo`, `MachineState`) avant de toucher aux constantes canvas.
+
+## Definition de termine
+
+- Le changement demande est implemente ou la question est repondue clairement.
+- Si du code Python a change, la compilation `py_compile` a ete lancee ou l'impossibilite est expliquee.
+- Si T5, le parser ou le canvas a change, les scenarios trace critiques ont ete controles.
+- Les erreurs ou limites restantes sont listees explicitement.
+- La documentation projet est mise a jour quand une nouvelle regle evite une repetition d'erreur.
+- Les fichiers hors depot ou les memoires personnelles ne sont pas modifies sans demande explicite.
