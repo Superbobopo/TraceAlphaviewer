@@ -1,5 +1,4 @@
 from __future__ import annotations
-import copy
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -41,6 +40,14 @@ class BoxInfo:
     length_mm: int = 0   # dimension dans le sens T5 (mm)
     width_mm: int = 0    # largeur (mm)
     height_mm: int = 0   # hauteur (mm)
+    bdd_width_mm: int = 0
+    bdd_height_mm: int = 0
+    bdd_length_mm: int = 0
+    measured_t4_length_mm: int = 0
+    measured_t5_width_mm: int = 0
+    measured_t5_height_mm: int = 0
+    measured_t5_length_mm: int = 0
+    measurement_status: str = ""  # ok, orientation, bad, c9_error apres mesure Alpha
     t5_footprint_mm: int = 0  # largeur occupee sur T5/goulotte (mm)
     id_b: int = 0        # identifiant de cheminement Alpha (Nboite / idB)
     id_alpha: int = 0    # identifiant BdD alpha
@@ -66,6 +73,34 @@ class BoxInfo:
 
 
 # ── Snapshot complet de l'état machine à un instant donné ───────────────────
+    def clone(self) -> "BoxInfo":
+        box = BoxInfo.__new__(BoxInfo)
+        box.barcode = self.barcode
+        box.source_ref = self.source_ref
+        box.name = self.name
+        box.lot = self.lot
+        box.length_mm = self.length_mm
+        box.width_mm = self.width_mm
+        box.height_mm = self.height_mm
+        box.bdd_width_mm = self.bdd_width_mm
+        box.bdd_height_mm = self.bdd_height_mm
+        box.bdd_length_mm = self.bdd_length_mm
+        box.measured_t4_length_mm = self.measured_t4_length_mm
+        box.measured_t5_width_mm = self.measured_t5_width_mm
+        box.measured_t5_height_mm = self.measured_t5_height_mm
+        box.measured_t5_length_mm = self.measured_t5_length_mm
+        box.measurement_status = self.measurement_status
+        box.t5_footprint_mm = self.t5_footprint_mm
+        box.id_b = self.id_b
+        box.id_alpha = self.id_alpha
+        box.x_pos = self.x_pos
+        box.t5_visual_x_pos = self.t5_visual_x_pos
+        box.t5_entry_aligned = self.t5_entry_aligned
+        box.t5_after_c9 = self.t5_after_c9
+        box.color = self.color
+        return box
+
+
 @dataclass
 class MachineState:
     line_num: int = 0
@@ -118,6 +153,9 @@ class MachineState:
     t5_active_id_alpha: int = 0  # boite T5 en cours de cycle mesure/repos
     t5_x_butee: int = 0  # X butee observe dans la trace courante
     t5_visual_offset_mm: int = 0  # delta temporaire deduit de pT5 pour animer T5
+    cubestop_present: int = 0
+    cubestop_position: str = ""  # HAUT, BAS ou inconnu
+    cubestop_reason: str = ""
 
     # -- Identification -------------------------------------------------------
     idCB1_state: str = ""
@@ -135,15 +173,60 @@ class MachineState:
     events: List[MachineEvent] = field(default_factory=list)
 
     def deep_copy(self) -> "MachineState":
-        """Copie profonde efficace (ne duplique pas raw_lines)."""
-        s = copy.copy(self)
-        s.raw_lines = list(self.raw_lines)
-        s.events = list(self.events)
-        s.boxes_on_T5 = [copy.copy(b) for b in self.boxes_on_T5]
-        s.box_in_EA = copy.copy(self.box_in_EA) if self.box_in_EA else None
-        s.box_on_T3 = copy.copy(self.box_on_T3) if self.box_on_T3 else None
-        s.box_on_T4 = copy.copy(self.box_on_T4) if self.box_on_T4 else None
-        return s
+        """Copie rapide des snapshots sans introspection generique."""
+        state = MachineState.__new__(MachineState)
+        state.line_num = self.line_num
+        state.timestamp = self.timestamp
+        state.timestamp_str = self.timestamp_str
+        state.state_T0 = self.state_T0
+        state.state_T1 = self.state_T1
+        state.state_T2 = self.state_T2
+        state.state_tEA_T3 = self.state_tEA_T3
+        state.state_tT3_T4 = self.state_tT3_T4
+        state.state_tT4_T5 = self.state_tT4_T5
+        state.state_T5 = self.state_T5
+        state.eT0 = self.eT0
+        state.eT1 = self.eT1
+        state.eT2 = self.eT2
+        state.eT3 = self.eT3
+        state.eT4 = self.eT4
+        state.eT5 = self.eT5
+        state.C0 = self.C0
+        state.C1 = self.C1
+        state.C2 = self.C2
+        state.C3 = self.C3
+        state.C4 = self.C4
+        state.C5 = self.C5
+        state.C6 = self.C6
+        state.C9 = self.C9
+        state.flag_poubelle_pleine = self.flag_poubelle_pleine
+        state.lzb = self.lzb
+        state.pT3 = self.pT3
+        state.pT4 = self.pT4
+        state.pT5 = self.pT5
+        state.LgBtT4 = self.LgBtT4
+        state.larg_T5 = self.larg_T5
+        state.fgBfinT3 = self.fgBfinT3
+        state.fgBfinT4 = self.fgBfinT4
+        state.eT5useO = self.eT5useO
+        state.eT5useA = self.eT5useA
+        state.t4_direction = self.t4_direction
+        state.t5_direction = self.t5_direction
+        state.t5_active_id_alpha = self.t5_active_id_alpha
+        state.t5_x_butee = self.t5_x_butee
+        state.t5_visual_offset_mm = self.t5_visual_offset_mm
+        state.cubestop_present = self.cubestop_present
+        state.cubestop_position = self.cubestop_position
+        state.cubestop_reason = self.cubestop_reason
+        state.idCB1_state = self.idCB1_state
+        state.idCB1_barcode = self.idCB1_barcode
+        state.box_in_EA = self.box_in_EA.clone() if self.box_in_EA else None
+        state.box_on_T3 = self.box_on_T3.clone() if self.box_on_T3 else None
+        state.box_on_T4 = self.box_on_T4.clone() if self.box_on_T4 else None
+        state.boxes_on_T5 = [box.clone() for box in self.boxes_on_T5]
+        state.raw_lines = list(self.raw_lines)
+        state.events = list(self.events)
+        return state
 
     def format_time(self) -> str:
         """Retourne une chaîne HH:MM:SS à partir du timestamp relatif."""

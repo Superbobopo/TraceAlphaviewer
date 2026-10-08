@@ -77,6 +77,8 @@ rg --files
 - L'identite boite suit le cycle Alpha, pas seulement le CIP/barcode.
 - Priorite de matching : `id_alpha`, puis `id_b`, puis barcode uniquement si unique.
 - Ne jamais mettre a jour ou supprimer toutes les boites qui partagent le meme barcode.
+- L'index References conserve une fiche par cycle boite : un CIP partage ne suffit jamais a fusionner des identites differentes. Les alias de reference peuvent designer plusieurs fiches ; le fallback barcode doit etre unique et encore present dans le cycle courant.
+- Une re-identification CB2 conserve le parcours et `source_ref`, mais remplace le barcode de la fiche par le CIP identifie pour permettre sa recherche.
 - `box_in_EA` represente la boite sur C4 / CB1.
 - `box_on_T3` represente la boite sur T3 / C5 / CB2.
 - `box_on_T4` represente la boite sur T4 / C6.
@@ -86,6 +88,9 @@ rg --files
 - `BoxInfo.source_ref` conserve la reference initiale `ALPHA-INC-xxx` quand CB2 identifie ensuite le vrai produit.
 - `CB1: ajout Hist_LectCB` concerne EA/C4 uniquement.
 - `CB2: ajout Hist_LectCB` concerne T3/C5 uniquement.
+- `CubeStop:Y` indique que la trace/machine utilise le volet CubeStop entre EA/C4 et T3.
+- `CubeStop:N` signifie qu'il ne faut ni afficher le volet ni declencher de diagnostic CubeStop specifique.
+- `mvt CubeStop vers le HAUT` autorise le passage EA/C4 vers T3 ; `mvt CubeStop vers le BAS` accompagne le transfert T2 vers EA/C4.
 - `idCB2: Identif. sur le lecteur1 Ok ... (Nboite=X)` assigne `idB=X` seulement a la boite deja sur T3.
 - Ne jamais assigner un `Nboite/idB` a une ancienne boite CB2 cachee si `box_on_T3` est vide.
 - `ALPHA:T5-LIST-PACK` est une source fiable de positions multi-boites T5.
@@ -109,8 +114,9 @@ rg --files
 - `BoxInfo.t5_after_c9=True` est un etat de cycle/diagnostic, pas une contrainte geometrique.
 - Les boites T5 suivent toutes le meme tapis : tout mouvement signe de T5 deplace le groupe, y compris les boites deja passees par C9.
 - Le rendu doit conserver les positions relatives issues de `x_pos`, `t5_visual_x_pos`, `ALPHA:T5-LIST-PACK` et des deplacements BdD confirmes.
-- Avant tout reset de `t5_visual_offset_mm`, committer l'offset courant dans `t5_visual_x_pos`.
-- Exception : une ligne BdD `Deplace toutes les boites ...` resynchronise seulement les boites deja etablies sur T5 ; une nouvelle boite `t5_entry_aligned=True` attend sa premiere `MAJ` stable.
+- Avant tout reset de `t5_visual_offset_mm`, committer l'offset courant dans `t5_visual_x_pos` via le repere visuel normalise, jamais par addition directe sur un grand `X` Alpha.
+- Une ligne BdD `Deplace toutes les boites ...` met a jour les positions stables des boites deja etablies sur T5, mais conserve la continuite visuelle deja animee par `pT5`.
+- Une nouvelle boite `t5_entry_aligned=True` attend sa premiere `MAJ` stable pour changer `x_pos`, mais elle suit visuellement le mouvement T5 comme le reste du tapis.
 - Ne pas ajouter de clamp final sur C9 ou sur la butee : les dimensions physiques et les positions Alpha doivent porter le rendu.
 - `MAJ (BUTEE-T5)` peut remettre `t5_after_c9=False` seulement pour la meme boite active revenue en cycle butee.
 - `MAJ (APRES-MESURE-LARG)` recale toujours `x_pos` et `t5_visual_x_pos` sur le `X` trace de la boite mesuree, puis marque cette boite `t5_after_c9=True`.
@@ -121,6 +127,7 @@ rg --files
 - C9/`width_mm` se dessine sur l'axe horizontal T5.
 - C6/`length_mm` se dessine dans l'epaisseur verticale T5.
 - `t5_footprint_mm` de `ALPHA:T5-LIST-PACK` est seulement un fallback si les dimensions C6/C9 manquent.
+- Les couleurs de diagnostic mesure Alpha changent uniquement le remplissage des boites T5 ; elles ne doivent pas recalibrer T5 ni modifier les dimensions/positions.
 - La ligne jaune de position `pT5` ne doit pas etre reintroduite dans le canvas.
 - Le point `Mesure H.` / `LzB` reste hors tapis pour ne pas etre masque par les boites.
 
@@ -135,12 +142,45 @@ rg --files
 - Le slider de vitesse est logarithmique.
 - Le resize handle des details reste sous la barre player.
 - Le chargement demarrage utilise toujours le comportement `Precision trace` (`min_dt=0.0`).
+- Pendant le chargement depuis l'accueil, afficher l'etape en cours sous la barre : lecture trace, construction evenements, diagnostic, references, preparation affichage.
+- L'ouverture d'une trace seule attend diagnostics et references avant affichage ; ne pas afficher une vue partiellement chargee.
 - Les onglets bas sont `Diagnostic`, `Erreur`, `Evenements`, `Trace`, avec `Erreur` filtre sur `severity == "error"`.
+- Dans l'onglet `Diagnostic`, le panneau gauche affiche la vue globale de tous les diagnostics au chargement ; le detail d'un incident s'affiche seulement apres selection.
+- La vue globale `Diagnostic` doit rester une synthese groupee par type de probleme, pas une liste de chaque occurrence.
+- La synthese globale `Diagnostic` doit faire ressortir les priorites et les diagnostics metier importants comme `UNKNOWN` et `CAM-NO-READ`.
+- Le bouton `Rapport web` du diagnostic genere une page HTML locale interactive ; l'export PDF doit telecharger un PDF direct de la synthese globale, sans ouvrir la fenetre d'impression.
+- Le rapport web/PDF doit rester lisible comme un rapport terrain : synthese visuelle, priorites visibles, groupes compacts, pas de pavés repetitifs ni de PDF texte brut.
+- Le rapport web React se reconstruit depuis `TraceAlphaViewer/report_app` avec `npm install` puis `npm run build`; si le build statique manque, le generateur Python garde un fallback HTML local.
+- Les titres de diagnostics eT doivent utiliser la table partagee `Models/et_codes.py`, identique a la table d'etats, avant de tomber sur un libelle generique.
 - Raccourcis clavier : Left/Right, Space, Home/End, `e` / `E`.
+- La saisie dans un champ de recherche ne declenche pas les raccourcis du player.
+- Les workers de chargement transmettent leurs resultats par une file ; les appels Tk et `after` restent sur le thread UI. Fermer une vue annule ses callbacks ; remplacer une trace brute invalide les anciens resultats de chargement.
+- Une vue abandonnee est detruite pour liberer ses frames ; seule une vue explicitement gardee comme `_return_view` reste disponible.
+- Le canvas reutilise ses primitives sans changer leur ordre, leurs options ni la geometrie T5. Comparer le rendu reutilise au dessin complet avant toute modification de ce mecanisme.
+
+## Diagnostics terrain
+
+- `Temps depuis RESET carte ALPHA` est un compteur d'uptime : une valeur elevee et croissante est normale.
+- Un reset carte Alpha est compte uniquement quand ce compteur chute vers `0..10 mn` pendant la trace ; les releves bas consecutifs apres la chute appartiennent au meme reset.
+- Le rapport doit afficher le nombre de resets carte Alpha et la duree couverte par la trace, jamais un ratio par nombre de boites.
+- En cas de reset carte Alpha, faire verifier en priorite les shunts CubeStop/balance, leur cablage, les masses et l'alimentation.
+
+- Une initialisation T4 isolee ou periodique apres beaucoup de boites est normale.
+- Trois lignes `InitMachine: demande initialisation de T4 ...` d'affilee indiquent un probleme T4/C6 probable.
+- Si C6 reste actif pendant ces init T4 repetees, suspecter C6 trop bas, signal bloque actif ou objet devant le capteur.
+- Si C6 n'est pas toujours actif pendant ces init T4 repetees, suspecter C6 trop haut/HS/mal positionne, moteur T4 qui patine ou rouleau moteur non entraine.
+- Les diagnostics camera unknown comptent les boites finales creees en `ALPHA-INC`, `ALPHA-DET` ou `ALPHA-DIF` avec `-unknow`, pas les unknown temporaires relues ensuite.
+- Une unknown CB1 relue correctement par CB2 ne compte pas comme unknown finale ; une unknown finale vue par CB1 et CB2 doit etre classee `CB1+CB2`.
+- Le ratio principal camera unknown compte uniquement les boites `CB1+CB2`; `CB1 seul`, `CB2 seul` et `non attribue` restent du contexte.
+- Seuil diagnostic camera unknown : plus de 7% des boites passees d'apres les `Hist_LectCB`.
+- CB1 regroupe les cameras 1, 2, 4, 5, 6 ; CB2 correspond a la camera 3.
+- Une camera attendue sans aucune reussite `PR/Soh/N` sur une trace significative indique une camera potentiellement HS, deconnectee ou non contributive.
+- Si CubeStop est commande `HAUT`, que le transfert EA->T3 demarre, mais que `C4` reste actif et `C5` reste inactif jusqu'a l'erreur ou la fin de course T3, suspecter CubeStop bloque mecaniquement en bas, ejecteur C4 inefficace, rail bloque ou C4 faux actif.
 
 ## Checklist de validation
 
 - Compiler les fichiers principaux avec la commande `py_compile` indiquee plus haut apres toute modification Python.
+- Lancer `python TraceAlphaViewer\Tools\validate_all.py` pour regrouper les controles metier et les regressions du viewer ; signaler les controles ignores faute de trace locale.
 - Controler `TracAlpha1_012.old` autour de `24|08:31:15` a `08:31:18` : l'IBUPROFENE suit le mouvement T5 sans saut visuel.
 - Controler `TracAlpha1_012.old` autour de `24|08:31:52` a `08:31:55` : meme invariant sur le second IBUPROFENE.
 - Controler une sequence multi-boites vers `08:15:02` : les boites suivent le meme tapis et gardent leur espacement relatif.

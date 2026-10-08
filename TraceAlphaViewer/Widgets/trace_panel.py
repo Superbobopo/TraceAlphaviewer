@@ -10,6 +10,7 @@ TracePanel – affiche la trace complète du fichier .old.
 from __future__ import annotations
 
 import threading
+from queue import Empty, Queue
 from typing import Callable, List, Optional, Tuple
 
 import customtkinter as ctk
@@ -29,10 +30,36 @@ class TracePanel(ctk.CTkFrame):
         self._total_lines = 0
         self._hi_start: int = 0
         self._hi_end:   int = 0
+        self._load_generation = 0
+        self._load_cancel = threading.Event()
+        self._load_results = Queue()
+        self._poll_job = None
+        self._insert_job = None
+        self._search_job = None
+        self._loading = False
+        self._search_var = tk.StringVar()
+        self._search_matches = []
+        self._search_index = -1
+        self._search_pending_direction = None
         self._build()
+        self._poll_job = self.after(30, self._poll_results)
 
     # ── Construction ─────────────────────────────────────────────────────────
     def _build(self) -> None:
+        header = ctk.CTkFrame(self, fg_color='#1e1e30', corner_radius=0)
+        header.pack(fill='x')
+        ctk.CTkLabel(header, text='CIP / texte', font=('Consolas', 10)).pack(side='left', padx=8)
+        search = ctk.CTkEntry(header, textvariable=self._search_var, height=26)
+        search.pack(side='left', fill='x', expand=True, padx=4, pady=4)
+        search.bind('<Return>', lambda e: self._navigate_search(1))
+        search.bind('<F3>', lambda e: self._navigate_search(1))
+        search.bind('<Shift-F3>', lambda e: self._navigate_search(-1))
+        for label, direction in (('<', -1), ('>', 1)):
+            ctk.CTkButton(header, text=label, width=30, height=26,
+                          command=lambda d=direction: self._navigate_search(d)).pack(side='left', padx=2)
+        self._search_label = ctk.CTkLabel(header, text='', width=120, font=('Consolas', 10))
+        self._search_label.pack(side='left', padx=8)
+        self._search_var.trace_add('write', lambda *_: self._queue_search())
         # Scrollbars
         vscroll = tk.Scrollbar(self, orient='vertical',
                                 bg='#1a1a2e', troughcolor='#12121f',
@@ -75,6 +102,8 @@ class TracePanel(ctk.CTkFrame):
         self._text.tag_configure(
             'hi_linenum', background='#1a2d45', foreground='#4477aa',
             font=('Consolas', 9))
+        self._text.tag_configure('search', background='#62501e', foreground='#fff0b0')
+        self._text.tag_configure('search_current', background='#aa731a', foreground='#ffffff')
 
         # Clic
         self._text.bind('<Button-1>', self._on_click)
@@ -82,6 +111,19 @@ class TracePanel(ctk.CTkFrame):
     # ── Chargement du fichier ─────────────────────────────────────────────────
     def load_file(self, filepath: str) -> None:
         """Charge le fichier en arrière-plan et insère les lignes dans le widget."""
+        self._load_cancel.set()
+        self._load_cancel = threading.Event()
+        cancel = self._load_cancel
+        self._load_generation += 1
+        generation = self._load_generation
+        results = self._load_results
+        self._loading = True
+        self._total_lines = 0
+        self._hi_start = self._hi_end = 0
+        if self._insert_job:
+            self.after_cancel(self._insert_job)
+            self._insert_job = None
+        self._queue_search()
         self._text.configure(state='normal')
         self._text.delete('1.0', 'end')
         self._text.insert('end', 'Chargement de la trace…\n',
@@ -93,12 +135,25 @@ class TracePanel(ctk.CTkFrame):
             try:
                 with open(filepath, encoding='latin-1', errors='replace') as fh:
                     for i, raw in enumerate(fh, 1):
+                        if cancel.is_set():
+                            return
                         lines.append((i, raw.rstrip('\r\n')))
             except Exception as exc:
                 lines = [(1, f'Erreur lecture : {exc}')]
-            self.after(0, lambda: self._start_insert(lines))
+            if not cancel.is_set():
+                results.put((generation, lines))
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    def _poll_results(self) -> None:
+        try:
+            while True:
+                generation, lines = self._load_results.get_nowait()
+                if generation == self._load_generation:
+                    self._start_insert(lines)
+        except Empty:
+            pass
+        self._poll_job = self.after(30, self._poll_results)
 
     def _start_insert(self, lines: List[Tuple[int, str]]) -> None:
         self._total_lines = len(lines)
@@ -109,7 +164,10 @@ class TracePanel(ctk.CTkFrame):
 
     def _insert_chunk(self, lines: List[Tuple[int, str]], start: int,
                       chunk: int = 3000) -> None:
+        self._insert_job = None
         if start >= len(lines):
+            self._loading = False
+            self._queue_search()
             return
         self._text.configure(state='normal')
         end = min(start + chunk, len(lines))
@@ -119,11 +177,76 @@ class TracePanel(ctk.CTkFrame):
             self._text.insert('end', text + '\n', ('known',))
         self._text.configure(state='disabled')
         if end < len(lines):
-            self.after(5, lambda: self._insert_chunk(lines, end, chunk))
+            self._insert_job = self.after(5, lambda: self._insert_chunk(lines, end, chunk))
         else:
+            self._loading = False
+            self._queue_search()
             # Restaure le highlight si on était déjà sur un frame
             if self._hi_start > 0:
                 self.highlight_lines(self._hi_start, self._hi_end)
+
+    def _queue_search(self) -> None:
+        if self._search_job:
+            self.after_cancel(self._search_job)
+            self._search_job = None
+        self._search_matches = []
+        self._search_index = -1
+        self._search_pending_direction = None
+        self._text.tag_remove('search', '1.0', 'end')
+        self._text.tag_remove('search_current', '1.0', 'end')
+        query = self._search_var.get().strip()
+        self._search_label.configure(text='Chargement...' if query and self._loading else '')
+        if query and not self._loading:
+            self._search_job = self.after(180, lambda: self._search_chunk(query, '1.10'))
+
+    def _search_chunk(self, query: str, start: str) -> None:
+        self._search_job = None
+        count = tk.IntVar()
+        for _ in range(200):
+            found = self._text.search(query, start, stopindex='end', nocase=True, count=count)
+            if not found:
+                self._search_label.configure(text=f'{len(self._search_matches)} occurrence(s)')
+                direction = self._search_pending_direction
+                self._search_pending_direction = None
+                if direction is not None:
+                    self._navigate_search(direction)
+                return
+            end = self._text.index(f'{found}+{count.get()}c')
+            # Exclut les numeros de ligne ajoutes par le viewer.
+            if int(found.split('.')[1]) >= 10:
+                self._search_matches.append((found, end))
+                self._text.tag_add('search', found, end)
+            start = end
+        self._search_label.configure(text=f'{len(self._search_matches)}...')
+        self._search_job = self.after(1, lambda: self._search_chunk(query, start))
+
+    def _navigate_search(self, direction: int) -> str:
+        if self._search_job:
+            self._search_pending_direction = direction
+            return 'break'
+        if not self._search_matches:
+            return 'break'
+        if self._search_index < 0:
+            self._search_index = 0 if direction > 0 else len(self._search_matches) - 1
+        else:
+            self._search_index = (self._search_index + direction) % len(self._search_matches)
+        start, end = self._search_matches[self._search_index]
+        if self._on_line_click:
+            self._on_line_click(int(start.split('.')[0]))
+        self._text.tag_remove('search_current', '1.0', 'end')
+        self._text.tag_add('search_current', start, end)
+        self._text.tag_raise('search')
+        self._text.tag_raise('search_current')
+        self._text.see(start)
+        self._search_label.configure(text=f'{self._search_index + 1}/{len(self._search_matches)}')
+        return 'break'
+
+    def destroy(self) -> None:
+        self._load_cancel.set()
+        for job in (self._poll_job, self._insert_job, self._search_job):
+            if job:
+                self.after_cancel(job)
+        super().destroy()
 
     # ── Highlight ─────────────────────────────────────────────────────────────
     def highlight_lines(self, start: int, end: int) -> None:

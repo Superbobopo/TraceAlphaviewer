@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import re
 
 from Models.state import BoxInfo, MachineEvent, MachineState
 
@@ -66,6 +67,8 @@ def _aliases(box: BoxInfo) -> list[str]:
         aliases.append(f'C:{box.barcode}')
     if box.source_ref:
         aliases.append(f'R:{box.source_ref}')
+        if box.source_ref != box.barcode:
+            aliases.append(f'C:{box.source_ref}')
     return aliases
 
 
@@ -96,39 +99,51 @@ def _merge_records(target: ReferenceRecord, source: ReferenceRecord) -> None:
 
 def _record_for_box(
     records: dict[str, ReferenceRecord],
-    alias_to_key: dict[str, str],
+    alias_to_key: dict[str, set[str]],
     box: BoxInfo,
+    active_keys: set[str] | None = None,
 ) -> ReferenceRecord:
     aliases = _aliases(box)
-    existing_key = next((alias_to_key[a] for a in aliases if a in alias_to_key), None)
-    desired_key = _best_key(box)
-    key = existing_key or desired_key
-
-    if key not in records:
-        records[key] = ReferenceRecord(key=key)
-
-    record = records[key]
-    if desired_key != key and desired_key.startswith('A:') and desired_key not in records:
-        records[desired_key] = record
-        del records[key]
-        record.key = desired_key
-        key = desired_key
-    elif desired_key != key and desired_key in records and records[desired_key] is not record:
-        other = records[desired_key]
-        _merge_records(other, record)
-        del records[key]
-        record = other
-        key = desired_key
-
+    key = None
     for alias in aliases:
-        alias_to_key[alias] = key
+        candidates = []
+        candidate_keys = alias_to_key.get(alias, set())
+        if alias.startswith(('C:', 'R:')) and active_keys is not None:
+            candidate_keys = candidate_keys & active_keys
+        for candidate_key in candidate_keys:
+            candidate = records[candidate_key]
+            if box.id_alpha and candidate.id_alpha and box.id_alpha != candidate.id_alpha:
+                continue
+            if (box.id_b and candidate.id_b and box.id_b != candidate.id_b
+                    and not (box.id_alpha and box.id_alpha == candidate.id_alpha)):
+                continue
+            if alias.startswith(('C:', 'R:')):
+                if not box.id_alpha and not box.id_b and (candidate.id_alpha or candidate.id_b):
+                    continue
+                if candidate.id_alpha and not box.id_alpha:
+                    continue
+            candidates.append(candidate_key)
+        if len(candidates) == 1:
+            key = candidates[0]
+            break
+    if key is None:
+        base = _best_key(box)
+        key = base
+        suffix = 2
+        while key in records:
+            key = f'{base}#{suffix}'
+            suffix += 1
+        records[key] = ReferenceRecord(key=key)
+    record = records[key]
+    for alias in aliases:
+        alias_to_key.setdefault(alias, set()).add(key)
     return record
 
 
 def _update_record(record: ReferenceRecord, box: BoxInfo, stage: str, frame: MachineState) -> None:
-    record.barcode = record.barcode or box.barcode
+    record.barcode = box.barcode or record.barcode
     record.source_ref = record.source_ref or box.source_ref
-    record.name = record.name or box.name
+    record.name = box.name or record.name
     record.id_b = record.id_b or box.id_b
     record.id_alpha = record.id_alpha or box.id_alpha
     if frame.line_num and (not record.first_line or frame.line_num < record.first_line):
@@ -142,23 +157,18 @@ def _update_record(record: ReferenceRecord, box: BoxInfo, stage: str, frame: Mac
 
 def _mark_robot_take(
     records: dict[str, ReferenceRecord],
-    alias_to_key: dict[str, str],
+    alias_to_key: dict[str, set[str]],
     event: MachineEvent,
 ) -> None:
     text = f'{event.title} {event.detail}'
-    id_alpha = 0
-    for token in ('IdA=', 'IdA:'):
-        if token in text:
-            tail = text.split(token, 1)[1]
-            digits = ''.join(ch for ch in tail[:12] if ch.isdigit())
-            if digits:
-                id_alpha = int(digits)
-                break
+    match = re.search(r'\bIdA\s*[:=]\s*(\d+)\b', text)
+    id_alpha = int(match.group(1)) if match else 0
     if not id_alpha:
         return
-    key = alias_to_key.get(f'A:{id_alpha}', f'A:{id_alpha}')
+    candidates = alias_to_key.get(f'A:{id_alpha}', set())
+    key = max(candidates, key=lambda k: records[k].last_line) if candidates else f'A:{id_alpha}'
     record = records.setdefault(key, ReferenceRecord(key=key, id_alpha=id_alpha))
-    alias_to_key[f'A:{id_alpha}'] = key
+    alias_to_key.setdefault(f'A:{id_alpha}', set()).add(key)
     record.id_alpha = record.id_alpha or id_alpha
     record.stages.add('ROBOT')
     record.taken_by_robot = True
@@ -177,9 +187,11 @@ def build_reference_records(
     events: list[MachineEvent],
 ) -> list[ReferenceRecord]:
     records: dict[str, ReferenceRecord] = {}
-    alias_to_key: dict[str, str] = {}
+    alias_to_key: dict[str, set[str]] = {}
+    active_keys: set[str] = set()
 
     for frame in frames:
+        current_keys: set[str] = set()
         for stage, box in (
             ('EA', frame.box_in_EA),
             ('T3', frame.box_on_T3),
@@ -187,11 +199,14 @@ def build_reference_records(
         ):
             if box is None:
                 continue
-            record = _record_for_box(records, alias_to_key, box)
+            record = _record_for_box(records, alias_to_key, box, active_keys | current_keys)
             _update_record(record, box, stage, frame)
+            current_keys.add(record.key)
         for box in frame.boxes_on_T5:
-            record = _record_for_box(records, alias_to_key, box)
+            record = _record_for_box(records, alias_to_key, box, active_keys | current_keys)
             _update_record(record, box, 'T5', frame)
+            current_keys.add(record.key)
+        active_keys = current_keys
 
     for event in events:
         if event.kind == 'BOITE' and (
@@ -205,6 +220,6 @@ def build_reference_records(
     unique_records = list({id(record): record for record in records.values()}.values())
     unique_records = [
         record for record in unique_records
-        if record.key != 'UNKNOWN' and (record.first_line or record.last_line)
+        if record.key.split('#', 1)[0] != 'UNKNOWN' and (record.first_line or record.last_line)
     ]
     return sorted(unique_records, key=lambda r: (r.first_line or r.last_line, r.main_ref()))

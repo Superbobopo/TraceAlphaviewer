@@ -48,8 +48,25 @@ C = {
     'dir_run':    '#44cc44',
     'dir_idle':   '#335566',
     'dir_error':  '#ff5555',
+    'box_neutral': '#4FC3F7',
     'box_bdr':    '#111122',
+    'cubestop_up': '#55d6a0',
+    'cubestop_down': '#ff7744',
+    'cubestop_unknown': '#8899aa',
 }
+
+MEASUREMENT_STATUS_COLORS = {
+    'ok': '#2ECC71',
+    'orientation': '#F5B041',
+    'bad': '#E74C3C',
+    'c9_error': '#FF2DAA',
+}
+
+
+def _box_fill_color(box: Optional[BoxInfo]) -> str:
+    if box is None:
+        return C['box_neutral']
+    return MEASUREMENT_STATUS_COLORS.get(box.measurement_status, C['box_neutral'])
 
 # ── Dimensions canvas ─────────────────────────────────────────────────────────
 CANVAS_W = 920
@@ -183,6 +200,71 @@ def _sensor_hbar(cv: tk.Canvas, name: str, cy: int,
                    fill='#aabbcc', font=('Consolas', 7, 'bold'), anchor='w')
 
 
+def _draw_cubestop(cv: tk.Canvas, st: MachineState) -> None:
+    if not st.cubestop_present:
+        return
+
+    ea = L['EA']
+    t3 = L['T3']
+    gap_x1 = ea[2] + 4
+    gap_x2 = t3[0] - 4
+    gate_closed_x = (gap_x1 + gap_x2) // 2
+    gate_open_x = gap_x1 + 3
+    gate_top = t3[1] - 4
+    gate_bottom = t3[3] + 4
+    rail_y = (t3[1] + t3[3]) // 2
+    position = st.cubestop_position.upper()
+
+    if position == 'BAS':
+        color = C['cubestop_down']
+        state_label = 'BAS'
+        gate_x = gate_closed_x
+        gate_width = 8
+        shade = '#4a2028'
+    elif position == 'HAUT':
+        color = C['cubestop_up']
+        state_label = 'HAUT'
+        gate_x = gate_open_x
+        gate_width = 9
+        shade = '#173a2a'
+    else:
+        color = C['cubestop_unknown']
+        state_label = '?'
+        gate_x = gate_closed_x
+        gate_width = 8
+        shade = '#27313d'
+
+    cv.create_line(gap_x1, rail_y, gap_x2, rail_y,
+                   fill='#40566a', width=2, arrow=tk.LAST)
+    cv.create_rectangle(gap_x1 - 1, gate_top - 1, gap_x2 + 1, gate_bottom + 1,
+                        outline='#33485a', width=1)
+
+    if position == 'BAS':
+        cv.create_rectangle(gate_x - 8, gate_top + 2, gate_x + 8, gate_bottom - 2,
+                            fill=shade, outline='')
+    else:
+        cv.create_rectangle(gate_closed_x - 5, gate_top + 8,
+                            gate_closed_x + 5, gate_bottom - 8,
+                            fill='#172232', outline='#2f4052', width=1)
+
+    cv.create_line(gate_x, gate_top, gate_x, gate_bottom,
+                   fill='#101820', width=gate_width + 4, capstyle=tk.ROUND)
+    cv.create_line(gate_x, gate_top, gate_x, gate_bottom,
+                   fill=color, width=gate_width, capstyle=tk.ROUND)
+
+    for y in (gate_top, gate_bottom):
+        cv.create_oval(gate_x - 4, y - 4, gate_x + 4, y + 4,
+                       fill='#d9e4ee', outline='#101820', width=1)
+        cv.create_oval(gate_x - 2, y - 2, gate_x + 2, y + 2,
+                       fill=color, outline=color, width=1)
+
+    label_x = gap_x2 + 5
+    cv.create_text(label_x, gate_top + 4, text='CubeStop',
+                   fill=color, font=('Consolas', 6, 'bold'), anchor='w')
+    cv.create_text(label_x, gate_top + 14, text=state_label,
+                   fill='#aabbcc', font=('Consolas', 6), anchor='w')
+
+
 def _draw_box_h(cv: tk.Canvas, belt_rect: tuple, x_px: int, w_px: int,
                 box: Optional[BoxInfo], height_px: int = 0,
                 y_align: str = 'center') -> Optional[tuple[int, int, int, int]]:
@@ -203,7 +285,7 @@ def _draw_box_h(cv: tk.Canvas, belt_rect: tuple, x_px: int, w_px: int,
         cy = (y1 + y2) // 2
         by1 = cy - h_px // 2
         by2 = by1 + h_px
-    fill = box.color if box else '#4FC3F7'
+    fill = _box_fill_color(box)
     cv.create_rectangle(bx1, by1, bx2, by2,
                         fill=fill, outline=C['box_bdr'], width=1)
     lbl = box.short_label() if box else ''
@@ -259,8 +341,9 @@ def _draw_t5_box(cv: tk.Canvas, belt_rect: tuple, x_px: int, w_px: int,
     by2 = min(y2 - T5_BOX_Y_PAD, by1 + h_px)
     by1 = max(y1 + T5_BOX_Y_PAD, by2 - h_px)
 
+    fill = _box_fill_color(box)
     cv.create_rectangle(bx1, by1, bx2, by2,
-                        fill=box.color, outline=C['box_bdr'], width=1)
+                        fill=fill, outline=C['box_bdr'], width=1)
     lbl = box.short_label()
     if lbl:
         cv.create_text((bx1 + bx2) // 2, (by1 + by2) // 2,
@@ -292,7 +375,7 @@ def _draw_box_v(cv: tk.Canvas, belt_rect: tuple,
         box_w = max(12, h_px - 2)
     bx1 = (x1 + x2 - box_w) // 2
     bx2 = bx1 + box_w
-    fill   = box.color if box else '#4FC3F7'
+    fill   = _box_fill_color(box)
     cv.create_rectangle(bx1, by1, bx2, by2,
                         fill=fill, outline=C['box_bdr'], width=1)
     lbl = box.short_label() if box else ''
@@ -488,15 +571,54 @@ class MachineCanvas(tk.Canvas):
         self._state: Optional[MachineState] = None
         self._t5_hitboxes: list[tuple[tuple[int, int, int, int], BoxInfo]] = []
         self._tooltip_id: Optional[int] = None
+        self._scene_items = []
+        self._scene_cursor = None
+        self._scene_reordered = False
         self.bind('<Motion>', self._on_motion)
         self.bind('<Leave>', self._hide_tooltip)
 
     def update_state(self, state: MachineState) -> None:
         self._state = state
-        self.delete('all')
+        self._hide_tooltip()
         self._t5_hitboxes = []
-        self._tooltip_id = None
-        self._draw(state)
+        self._scene_cursor = 0
+        self._scene_reordered = False
+        try:
+            self._draw(state)
+            for item, *_ in self._scene_items[self._scene_cursor:]:
+                self.delete(item)
+            del self._scene_items[self._scene_cursor:]
+            if self._scene_reordered:
+                for item, *_ in self._scene_items:
+                    self.tag_raise(item)
+        finally:
+            self._scene_cursor = None
+
+    def _create(self, itemType, args, kw):
+        if self._scene_cursor is None:
+            return super()._create(itemType, args, kw)
+        slot = self._scene_cursor
+        self._scene_cursor += 1
+        if slot < len(self._scene_items):
+            item, old_type, old_args, old_kw = self._scene_items[slot]
+            # Les options absentes garderaient sinon la valeur de la boite precedente.
+            if old_type == itemType and old_kw.keys() == kw.keys():
+                if args != old_args:
+                    self.coords(item, *args)
+                changed = {key: value for key, value in kw.items() if old_kw[key] != value}
+                if changed:
+                    self.itemconfigure(item, **changed)
+                self._scene_items[slot] = (item, itemType, args, dict(kw))
+                return item
+            self.delete(item)
+        item = super()._create(itemType, args, kw)
+        entry = (item, itemType, args, dict(kw))
+        if slot < len(self._scene_items):
+            self._scene_items[slot] = entry
+        else:
+            self._scene_items.append(entry)
+        self._scene_reordered = True
+        return item
 
     def _hide_tooltip(self, event=None) -> None:
         if self._tooltip_id is not None:
@@ -588,6 +710,7 @@ class MachineCanvas(tk.Canvas):
 
         # T3 : C5 (côté droit)
         _sensor_vbar(cv, 'C5', T3_C5_X, L['T3'], st.C5)
+        _draw_cubestop(cv, st)
 
         # T4 : C6 (barre horizontale)
         _sensor_hbar(cv, 'C6', T4_C6_Y, L['T4'], st.C6)
@@ -651,7 +774,7 @@ class MachineCanvas(tk.Canvas):
         # ── Boîte en EA ──────────────────────────────────────────────────────
         if st.C4 or st.box_in_EA:
             box  = st.box_in_EA
-            fill = box.color if box else '#4FC3F7'
+            fill = _box_fill_color(box)
             bx1, by1 = L['EA'][0] + 5, L['EA'][1] + 5
             bx2, by2 = L['EA'][2] - 5, L['EA'][3] - 5
             cv.create_rectangle(bx1, by1, bx2, by2,

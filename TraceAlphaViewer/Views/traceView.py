@@ -19,7 +19,6 @@ import bisect
 import copy
 import math
 import os
-import threading
 from typing import Callable, List, Optional
 
 import customtkinter as ctk
@@ -66,6 +65,9 @@ class TraceView(BaseView):
         master,
         filepath: str,
         frames: List[MachineState],
+        events: list[MachineEvent] | None = None,
+        diagnostics: list[DiagnosticIncident] | None = None,
+        references: list[ReferenceRecord] | None = None,
         return_view: BaseView | None = None,
         on_close: Callable[[], None] | None = None,
         **kwargs,
@@ -75,10 +77,13 @@ class TraceView(BaseView):
         self._frames      = frames
         self._return_view = return_view
         self._on_close    = on_close
-        self._events      = self._collect_events(frames)
-        self._diagnostics = build_diagnostics(frames, self._events)
-        self._references  = build_reference_records(frames, self._events)
-        self._error_events = [e for e in self._events if e.severity == 'error']
+        self._events      = events if events is not None else self._collect_events(frames)
+        self._diagnostics = diagnostics if diagnostics is not None else build_diagnostics(frames, self._events)
+        self._references  = references if references is not None else build_reference_records(frames, self._events)
+        self._error_events = (
+            [e for e in self._events if e.severity == 'error']
+            + self._diagnostic_error_events(self._diagnostics)
+        )
         self._idx         = 0
         self._playing     = False
         self._play_job: Optional[str] = None
@@ -110,6 +115,22 @@ class TraceView(BaseView):
                 seen.add(key)
         return sorted(events, key=lambda e: (e.line_num, e.kind, e.title))
 
+    def _diagnostic_error_events(self, diagnostics: list[DiagnosticIncident]) -> list[MachineEvent]:
+        events: list[MachineEvent] = []
+        for incident in diagnostics:
+            if incident.code != 'T5_STALE_UNMEASURED_BOX' or incident.severity != 'error':
+                continue
+            events.append(MachineEvent(
+                line_num=incident.first_line,
+                timestamp=incident.start_time,
+                timestamp_str=incident.start_time_str,
+                severity='error',
+                kind='DIAG',
+                title=f'{incident.title} ({incident.code})',
+                detail=incident.summary,
+            ))
+        return events
+
     # ── Affichage / fermeture ─────────────────────────────────────────────────
     def show(self) -> None:
         super().show()
@@ -123,6 +144,9 @@ class TraceView(BaseView):
     def hide(self) -> None:
         super().hide()
         self._stop_playback()
+        if self._resize_job:
+            self.after_cancel(self._resize_job)
+            self._resize_job = None
         for w in self.winfo_children():
             w.destroy()
 
@@ -137,9 +161,13 @@ class TraceView(BaseView):
                      font=('Consolas', 12, 'bold'),
                      text_color='#88aacc').pack(side='left', padx=12)
 
-        ctk.CTkLabel(bar, text=f'{len(self._frames)} frames | {len(self._diagnostics)} incidents | {len(self._events)} evenements',
-                     font=('Consolas', 11),
-                     text_color='#556677').pack(side='left', padx=8)
+        self._lbl_stats = ctk.CTkLabel(
+            bar,
+            text=f'{len(self._frames)} frames | {len(self._diagnostics)} incidents | {len(self._events)} evenements',
+            font=('Consolas', 11),
+            text_color='#556677',
+        )
+        self._lbl_stats.pack(side='left', padx=8)
 
         # Heure + numéro de ligne courant
         self._lbl_ts = ctk.CTkLabel(bar, text='00:00:00',
@@ -330,13 +358,13 @@ class TraceView(BaseView):
         self._build_trace_area(self._details_frame)
 
         # Raccourcis clavier
-        self.master.bind('<Left>',  lambda e: self._step_back())
-        self.master.bind('<Right>', lambda e: self._step_fwd())
-        self.master.bind('<space>', lambda e: self._toggle_play())
-        self.master.bind('<Home>',  lambda e: self._go_start())
-        self.master.bind('<End>',   lambda e: self._go_end())
-        self.master.bind('e',       lambda e: self._next_error())
-        self.master.bind('E',       lambda e: self._prev_error())
+        self.bind_shortcut('<Left>', self._step_back)
+        self.bind_shortcut('<Right>', self._step_fwd)
+        self.bind_shortcut('<space>', self._toggle_play)
+        self.bind_shortcut('<Home>', self._go_start)
+        self.bind_shortcut('<End>', self._go_end)
+        self.bind_shortcut('e', self._next_error)
+        self.bind_shortcut('E', self._prev_error)
 
     def _build_analysis_tabs(self, parent) -> None:
         if hasattr(ctk, 'CTkTabview'):
@@ -358,6 +386,7 @@ class TraceView(BaseView):
             self._state_table.pack(fill='both', expand=True, padx=0, pady=0)
             self._diagnostic_panel = DiagnosticPanel(
                 diag_tab, self._diagnostics,
+                frames=self._frames,
                 on_incident_click=self._on_incident_click,
             )
             self._diagnostic_panel.pack(fill='both', expand=True, padx=0, pady=0)
@@ -375,6 +404,7 @@ class TraceView(BaseView):
             self._error_panel.pack(fill='both', expand=True, padx=0, pady=0)
             self._event_panel = EventPanel(
                 events_tab, self._events,
+                frames=self._frames,
                 on_event_click=self._on_event_click,
                 show_belt_filters=True,
             )
@@ -407,6 +437,7 @@ class TraceView(BaseView):
         self._state_table.pack(fill='both', expand=True)
         self._diagnostic_panel = DiagnosticPanel(
             self._analysis_fallback_tab_frames['Diagnostic'], self._diagnostics,
+            frames=self._frames,
             on_incident_click=self._on_incident_click,
         )
         self._diagnostic_panel.pack(fill='both', expand=True)
@@ -424,6 +455,7 @@ class TraceView(BaseView):
         self._error_panel.pack(fill='both', expand=True)
         self._event_panel = EventPanel(
             self._analysis_fallback_tab_frames['Evenements'], self._events,
+            frames=self._frames,
             on_event_click=self._on_event_click,
             show_belt_filters=True,
         )

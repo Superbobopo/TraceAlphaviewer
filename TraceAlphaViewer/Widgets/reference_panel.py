@@ -43,11 +43,13 @@ class ReferencePanel(ctk.CTkFrame):
             text_color='#88aacc',
         )
         self._title.pack(side='left', padx=(8, 12))
+        ctk.CTkLabel(header, text='CIP / filtre', font=('Consolas', 10),
+                     text_color='#88aacc').pack(side='left', padx=(0, 6))
 
         search = ctk.CTkEntry(
             header,
             textvariable=self._search_var,
-            placeholder_text='Filtrer ref, nom, IdA, idB...',
+            placeholder_text='CIP, barcode, nom, IdA, idB...',
             height=24,
             fg_color='#151525',
             text_color='#ddeeff',
@@ -55,6 +57,7 @@ class ReferencePanel(ctk.CTkFrame):
             font=('Consolas', 10),
         )
         search.pack(side='left', fill='x', expand=True, padx=(0, 8), pady=5)
+        search.bind('<Return>', lambda e: self._open_first_result())
         self._search_var.trace_add('write', lambda *_: self._render())
 
         self._btn_unknown = ctk.CTkButton(
@@ -110,9 +113,16 @@ class ReferencePanel(ctk.CTkFrame):
             record.name,
             str(record.id_b or ''),
             str(record.id_alpha or ''),
+            f'idB:{record.id_b}' if record.id_b else '',
+            f'IdA:{record.id_alpha}' if record.id_alpha else '',
             record.stages_label(),
         ]).lower()
         return query in text
+
+    def _open_first_result(self) -> str:
+        if self._visible_records and self._on_reference_click:
+            self._on_reference_click(self._visible_records[0])
+        return 'break'
 
     def _filtered_records(self) -> list[ReferenceRecord]:
         query = self._search_var.get().strip().lower()

@@ -7,3 +7,6 @@ __pycache__/
 .mypy_cache/
 dist/
 build/
+node_modules/
+.next/
+TraceAlphaViewer/report_app/out/

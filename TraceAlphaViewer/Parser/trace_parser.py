@@ -14,6 +14,7 @@ import os
 import re
 from typing import Callable, List, Optional
 
+from Models.dimension_check import dimension_finding_code, measurement_status_from_code
 from Models.state import BoxInfo, MachineEvent, MachineState, box_color
 
 # ── Regex d'en-tête de ligne ─────────────────────────────────────────────────
@@ -41,6 +42,11 @@ _TT4T5 = re.compile(
 _T5 = re.compile(
     r'\bT5:\s+(\S+)\s+eT5=(-?\d+).*?larg:(-?\d+).*?C9:(\d+)'
     r'.*?pT5:(-?\d+).*?eT5useO:(\d+).*?eT5useA:(\d+)'
+)
+_CUBESTOP_INFO = re.compile(r'\bCubeStop:([YN])\b', re.IGNORECASE)
+_CUBESTOP_MOVE = re.compile(
+    r'mvt\s+CubeStop\s+vers\s+le\s+(HAUT|BAS)(?:\s*\((.*?)\))?',
+    re.IGNORECASE,
 )
 T4_DIRECTION_MIN_DELTA_MM = 2
 
@@ -93,11 +99,14 @@ _MAJ_T5_POS = re.compile(
 _MAJ_T5_MESURE = re.compile(
     r"MAJ \(APRES-MESURE-LARG\) bt IdA:(\d+) '([^']*)'.*?"
     r"nvlle lxH:(\d+)x(\d+) \[x(\d+)\] X:(\d+)"
+    r"(?:.*?\(BdD:(\d+)x(\d+)x(\d+)\))?"
 )
 _ERROR_WORD = re.compile(r'\b(err|erreur|timeout|alarme|defaut|défaut)\b', re.IGNORECASE)
 _ERROR_REPEAT_DELAY = 300.0
 # Position approximative d'arrivée depuis T4 (mm, coord machine) — lue dans les traces
 _T5_ENTRY_X = 1060
+_T5_X_BUTEE_CANONICAL = 942
+_T5_X_MAX = 1750
 _T5_LIST_SEP = chr(182)
 _DEPL_T5 = re.compile(
     r'D[eé]place toutes les boites.*?sur (-?\d+) mm'
@@ -111,6 +120,10 @@ _LZB       = re.compile(r'\bLzB[:\s=]+(-?\d+)')
 _T4_LENGTH_SUMMARY = re.compile(
     r'longueur boite .*?\(BdD\)=(-?\d+).*?\(T2T\)=(-?\d+)'
     r'.*?\(T4C\)=(-?\d+).*?\(T4T\)=(-?\d+).*?diffT4=(-?\d+)mm',
+    re.IGNORECASE,
+)
+_T5_WIDTH_C9_INVALID = re.compile(
+    r'largeur lue sur T5\s*<\s*2mm\s+et\s+C9=1',
     re.IGNORECASE,
 )
 
@@ -161,7 +174,42 @@ def _apply_identity(
     if name:
         box.name = name
     if dims:
+        _set_bdd_dimensions(box, dims)
         box.width_mm, box.height_mm, box.length_mm = dims
+
+
+def _set_bdd_dimensions(box: BoxInfo, dims: tuple[int, int, int]) -> None:
+    width, height, length = dims
+    if width <= 0 and height <= 0 and length <= 0:
+        return
+    box.bdd_width_mm = width
+    box.bdd_height_mm = height
+    box.bdd_length_mm = length
+
+
+def _classify_alpha_measurement(box: BoxInfo) -> None:
+    if box.measurement_status == 'c9_error':
+        return
+    expected = (box.bdd_width_mm, box.bdd_height_mm, box.bdd_length_mm)
+    if any(value <= 0 for value in expected):
+        return
+    measured_length = box.measured_t4_length_mm or box.measured_t5_length_mm
+    measured = (box.measured_t5_width_mm, box.measured_t5_height_mm, measured_length)
+    if any(value <= 0 for value in measured):
+        return
+    code = dimension_finding_code(measured, expected)
+    box.measurement_status = measurement_status_from_code(code)
+
+
+def _copy_dimension_tracking(dst: BoxInfo, src: BoxInfo) -> None:
+    dst.bdd_width_mm = src.bdd_width_mm
+    dst.bdd_height_mm = src.bdd_height_mm
+    dst.bdd_length_mm = src.bdd_length_mm
+    dst.measured_t4_length_mm = src.measured_t4_length_mm
+    dst.measured_t5_width_mm = src.measured_t5_width_mm
+    dst.measured_t5_height_mm = src.measured_t5_height_mm
+    dst.measured_t5_length_mm = src.measured_t5_length_mm
+    dst.measurement_status = src.measurement_status
 
 
 def _find_unique_barcode(boxes: list[BoxInfo], barcode: str) -> Optional[BoxInfo]:
@@ -186,6 +234,16 @@ def _find_t5_box(
             if box.id_b == id_b:
                 return box
     return _find_unique_barcode(state.boxes_on_T5, barcode)
+
+
+def _find_t4_measure_box(state: MachineState, ctx: dict) -> Optional[BoxInfo]:
+    id_b = int(ctx.get('last_t5_transfer_idb') or 0)
+    id_a = ctx.get('idb_to_ida', {}).get(id_b, 0) if id_b else 0
+    return (
+        _find_t5_box(state, id_alpha=id_a, id_b=id_b)
+        or state.box_on_T4
+        or state.box_on_T3
+    )
 
 
 def _clear_missing_active_t5(state: MachineState) -> None:
@@ -403,14 +461,45 @@ def _t5_visual_base(box: BoxInfo) -> int:
     return int(box.t5_visual_x_pos or box.x_pos or 0)
 
 
+def _t5_visual_axis_x(state: MachineState, x_pos: int) -> int:
+    # Meme repere que le canvas : les grands X Alpha sont exprimes par distance
+    # a la butee observee, sinon l'offset serait applique dans le mauvais sens.
+    x_pos = int(x_pos)
+    butee_x = int(state.t5_x_butee or 0)
+    if butee_x > _T5_X_MAX and x_pos > _T5_X_MAX:
+        return _T5_X_BUTEE_CANONICAL + abs(x_pos - butee_x)
+    return x_pos
+
+
+def _t5_alpha_x_from_visual_axis(
+    state: MachineState,
+    base_x_pos: int,
+    visual_axis_x: int,
+) -> int:
+    base_x_pos = int(base_x_pos)
+    visual_axis_x = int(visual_axis_x)
+    butee_x = int(state.t5_x_butee or 0)
+    if butee_x > _T5_X_MAX and base_x_pos > _T5_X_MAX:
+        distance = visual_axis_x - _T5_X_BUTEE_CANONICAL
+        if base_x_pos >= butee_x:
+            return butee_x + distance
+        return butee_x - distance
+    return visual_axis_x
+
+
+def _t5_visual_x_with_offset(state: MachineState, box: BoxInfo) -> int:
+    base = _t5_visual_base(box)
+    visual_axis = _t5_visual_axis_x(state, base) + int(state.t5_visual_offset_mm or 0)
+    return _t5_alpha_x_from_visual_axis(state, base, visual_axis)
+
+
 def _commit_t5_visual_motion(state: MachineState) -> None:
     # Avant de reinitialiser l'offset deduit de pT5, on l'integre dans chaque
-    # boite deja positionnee sur T5. Cela evite un saut visuel au prochain MAJ.
+    # boite sur T5. Cela evite un saut visuel au prochain MAJ.
     offset = int(state.t5_visual_offset_mm or 0)
     if offset:
         for box in state.boxes_on_T5:
-            if not box.t5_entry_aligned:
-                box.t5_visual_x_pos = _t5_visual_base(box) + offset
+            box.t5_visual_x_pos = _t5_visual_x_with_offset(state, box)
     state.t5_visual_offset_mm = 0
 
 
@@ -420,8 +509,8 @@ def _reset_t5_visual_offset(
     commit: bool = True,
 ) -> None:
     # commit=True conserve le mouvement anime avant de repartir d'une nouvelle
-    # ancre pT5. commit=False est reserve aux lignes BdD qui confirment deja le
-    # deplacement global dans x_pos/t5_visual_x_pos.
+    # ancre pT5. commit=False est reserve aux appelants qui ont deja gere la
+    # continuite visuelle ou remplacent toute la liste T5.
     if commit:
         _commit_t5_visual_motion(state)
     else:
@@ -464,6 +553,7 @@ def _apply_t5_list_pack(state: MachineState, text: str, ctx: Optional[dict] = No
         return False
 
     parsed: list[BoxInfo] = []
+    previous_boxes = list(state.boxes_on_T5)
     for chunk in text.split('@'):
         values = _t5_list_values(chunk)
         if not values:
@@ -490,7 +580,7 @@ def _apply_t5_list_pack(state: MachineState, text: str, ctx: Optional[dict] = No
                 except ValueError:
                     t5_footprint = 0
                 break
-        parsed.append(BoxInfo(
+        box = BoxInfo(
             barcode=bc,
             name=values[3],
             lot=values[8] if len(values) > 8 else '',
@@ -505,7 +595,15 @@ def _apply_t5_list_pack(state: MachineState, text: str, ctx: Optional[dict] = No
             t5_entry_aligned=False,
             t5_after_c9=True,
             color=box_color(bc),
-        ))
+        )
+        previous = (
+            _find_t5_box(state, id_alpha=id_a, id_b=id_b)
+            or _find_unique_barcode(previous_boxes, bc)
+        )
+        if previous:
+            _copy_dimension_tracking(box, previous)
+            _classify_alpha_measurement(box)
+        parsed.append(box)
 
     if parsed or text.rstrip().endswith('@FP'):
         state.boxes_on_T5 = parsed
@@ -526,6 +624,23 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         ctx['last_reader'] = 'CB2'
     elif 'idCB1:' in text or 'CB1:' in text:
         ctx['last_reader'] = 'CB1'
+
+    mo = _CUBESTOP_INFO.search(text)
+    if mo:
+        state.cubestop_present = 1 if mo.group(1).upper() == 'Y' else 0
+        if not state.cubestop_present:
+            state.cubestop_position = ""
+            state.cubestop_reason = ""
+
+    mo = _CUBESTOP_MOVE.search(text)
+    if mo:
+        position = mo.group(1).upper()
+        reason = (mo.group(2) or "").strip()
+        state.cubestop_present = 1
+        state.cubestop_position = position
+        state.cubestop_reason = reason
+        title = "CubeStop monte" if position == "HAUT" else "CubeStop descend"
+        _add_event(state, line_num, 'info', 'CUBESTOP', title, reason)
 
     mo = _CB_HIST.search(text)
     if mo:
@@ -646,6 +761,19 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         state.eT5useA = int(mo.group(7))
         _track_motor_error(state, line_num, ctx, 'T5', state.eT5, text)
 
+    if _T5_WIDTH_C9_INVALID.search(text):
+        box = (
+            _find_t5_box(state, id_alpha=state.t5_active_id_alpha)
+            or (state.boxes_on_T5[-1] if len(state.boxes_on_T5) == 1 else None)
+        )
+        if box:
+            box.measurement_status = 'c9_error'
+        _add_event(
+            state, line_num, 'warning', 'T5',
+            'Largeur C9 invalide',
+            'largeur lue sur T5 < 2mm et C9=1'
+        )
+
     # ── Boîte initiale sur T5 ────────────────────────────────────────────────
     mo = _BOX_INIT_T5.search(text)
     if mo:
@@ -759,13 +887,15 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
             if id_b:
                 b.id_b = id_b
             if h > 0:
+                b.measured_t5_height_mm = h
                 b.height_mm = h
         else:
             # Boîte pas encore suivie (ex: arrivée non capturée) — on la crée
             state.boxes_on_T5.append(BoxInfo(
                 barcode=bc, id_alpha=id_a, x_pos=x,
                 t5_visual_x_pos=x,
-                id_b=id_b, height_mm=h, t5_entry_aligned=False,
+                id_b=id_b, height_mm=h, measured_t5_height_mm=h,
+                t5_entry_aligned=False,
                 t5_after_c9=False, color=box_color(bc)
             ))
         _add_event(state, line_num, 'info', 'BOITE', f'MAJ butee T5 {bc}', f'IdA:{id_a} X:{x} haut:{h}')
@@ -779,6 +909,9 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         height = int(mo.group(4))
         length = int(mo.group(5))
         x = int(mo.group(6))
+        bdd_dims = None
+        if mo.group(7) is not None:
+            bdd_dims = (int(mo.group(7)), int(mo.group(8)), int(mo.group(9)))
         state.t5_active_id_alpha = id_a
         _reset_t5_visual_offset(state, ctx)
         b = _find_t5_box(state, id_alpha=id_a, barcode=bc)
@@ -794,35 +927,51 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
             b.id_alpha = id_a
             if id_b:
                 b.id_b = id_b
+            if bdd_dims:
+                _set_bdd_dimensions(b, bdd_dims)
+            b.measured_t5_width_mm = width
+            b.measured_t5_height_mm = height
+            b.measured_t5_length_mm = length
             b.width_mm = width
             b.height_mm = height
             b.length_mm = length
+            _classify_alpha_measurement(b)
         else:
-            state.boxes_on_T5.append(BoxInfo(
+            bdd_w, bdd_h, bdd_l = bdd_dims or (0, 0, 0)
+            b = BoxInfo(
                 barcode=bc, id_alpha=id_a, x_pos=x,
                 id_b=id_b,
                 width_mm=width, height_mm=height, length_mm=length,
+                bdd_width_mm=bdd_w, bdd_height_mm=bdd_h, bdd_length_mm=bdd_l,
+                measured_t5_width_mm=width,
+                measured_t5_height_mm=height,
+                measured_t5_length_mm=length,
                 t5_footprint_mm=width,
                 t5_visual_x_pos=x,
                 t5_entry_aligned=False,
                 t5_after_c9=True,
                 color=box_color(bc),
-            ))
+            )
+            _classify_alpha_measurement(b)
+            state.boxes_on_T5.append(b)
         _add_event(state, line_num, 'info', 'BOITE', f'MAJ mesure T5 {bc}', f'IdA:{id_a} X:{x} {width}x{height}x{length}')
 
     mo = _DEPL_T5.search(text)
     if mo:
         delta = int(mo.group(1))
         # Ligne BdD confirmee : les boites deja etablies sur T5 sont deplacees
-        # par la BdD. Une nouvelle arrivee T4->T5 reste en base stable d'entree
-        # jusqu'a sa premiere MAJ, sinon elle saute X entree -> BdD -> butee.
+        # par la BdD, mais on garde la position deja animee par pT5.
         for b in state.boxes_on_T5:
+            current_visual_x = _t5_visual_x_with_offset(state, b)
             if b.t5_entry_aligned:
                 if state.t5_visual_offset_mm:
-                    b.t5_visual_x_pos = _t5_visual_base(b) + int(state.t5_visual_offset_mm)
+                    b.t5_visual_x_pos = current_visual_x
                 continue
             b.x_pos += delta
-            b.t5_visual_x_pos = b.x_pos
+            if state.t5_visual_offset_mm:
+                b.t5_visual_x_pos = current_visual_x
+            else:
+                b.t5_visual_x_pos = b.x_pos
         _reset_t5_visual_offset(state, ctx, commit=False)
 
     # ── Mémorisation du code-barres cherché en BdD ──────────────────────────
@@ -951,6 +1100,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
             state.box_on_T4.id_b = id_b
             if length > 0:
                 state.box_on_T4.length_mm = int(round(length))
+                state.box_on_T4.measured_t4_length_mm = int(round(length))
             ctx.setdefault('idb_to_box', {})[id_b] = state.box_on_T4
             _add_event(
                 state, line_num, 'info', 'TRANSFERT',
@@ -970,6 +1120,14 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
                 box = BoxInfo(
                     barcode=b.barcode, source_ref=b.source_ref, name=b.name, lot=b.lot,
                     length_mm=b.length_mm, width_mm=b.width_mm, height_mm=b.height_mm,
+                    bdd_width_mm=b.bdd_width_mm,
+                    bdd_height_mm=b.bdd_height_mm,
+                    bdd_length_mm=b.bdd_length_mm,
+                    measured_t4_length_mm=b.measured_t4_length_mm,
+                    measured_t5_width_mm=b.measured_t5_width_mm,
+                    measured_t5_height_mm=b.measured_t5_height_mm,
+                    measured_t5_length_mm=b.measured_t5_length_mm,
+                    measurement_status=b.measurement_status,
                     t5_footprint_mm=b.t5_footprint_mm,
                     id_b=b.id_b, id_alpha=b.id_alpha,
                     x_pos=_T5_ENTRY_X,
@@ -984,6 +1142,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
                 box.t5_visual_x_pos = 0
                 box.t5_entry_aligned = True
                 box.t5_after_c9 = False
+                _copy_dimension_tracking(box, b)
         _add_event(state, line_num, 'info', 'TRANSFERT', f'T4 vers T5 {_box_label(state.box_on_T4)}')
         state.box_on_T4 = None
 
@@ -1005,6 +1164,12 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
     mo = _T4_LENGTH_SUMMARY.search(text)
     if mo:
         bdd, t2t, t4c, t4t, diff = (int(v) for v in mo.groups())
+        measure_box = _find_t4_measure_box(state, ctx)
+        if measure_box:
+            if bdd > 0 and not measure_box.bdd_length_mm:
+                measure_box.bdd_length_mm = bdd
+            measure_box.measured_t4_length_mm = t4t or t4c or t2t
+            _classify_alpha_measurement(measure_box)
         severity = 'warning' if abs(diff) > 10 else 'info'
         _add_event(
             state, line_num, severity, 'T4',
@@ -1058,10 +1223,22 @@ def _is_significant(prev: MachineState, curr: MachineState) -> bool:
     if len(prev.boxes_on_T5) != len(curr.boxes_on_T5):
         return True
     if [
-        (b.id_alpha, b.id_b, b.x_pos, b.t5_visual_x_pos, b.t5_after_c9)
+        (
+            b.id_alpha, b.id_b, b.x_pos, b.t5_visual_x_pos, b.t5_after_c9,
+            b.bdd_width_mm, b.bdd_height_mm, b.bdd_length_mm,
+            b.measured_t4_length_mm, b.measured_t5_width_mm,
+            b.measured_t5_height_mm, b.measured_t5_length_mm,
+            b.measurement_status,
+        )
         for b in prev.boxes_on_T5
     ] != [
-        (b.id_alpha, b.id_b, b.x_pos, b.t5_visual_x_pos, b.t5_after_c9)
+        (
+            b.id_alpha, b.id_b, b.x_pos, b.t5_visual_x_pos, b.t5_after_c9,
+            b.bdd_width_mm, b.bdd_height_mm, b.bdd_length_mm,
+            b.measured_t4_length_mm, b.measured_t5_width_mm,
+            b.measured_t5_height_mm, b.measured_t5_length_mm,
+            b.measurement_status,
+        )
         for b in curr.boxes_on_T5
     ]:
         return True
@@ -1082,6 +1259,12 @@ def _is_significant(prev: MachineState, curr: MachineState) -> bool:
         prev.t5_active_id_alpha != curr.t5_active_id_alpha
         or prev.t5_x_butee != curr.t5_x_butee
         or prev.t5_visual_offset_mm != curr.t5_visual_offset_mm
+    ):
+        return True
+    if (
+        prev.cubestop_present != curr.cubestop_present
+        or prev.cubestop_position != curr.cubestop_position
+        or prev.cubestop_reason != curr.cubestop_reason
     ):
         return True
     return False
@@ -1120,7 +1303,7 @@ def parse_file(
                 'supp.', 'suppression', 'Suppr.', 'D\xe9place', 'MAJ (BUTEE', 'MAJ (APRES',
                 'ALPHA:T5-LIST-PACK', 'Cr\xe9ation',
                 'AjoutBtT5', 'DeplBtSurT5', 'capteurC1', 'FlagPoubelle', 'LzB', 'longueur boite',
-                'mesure de longueur', 'tassement', 'diffT4')
+                'mesure de longueur', 'tassement', 'diffT4', 'CubeStop')
 
     file_line = 0
     with open(filepath, encoding='latin-1', errors='replace') as fh:

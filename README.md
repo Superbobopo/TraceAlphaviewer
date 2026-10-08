@@ -37,12 +37,25 @@ Depuis la racine du depot :
 python TraceAlphaViewer\Main.py
 ```
 
+## Rapport web React
+
+Le bouton `Rapport web` utilise le build statique React/Next si celui-ci existe.
+Pour reconstruire le rapport web :
+
+```powershell
+cd TraceAlphaViewer\report_app
+npm install
+npm run build
+```
+
+Si le build React est absent, le generateur Python conserve un fallback HTML local.
+
 ## Validation rapide
 
 Compiler les modules principaux :
 
 ```powershell
-python -m py_compile TraceAlphaViewer\Main.py TraceAlphaViewer\Models\state.py TraceAlphaViewer\Parser\trace_parser.py TraceAlphaViewer\Views\traceView.py TraceAlphaViewer\Widgets\machine_canvas.py
+python -m py_compile TraceAlphaViewer\Main.py TraceAlphaViewer\Models\state.py TraceAlphaViewer\Models\diagnostic.py TraceAlphaViewer\Models\diagnostic_report.py TraceAlphaViewer\Parser\trace_parser.py TraceAlphaViewer\Views\traceView.py TraceAlphaViewer\Widgets\machine_canvas.py TraceAlphaViewer\Widgets\diagnostic_panel.py
 ```
 
 Points de controle visuel utiles avec les traces locales :
@@ -57,6 +70,32 @@ Points de controle visuel utiles avec les traces locales :
 - `Space` : lecture / pause
 - `Home` / `End` : premiere / derniere frame
 - `e` / `E` : incident ou erreur suivant / precedent
+
+## Recherche par CIP
+
+Dans l'onglet `References`, saisir un CIP, un barcode, un nom ou un identifiant
+(`idB:102`, `IdA:201`). Chaque boite conserve sa propre ligne, meme si plusieurs
+boites partagent le meme CIP. Cliquer sur une ligne pour rejoindre son premier
+passage ; `Enter` ouvre le premier resultat filtre.
+
+Dans la trace brute, le champ `CIP / texte` retrouve les occurrences d'un CIP,
+d'une heure ou de tout autre texte. Les boutons `<` / `>` et les touches
+`Enter`, `F3` / `Shift-F3` dans le champ permettent de passer entre les
+occurrences et de synchroniser le viewer. La recherche attend la fin du
+chargement de la trace brute.
+
+## Controles automatiques
+
+Depuis la racine du depot :
+
+```powershell
+python TraceAlphaViewer\Tools\validate_all.py
+```
+
+Cette commande lance les controles metier existants et les regressions du
+viewer : identite des boites, recherche CIP, fermeture des vues et comparaison
+du rendu canvas avec un dessin complet. Les controles qui dependent d'une
+trace locale absente indiquent explicitement qu'ils sont ignores.
 
 ## Fichiers importants
 

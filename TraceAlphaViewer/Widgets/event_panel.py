@@ -9,6 +9,7 @@ from typing import Callable, Optional
 import customtkinter as ctk
 import tkinter as tk
 
+from Models.event_cycles import BusinessEvent, build_business_events
 from Models.state import MachineEvent
 
 
@@ -65,6 +66,7 @@ class EventPanel(ctk.CTkFrame):
         self,
         master,
         events: list[MachineEvent],
+        frames: list | None = None,
         on_event_click: Optional[Callable[[MachineEvent], None]] = None,
         title: str = 'EVENEMENTS',
         empty_text: str = 'Aucun evenement detecte',
@@ -75,14 +77,15 @@ class EventPanel(ctk.CTkFrame):
         kwargs.setdefault('corner_radius', 0)
         super().__init__(master, **kwargs)
         self._events = events
-        self._visible_events: list[MachineEvent] = []
+        self._frames = frames or []
+        self._visible_events: list[MachineEvent | BusinessEvent] = []
         self._on_event_click = on_event_click
         self._panel_title = title
         self._empty_text = empty_text
         self._show_belt_filters = show_belt_filters
         self._active_belt_filter = 'Tous'
         self._filter_buttons: dict[str, ctk.CTkButton] = {}
-        self._line_to_event: dict[int, MachineEvent] = {}
+        self._line_to_event: dict[int, MachineEvent | BusinessEvent] = {}
         self._build()
         self.set_events(events)
 
@@ -136,6 +139,8 @@ class EventPanel(ctk.CTkFrame):
 
         self._text.tag_configure('line', foreground='#445566')
         self._text.tag_configure('current', background='#1a2d45')
+        self._text.tag_configure('header', foreground='#ddeeff', background='#1e1e30')
+        self._text.tag_configure('detail', foreground='#778899')
         for severity, (fg, bg) in _SEVERITY_TAGS.items():
             self._text.tag_configure(severity, foreground=fg)
             self._text.tag_configure(f'{severity}_current', foreground=fg, background=bg)
@@ -158,9 +163,11 @@ class EventPanel(ctk.CTkFrame):
             else:
                 button.configure(fg_color='#252538', hover_color='#353555', text_color='#aabbcc')
 
-    def _filtered_events(self) -> list[MachineEvent]:
+    def _filtered_events(self) -> list[MachineEvent | BusinessEvent]:
         if self._active_belt_filter == 'Tous':
             return self._events
+        if self._frames:
+            return build_business_events(self._frames, self._events, self._active_belt_filter)
         return [
             event for event in self._events
             if self._active_belt_filter in _event_belts(event)
@@ -185,13 +192,32 @@ class EventPanel(ctk.CTkFrame):
                 display_line = int(self._text.index('end-1c').split('.')[0])
                 self._line_to_event[display_line] = event
                 severity = event.severity if event.severity in _SEVERITY_TAGS else 'info'
-                text = (
-                    f'{event.timestamp_str:<8} '
-                    f'{event.kind:<9} '
-                    f'L.{event.line_num:<7} '
-                    f'{event.title}\n'
-                )
-                self._text.insert('end', text, (severity,))
+                indent = '  ' * int(getattr(event, 'indent', 0))
+                if getattr(event, 'header', False):
+                    text = (
+                        f'\n{event.timestamp_str:<8} '
+                        f'{event.kind:<9} '
+                        f'L.{event.line_num:<7} '
+                        f'{event.title}\n'
+                    )
+                    self._text.insert('end', text, ('header', severity))
+                else:
+                    text = (
+                        f'{event.timestamp_str:<8} '
+                        f'{event.kind:<9} '
+                        f'L.{event.line_num:<7} '
+                        f'{indent}{event.title}\n'
+                    )
+                    self._text.insert('end', text, (severity,))
+                    detail = getattr(event, 'detail', '')
+                    if detail and self._active_belt_filter != 'Tous':
+                        detail_line = int(self._text.index('end-1c').split('.')[0])
+                        self._line_to_event[detail_line] = event
+                        self._text.insert(
+                            'end',
+                            f'{"":<8} {"":<9} {"":<9} {indent}  {detail}\n',
+                            ('detail',),
+                        )
 
         self._text.configure(state='disabled')
 

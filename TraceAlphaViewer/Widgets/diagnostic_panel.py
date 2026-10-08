@@ -5,13 +5,18 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import webbrowser
 from pathlib import Path
 from typing import Callable, Optional
 
 import customtkinter as ctk
 import tkinter as tk
+from tkinter import messagebox
 
 from Models.diagnostic import DiagnosticIncident
+from Models.diagnostic_report import write_diagnostic_report
+from Models.state import MachineState
 
 
 _SEVERITY_STYLES = {
@@ -25,6 +30,8 @@ _SEVERITY_LABELS = {
     'warning': 'ALERTE',
     'info': 'INFO',
 }
+
+_SEVERITY_ORDER = {'error': 0, 'warning': 1, 'info': 2}
 
 _DETAILS_DEFAULT_WIDTH = 860
 _DETAILS_FULLSCREEN_DEFAULT_WIDTH = 600
@@ -80,11 +87,75 @@ def _save_split_widths(widths: dict[str, int]) -> None:
     path.write_text(json.dumps(data, indent=2), encoding='utf-8')
 
 
+def _duration_label(start: float, end: float) -> str:
+    duration = max(0, int(end - start))
+    minutes, seconds = divmod(duration, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{seconds:02d}s"
+    if minutes:
+        return f"{minutes}m{seconds:02d}s"
+    return f"{seconds}s"
+
+
+def _shorten(text: str, max_len: int = 170) -> str:
+    text = ' '.join((text or '-').split())
+    if len(text) <= max_len:
+        return text
+    return text[:max_len - 3].rstrip() + '...'
+
+
+def _metric_from_summary(summary: str, code: str, occurrence_count: int) -> str:
+    if code == 'ALPHA_CARD_RESET':
+        match = re.search(
+            r'(\d+) reset(?:\(s\))? carte Alpha .*? sur ([^.]+?) de trace',
+            summary,
+        )
+        if match:
+            return f'{match.group(1)} reset(s) sur {match.group(2)} de trace'
+        return f'{occurrence_count} reset(s) carte Alpha'
+    if code == 'UNKNOWN':
+        match = re.search(
+            r'(\d+) boite\(s\) unknown confirmee\(s\) CB1\+CB2 sur (\d+) boite\(s\) passees \(([^)]+)\)',
+            summary,
+        )
+        if match:
+            return f'{match.group(1)} unknown confirmees / {match.group(2)} boites ({match.group(3)})'
+    if code == 'CAM-NO-READ':
+        match = re.search(r'Camera\(s\) sans reussite observee .*?: (.+?)\.', summary)
+        if match:
+            return f'cameras sans lecture: {match.group(1)}'
+    return f'{occurrence_count} occurrence(s)'
+
+
+def _business_lines(summary: str, code: str) -> list[str]:
+    if code == 'UNKNOWN':
+        lines: list[str] = []
+        attribution = re.search(
+            r'Attribution unknown finales: ([^.]+)\.',
+            summary,
+        )
+        if attribution:
+            lines.append(attribution.group(1))
+        cameras = re.search(
+            r'(CB1 cameras reussies: [^.]+; CB2 cameras reussies: [^.]+)\.',
+            summary,
+        )
+        if cameras:
+            lines.append(cameras.group(1))
+        return lines
+    if code == 'CAM-NO-READ':
+        match = re.search(r'Camera\(s\) sans reussite observee .*?: (.+?)\.', summary)
+        return [f'Camera(s) a verifier: {match.group(1)}'] if match else [_shorten(summary)]
+    return [_shorten(summary)]
+
+
 class DiagnosticPanel(ctk.CTkFrame):
     def __init__(
         self,
         master,
         incidents: list[DiagnosticIncident],
+        frames: list[MachineState] | None = None,
         on_incident_click: Optional[Callable[[DiagnosticIncident], None]] = None,
         **kwargs,
     ):
@@ -92,11 +163,13 @@ class DiagnosticPanel(ctk.CTkFrame):
         kwargs.setdefault('corner_radius', 0)
         super().__init__(master, **kwargs)
         self._incidents = incidents
+        self._frames = frames
         self._on_incident_click = on_incident_click
         self._line_to_incident: dict[int, DiagnosticIncident] = {}
         self._split_widths = _load_split_widths()
         self._split_ready = False
         self._window_mode = 'normal'
+        self._showing_global = True
         self._build()
         self.set_incidents(incidents)
 
@@ -120,6 +193,8 @@ class DiagnosticPanel(ctk.CTkFrame):
             text_color='#778899',
         )
         self._summary.pack(anchor='w', padx=8, pady=(0, 4))
+        self._title.bind('<Button-1>', lambda _event: self._show_global_summary())
+        self._summary.bind('<Button-1>', lambda _event: self._show_global_summary())
 
         body = ctk.CTkFrame(self, fg_color='#12121f', corner_radius=0)
         body.pack(fill='both', expand=True)
@@ -145,6 +220,42 @@ class DiagnosticPanel(ctk.CTkFrame):
         self._paned.bind('<Configure>', self._on_paned_configure)
         self._paned.bind('<ButtonRelease-1>', self._on_split_release)
         self.winfo_toplevel().bind('<Configure>', self._on_host_configure, add='+')
+
+        detail_bar = tk.Frame(left, bg='#0f0f1c', height=34)
+        detail_bar.pack(fill='x')
+        detail_bar.pack_propagate(False)
+        self._global_btn = tk.Button(
+            detail_bar,
+            text='Vue globale',
+            command=self._show_global_summary,
+            bg='#1e1e30',
+            fg='#aabbcc',
+            activebackground='#263142',
+            activeforeground='#ffffff',
+            relief='flat',
+            borderwidth=0,
+            font=('Consolas', 9, 'bold'),
+            padx=10,
+            pady=3,
+            cursor='hand2',
+        )
+        self._global_btn.pack(side='left', padx=8, pady=6)
+        self._report_btn = tk.Button(
+            detail_bar,
+            text='Rapport web',
+            command=self._open_web_report,
+            bg='#1e1e30',
+            fg='#aabbcc',
+            activebackground='#263142',
+            activeforeground='#ffffff',
+            relief='flat',
+            borderwidth=0,
+            font=('Consolas', 9, 'bold'),
+            padx=10,
+            pady=3,
+            cursor='hand2',
+        )
+        self._report_btn.pack(side='left', padx=(0, 8), pady=6)
 
         self._details = tk.Text(
             left,
@@ -322,7 +433,7 @@ class DiagnosticPanel(ctk.CTkFrame):
                 self._list.insert('end', text, (severity,))
 
         self._list.configure(state='disabled')
-        self._show_details(incidents[0] if incidents else None)
+        self._show_global_summary()
 
     def highlight_for_line(self, file_line: int) -> None:
         self._list.tag_remove('current', '1.0', 'end')
@@ -345,9 +456,142 @@ class DiagnosticPanel(ctk.CTkFrame):
         self._list.tag_add('current', f'{best_line}.0', f'{best_line}.end')
         self._list.tag_add(f'{severity}_current', f'{best_line}.0', f'{best_line}.end')
         self._list.see(f'{best_line}.0')
-        self._show_details(best_incident)
+        if not self._showing_global:
+            self._show_details(best_incident)
+
+    def _clear_current_selection(self) -> None:
+        self._list.tag_remove('current', '1.0', 'end')
+        for severity in _SEVERITY_STYLES:
+            self._list.tag_remove(f'{severity}_current', '1.0', 'end')
+
+    def _show_global_summary(self) -> None:
+        self._showing_global = True
+        self._clear_current_selection()
+        self._details.configure(state='normal')
+        self._details.delete('1.0', 'end')
+        if not self._incidents:
+            self._details.insert(
+                'end',
+                'Diagnostic global de la trace\n\n'
+                'Aucun incident detecte sur l ensemble de la trace chargee.'
+            )
+            self._details.configure(state='disabled')
+            return
+
+        errors = sum(1 for incident in self._incidents if incident.severity == 'error')
+        warnings = sum(1 for incident in self._incidents if incident.severity == 'warning')
+        infos = sum(1 for incident in self._incidents if incident.severity == 'info')
+        groups: dict[tuple[str, str, str, str], dict[str, object]] = {}
+        for incident in self._incidents:
+            key = (incident.severity, incident.belt, incident.code, incident.title)
+            group = groups.get(key)
+            if group is None:
+                groups[key] = {
+                    'severity': incident.severity,
+                    'belt': incident.belt,
+                    'code': incident.code,
+                    'title': incident.title,
+                    'first_line': incident.first_line,
+                    'last_line': incident.last_line,
+                    'start_time': incident.start_time,
+                    'end_time': incident.end_time,
+                    'start_time_str': incident.start_time_str,
+                    'end_time_str': incident.end_time_str,
+                    'incident_count': 1,
+                    'occurrence_count': incident.count,
+                    'summary': incident.summary,
+                }
+                continue
+            group['incident_count'] = int(group['incident_count']) + 1
+            group['occurrence_count'] = int(group['occurrence_count']) + incident.count
+            if incident.first_line < int(group['first_line']):
+                group['first_line'] = incident.first_line
+                group['start_time'] = incident.start_time
+                group['start_time_str'] = incident.start_time_str
+            if incident.last_line > int(group['last_line']):
+                group['last_line'] = incident.last_line
+                group['end_time'] = incident.end_time
+                group['end_time_str'] = incident.end_time_str
+
+        grouped = sorted(
+            groups.values(),
+            key=lambda group: (
+                _SEVERITY_ORDER.get(str(group['severity']), 9),
+                int(group['first_line']),
+                str(group['title']),
+            ),
+        )
+
+        self._details.insert(
+            'end',
+            'DIAGNOSTIC GLOBAL\n\n'
+            f'Critiques : {errors} | Alertes : {warnings} | Infos : {infos} | '
+            f'Types : {len(grouped)}\n\n'
+            'A TRAITER EN PRIORITE\n'
+        )
+
+        priority_groups = sorted(
+            grouped,
+            key=lambda group: (
+                _SEVERITY_ORDER.get(str(group['severity']), 9),
+                -int(group['occurrence_count']),
+                int(group['first_line']),
+            ),
+        )[:5]
+        priority_keys = {
+            (str(group['severity']), str(group['belt']), str(group['code']), str(group['title']))
+            for group in priority_groups
+        }
+        for group in grouped:
+            key = (str(group['severity']), str(group['belt']), str(group['code']), str(group['title']))
+            if str(group['code']) in {'UNKNOWN', 'CAM-NO-READ'} and key not in priority_keys:
+                priority_groups.append(group)
+                priority_keys.add(key)
+        for idx, group in enumerate(priority_groups, 1):
+            severity_key = str(group['severity'])
+            severity = _SEVERITY_LABELS.get(severity_key, severity_key.upper())
+            zone = str(group['belt'] or '-')
+            code = str(group['code'] or '-')
+            occurrence_count = int(group['occurrence_count'])
+            metric = _metric_from_summary(str(group['summary']), code, occurrence_count)
+            self._details.insert(
+                'end',
+                f'{idx}. [{severity}] {zone} {code} - {metric}\n'
+                f'   {group["title"]}\n'
+                f'   L.{group["first_line"]} -> L.{group["last_line"]} | '
+                f'{group["start_time_str"]} -> {group["end_time_str"]}\n'
+            )
+            for line in _business_lines(str(group['summary']), code)[:2]:
+                self._details.insert('end', f'   {line}\n')
+            self._details.insert('end', '\n')
+
+        self._details.insert('end', 'TOUS LES TYPES DE PROBLEMES\n')
+        self._details.insert('end', '------------------------------------------------------------\n')
+
+        for idx, group in enumerate(grouped, 1):
+            severity_key = str(group['severity'])
+            severity = _SEVERITY_LABELS.get(severity_key, severity_key.upper())
+            zone = str(group['belt'] or '-')
+            code = str(group['code'] or '-')
+            duration = _duration_label(float(group['start_time']), float(group['end_time']))
+            incident_count = int(group['incident_count'])
+            occurrence_count = int(group['occurrence_count'])
+            metric = _metric_from_summary(str(group['summary']), code, occurrence_count)
+            count_label = f'{incident_count} type(s)' if incident_count == 1 else f'{incident_count} sequences'
+            self._details.insert(
+                'end',
+                f'{idx}. [{severity}] {zone} | {code} | {count_label} | {metric}\n'
+                f'   {group["title"]}\n'
+                f'   Lignes : L.{group["first_line"]} -> L.{group["last_line"]} | '
+                f'Periode : {group["start_time_str"]} -> {group["end_time_str"]} ({duration})\n'
+            )
+            for line in _business_lines(str(group['summary']), code)[:2]:
+                self._details.insert('end', f'   {line}\n')
+            self._details.insert('end', '------------------------------------------------------------\n')
+        self._details.configure(state='disabled')
 
     def _show_details(self, incident: DiagnosticIncident | None) -> None:
+        self._showing_global = False
         self._details.configure(state='normal')
         self._details.delete('1.0', 'end')
         if incident is None:
@@ -383,6 +627,16 @@ class DiagnosticPanel(ctk.CTkFrame):
             )
             self._details.insert('end', text)
         self._details.configure(state='disabled')
+
+    def _open_web_report(self) -> None:
+        try:
+            report_path = write_diagnostic_report(self._incidents, frames=self._frames)
+            webbrowser.open(report_path.resolve().as_uri(), new=2)
+        except Exception as exc:
+            messagebox.showerror(
+                'Rapport web',
+                f"Impossible de generer ou ouvrir le rapport diagnostic.\n\n{exc}",
+            )
 
     def _on_click(self, event) -> None:
         idx = self._list.index(f'@{event.x},{event.y}')

@@ -2,6 +2,23 @@ from __future__ import annotations
 
 
 DIAGNOSTIC_KNOWLEDGE: dict[str, dict[str, object]] = {
+    'alpha_card_reset': {
+        'symptom': "Le compteur 'Temps depuis RESET carte ALPHA' chute et repart pres de zero pendant la trace.",
+        'causes': [
+            "Defaut electrique ou perturbation provenant du CubeStop.",
+            "Defaut electrique ou perturbation provenant de la balance.",
+            "Shunt CubeStop ou balance absent, desserre ou incorrect.",
+            "Alimentation, masse ou cablage de la carte Alpha instable.",
+            "Defaut de la carte Alpha elle-meme.",
+        ],
+        'checks': [
+            "Verifier les shunts du CubeStop et de la balance.",
+            "Controler le cablage, les masses et l'alimentation de la carte Alpha.",
+            "Comparer l'heure du reset avec les commandes CubeStop et les operations de pesee.",
+            "Rechercher d'autres chutes du compteur pour confirmer la repetition.",
+        ],
+        'confidence': 'forte',
+    },
     'motor_error_generic': {
         'symptom': "Un code eT negatif documente comme erreur apparait sur un tapis.",
         'causes': [
@@ -29,6 +46,66 @@ DIAGNOSTIC_KNOWLEDGE: dict[str, dict[str, object]] = {
         ],
         'confidence': 'probable',
     },
+    't2_error_minus_88_c4': {
+        'symptom': "T2 signale qu'une boite est deja presente sur C4 au moment du transfert.",
+        'causes': [
+            "Boite bloquee sur C4.",
+            "Ejecteur C4 qui n'ejecte pas correctement.",
+            "Capteur C4 mal regle ou faux actif.",
+            "Cubestop qui ne se leve pas et ne laisse pas passer les boites.",
+        ],
+        'checks': [
+            "Verifier si C4 reste actif autour des occurrences.",
+            "Controler l'ejecteur C4 et le guidage de sortie.",
+            "Verifier le reglage du capteur C4 et l'etat du cubestop.",
+        ],
+        'confidence': 'probable',
+    },
+    't3_error_minus_48_c4_missing': {
+        'symptom': "T3 attend une boite venant de C4 mais la boite n'est pas vue au moment attendu.",
+        'causes': [
+            "Ejection ou transfert ponctuel depuis C4 incomplet.",
+            "Boite attendue absente ou deja evacuee.",
+            "Detection C4/T3 ponctuellement incoherente.",
+            "CubeStop ou guidage C4/T3 a verifier si le defaut se repete.",
+        ],
+        'checks': [
+            "Verifier les lignes proches si l'occurrence est isolee.",
+            "Controler le transfert C4 vers T3 seulement si le defaut se repete.",
+            "Verifier la commande CubeStop HAUT/BAS si la trace indique CubeStop:Y.",
+        ],
+        'confidence': 'possible',
+    },
+    't3_error_minus_43_c4_stuck': {
+        'symptom': "T3 signale une boite coincee pendant le transfert EA/C4 vers T3.",
+        'causes': [
+            "Boite bloquee sur C4 ou dans le rail d'ejection.",
+            "Ejecteur C4 qui pousse mal ou pas assez longtemps.",
+            "CubeStop commande en haut mais reste mecaniquement en bas.",
+            "Capteur C4 faux actif ou mal regle.",
+        ],
+        'checks': [
+            "Verifier si C4 reste actif pendant WAIT-FIN-TRSF.",
+            "Controler le mouvement reel du CubeStop au moment de la commande HAUT.",
+            "Controler l'ejecteur C4, le rail d'ejection et le passage vers T3.",
+        ],
+        'confidence': 'probable',
+    },
+    'cubestop_c4_blocked': {
+        'symptom': "Le systeme demande le passage vers T3, mais C4 reste actif et C5 ne voit pas la boite.",
+        'causes': [
+            "CubeStop commande en haut mais volet reste mecaniquement en bas.",
+            "Boite bloquee sur C4 ou guidee contre le volet.",
+            "Ejecteur C4 qui n'ejecte pas correctement.",
+            "Capteur C4 mal regle ou signal faux actif.",
+        ],
+        'checks': [
+            "Observer physiquement si le CubeStop remonte lors de la commande HAUT.",
+            "Verifier que la boite quitte C4 et arrive sur C5 pendant le transfert EA->T3.",
+            "Controler l'ejecteur, le rail d'ejection et le reglage du capteur C4.",
+        ],
+        'confidence': 'forte',
+    },
     't4_init_loop': {
         'symptom': "T4 reentre souvent en initialisation sans stabiliser un cycle normal.",
         'causes': [
@@ -39,6 +116,35 @@ DIAGNOSTIC_KNOWLEDGE: dict[str, dict[str, object]] = {
         'checks': [
             "Compter les occurrences d'init T4 et d'eT:-18.",
             "Verifier que T4 atteint bien un etat stable apres init.",
+        ],
+        'confidence': 'probable',
+    },
+    't4_init_repeated_c6_active': {
+        'symptom': "T4 demande plusieurs initialisations d'affilee alors que C6 reste actif.",
+        'causes': [
+            "Capteur C6 trop bas et voit la bande du tapis en permanence.",
+            "Corps etranger devant C6: cheveu, papier, bouchon, plastique ou depot.",
+            "Capteur C6 HS, mal positionne ou signal bloque actif.",
+        ],
+        'checks': [
+            "Nettoyer la zone C6 et verifier qu'aucun objet ne reste devant le capteur.",
+            "Verifier le reglage hauteur/alignement de C6.",
+            "Controler que C6 s'allume seulement au passage du boudin T4.",
+        ],
+        'confidence': 'probable',
+    },
+    't4_init_repeated_index_missing': {
+        'symptom': "T4 demande plusieurs initialisations d'affilee sans retrouver correctement son index C6.",
+        'causes': [
+            "Capteur C6 trop haut, mal regle ou decale.",
+            "Capteur C6 HS, debranche ou instable.",
+            "Moteur T4 qui patine ou n'arrive jamais a destination.",
+            "Rouleau moteur HS: le moteur tourne mais le tapis n'est pas entraine.",
+        ],
+        'checks': [
+            "Verifier que le boudin T4 passe bien devant C6 pendant l'initialisation.",
+            "Verifier le moteur T4, la transmission et le rouleau moteur.",
+            "Comparer pT4, eT4 et les transitions C6 autour des demandes d'init.",
         ],
         'confidence': 'probable',
     },
@@ -103,6 +209,37 @@ DIAGNOSTIC_KNOWLEDGE: dict[str, dict[str, object]] = {
             "Verifier la zone poubelle et le flux T5.",
         ],
         'confidence': 'possible',
+    },
+    'camera_unknown_rate': {
+        'symptom': "Une proportion elevee de boites finit en reference unknown apres lecture datamatrix.",
+        'causes': [
+            "Datamatrix absent, abime, mal oriente ou mal presente aux cameras.",
+            "Camera deconnectee, sale, mal reglee ou non contributive.",
+            "Eclairage, mise au point ou lecteur code-barres a controler.",
+            "Probleme reseau ou communication avec le groupement camera.",
+        ],
+        'checks': [
+            "Comparer les taux CB1 et CB2 pour localiser le groupement le plus suspect.",
+            "CB1 utilise les cameras 1, 2, 4, 5 et 6.",
+            "CB2 utilise la camera 3.",
+            "Verifier les cameras qui n'ont aucune reussite observee dans la trace.",
+        ],
+        'confidence': 'possible',
+    },
+    'camera_no_success': {
+        'symptom': "Une camera attendue ne produit aucune lecture reussie dans une trace significative.",
+        'causes': [
+            "Camera HS ou deconnectee.",
+            "Cable, reseau ou lecteur code-barres a controler.",
+            "Camera sale, masquee, mal reglee ou hors focus.",
+            "Eclairage insuffisant ou declenchement camera non effectif.",
+        ],
+        'checks': [
+            "Verifier alimentation, connexion et communication de la camera indiquee.",
+            "Controler nettoyage, mise au point, eclairage et position de la camera.",
+            "Comparer avec les compteurs PR/Soh des autres cameras du meme groupement.",
+        ],
+        'confidence': 'probable',
     },
 }
 

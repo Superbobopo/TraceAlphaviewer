@@ -18,10 +18,14 @@ class TraceAlphaViewer(ctk.CTk):
         self.main_view.show()
 
     def switch_view(self, new_view: BaseView) -> None:
-        self.main_view.hide()
+        previous = self.main_view
+        previous.hide()
         self.main_view = new_view
+        if getattr(new_view, '_return_view', None) is not previous:
+            previous.destroy()
         self.main_view.show()
 
 
-app = TraceAlphaViewer()
-app.mainloop()
+if __name__ == '__main__':
+    app = TraceAlphaViewer()
+    app.mainloop()
