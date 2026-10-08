@@ -45,6 +45,25 @@ rg --files
 - Si des traces sont indexees, les retirer avant de committer.
 - Les traces restent locales pour validation, sauf demande explicite de versionner un petit echantillon precis.
 
+### Commit et push automatiques
+
+Cette autorisation est permanente pour les prochaines interventions Codex sur ce projet, y compris dans une nouvelle conversation. A la fin de chaque tache ayant modifie le projet, effectuer automatiquement le commit et le push sans demander de confirmation, sauf si une autorisation technique est obligatoire ou si l'utilisateur donne une instruction contraire pour la tache. Une question, un plan ou une tache sans modification ne cree aucun commit.
+
+Procedure obligatoire, dans cet ordre :
+
+1. Verifier que la tache est terminee et relire les modifications pour reperer les erreurs evidentes.
+2. Executer `python TraceAlphaViewer\Tools\validate_all.py`, ainsi que la compilation et les validations specifiques deja exigees dans ce fichier. Signaler les controles ignores faute de trace locale. Si un test echoue ou si une validation obligatoire est impossible, ne pas committer ni pousser ; expliquer le blocage.
+3. Examiner `git status --short`, `git diff`, `git diff --cached` et `git diff --cached --name-only`. Verifier aussi les fichiers non suivis susceptibles d'appartenir a la tache et lancer `git diff --check`.
+4. Indexer uniquement les fichiers ou morceaux de modification lies a la tache. Preserver les changements utilisateur preexistants, y compris ceux deja indexes ; ne jamais utiliser un ajout global aveugle comme `git add .` ou `git add -A`. Si un fichier contient des modifications melangees, indexer seulement les morceaux autorises. Le commit final ne doit contenir aucune modification sans rapport avec la tache.
+5. Exclure les secrets, tokens, cles, fichiers d'authentification, traces locales, fichiers temporaires et artefacts non demandes. Respecter les exclusions de traces et l'exception d'echantillon precis deja definies plus haut. Inspecter le contenu a committer sans afficher de donnees sensibles.
+6. Creer un commit avec un message clair et descriptif en francais. Ne pas contourner les hooks Git ni modifier l'identite Git pour contourner un echec. Si le commit echoue, signaler la cause et ne pas pousser.
+7. Verifier la branche courante et le remote `origin` avant le push. La configuration verifiee a l'installation est `main` avec suivi `origin/main`, et `origin` pointe vers le depot GitHub `Superbobopo/TraceAlphaviewer`. Cette information est un constat, pas une obligation de pousser sur `main` : toujours pousser la branche courante vers la branche de meme nom sur `origin` avec `git push origin <branche_courante>`.
+8. Examiner tous les commits locaux et leurs changements qui seraient envoyes par le push. Ne pas envoyer de commits contenant des fichiers sensibles, des traces interdites ou des modifications non autorisees sans rapport avec la tache. Si la destination est ambigue, si la branche est detachee, si `origin` ne correspond plus au depot GitHub attendu ou si les commits a envoyer ne peuvent pas etre verifies, ne pas pousser et expliquer le blocage sans choisir une autre destination.
+9. Si le push echoue, conserver le commit local et signaler l'echec sans forcer l'operation. Ne jamais utiliser `git push --force`, `--force-with-lease`, ni aucune autre option de force. Ne jamais ecraser, supprimer ou reecrire l'historique Git, ni annuler les changements utilisateur pour rendre le push possible.
+10. A la fin de la reponse, confirmer separement le resultat du commit et celui du push, avec le message du commit et son identifiant. Ne jamais annoncer un push reussi sans l'avoir verifie ; preciser les erreurs ou validations restantes.
+
+Exception d'installation : cette mise a jour des instructions reste locale, sans commit ni push uniquement pour l'installer. Inclure cette mise a jour dans le prochain commit d'une tache validee necessitant un commit, sauf instruction contraire de l'utilisateur. Cette inclusion est explicitement autorisee. Ne modifier aucune configuration globale, memoire personnelle ou hook Git pour mettre en place ce fonctionnement.
+
 ## Fichiers importants
 
 - `TraceAlphaViewer/Main.py` : point d'entree customtkinter.
@@ -78,6 +97,7 @@ rg --files
 - Priorite de matching : `id_alpha`, puis `id_b`, puis barcode uniquement si unique.
 - Ne jamais mettre a jour ou supprimer toutes les boites qui partagent le meme barcode.
 - L'index References conserve une fiche par cycle boite : un CIP partage ne suffit jamais a fusionner des identites differentes. Les alias de reference peuvent designer plusieurs fiches ; le fallback barcode doit etre unique et encore present dans le cycle courant.
+- L'index References ignore les boites sans `id_alpha`, `id_b`, barcode ni `source_ref` avant toute allocation de fiche ; creer puis filtrer des fiches `UNKNOWN` rend le chargement des grosses traces quadratique.
 - Une re-identification CB2 conserve le parcours et `source_ref`, mais remplace le barcode de la fiche par le CIP identifie pour permettre sa recherche.
 - `box_in_EA` represente la boite sur C4 / CB1.
 - `box_on_T3` represente la boite sur T3 / C5 / CB2.
@@ -157,6 +177,8 @@ rg --files
 - Les workers de chargement transmettent leurs resultats par une file ; les appels Tk et `after` restent sur le thread UI. Fermer une vue annule ses callbacks ; remplacer une trace brute invalide les anciens resultats de chargement.
 - Une vue abandonnee est detruite pour liberer ses frames ; seule une vue explicitement gardee comme `_return_view` reste disponible.
 - Le canvas reutilise ses primitives sans changer leur ordre, leurs options ni la geometrie T5. Comparer le rendu reutilise au dessin complet avant toute modification de ce mecanisme.
+- Les lignes issues des frames parser sont ordonnees par numero de fichier ; les recherches de contexte diagnostic utilisent cette propriete pour borner leurs parcours, avec des limites inclusives et l'ordre des libelles conserve.
+- La trace brute est inseree par blocs avec un appel Tk groupe conservant les tags de chaque segment. Garder les callbacks entre blocs et leur annulation au remplacement ou a la fermeture.
 
 ## Diagnostics terrain
 
@@ -181,6 +203,7 @@ rg --files
 
 - Compiler les fichiers principaux avec la commande `py_compile` indiquee plus haut apres toute modification Python.
 - Lancer `python TraceAlphaViewer\Tools\validate_all.py` pour regrouper les controles metier et les regressions du viewer ; signaler les controles ignores faute de trace locale.
+- Pour une optimisation de chargement, mesurer les grosses traces separement et sans profileur avec `Tools/benchmark_loading.py` ; utiliser `--revision` et `--compare-results` pour comparer tous les diagnostics et references. Les exports JSON restent locaux.
 - Controler `TracAlpha1_012.old` autour de `24|08:31:15` a `08:31:18` : l'IBUPROFENE suit le mouvement T5 sans saut visuel.
 - Controler `TracAlpha1_012.old` autour de `24|08:31:52` a `08:31:55` : meme invariant sur le second IBUPROFENE.
 - Controler une sequence multi-boites vers `08:15:02` : les boites suivent le meme tapis et gardent leur espacement relatif.

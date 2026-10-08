@@ -171,10 +171,12 @@ class TracePanel(ctk.CTkFrame):
             return
         self._text.configure(state='normal')
         end = min(start + chunk, len(lines))
+        segments = []
         for (num, text) in lines[start:end]:
             prefix = f'L.{num:<7} '
-            self._text.insert('end', prefix, ('linenum',))
-            self._text.insert('end', text + '\n', ('known',))
+            segments.extend((prefix, ('linenum',), text + '\n', ('known',)))
+        # Un seul appel Tcl par bloc, avec les tags de chaque segment.
+        self._text.insert('end', *segments)
         self._text.configure(state='disabled')
         if end < len(lines):
             self._insert_job = self.after(5, lambda: self._insert_chunk(lines, end, chunk))

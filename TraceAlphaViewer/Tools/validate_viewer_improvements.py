@@ -145,6 +145,59 @@ class WidgetTests(unittest.TestCase):
                 panel.destroy()
             self.root.update()
 
+    def test_trace_blocks_preserve_text_tags_and_navigation(self):
+        clicked = []
+        lines = [(i, 'CIP:3400931234567 ete' if i in (3000, 3001) else '')
+                 for i in range(1, 3006)]
+        lines[0] = (1, 'Premiere ligne accentuee : \u00e9')
+        panel = TracePanel(self.root, on_line_click=clicked.append)
+        try:
+            panel._loading = True
+            panel._start_insert(lines)
+            self.assertTrue(panel._loading)
+            self.assertIsNotNone(panel._insert_job)
+            panel.highlight_lines(3000, 3001)
+            panel._search_var.set('3400931234567')
+            self.pump_until(lambda: not panel._loading and panel._search_job is None)
+            expected = ''.join(f'L.{number:<7} {text}\n' for number, text in lines)
+            self.assertEqual(panel._text.get('1.0', 'end-1c'), expected)
+            for line in (1, 2, 3000, 3001, 3005):
+                self.assertIn('linenum', panel._text.tag_names(f'{line}.0'))
+                self.assertNotIn('known', panel._text.tag_names(f'{line}.0'))
+            for line in (1, 3000, 3001):
+                self.assertIn('known', panel._text.tag_names(f'{line}.10'))
+                self.assertNotIn('linenum', panel._text.tag_names(f'{line}.10'))
+            self.assertIn('hi', panel._text.tag_names('3000.10'))
+            self.assertIn('hi_linenum', panel._text.tag_names('3001.0'))
+            panel.mark_unknown_lines([1])
+            self.assertIn('unknown', panel._text.tag_names('1.10'))
+            self.assertNotIn('known', panel._text.tag_names('1.10'))
+            panel._navigate_search(1)
+            panel._navigate_search(1)
+            self.assertEqual(clicked, [3000, 3001])
+        finally:
+            panel.destroy()
+        self.root.update()
+
+    def test_reload_cancels_pending_text_block(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as directory:
+            path = Path(directory) / 'replacement.old'
+            path.write_text('nouvelle trace\n', encoding='latin-1')
+            panel = TracePanel(self.root)
+            try:
+                panel._loading = True
+                panel._start_insert([(i, 'ancienne trace') for i in range(1, 6001)])
+                self.assertIsNotNone(panel._insert_job)
+                panel.load_file(str(path))
+                self.pump_until(lambda: not panel._loading)
+                self.assertEqual(panel._text.get('1.0', 'end-1c'), 'L.1       nouvelle trace\n')
+                panel._loading = True
+                panel._start_insert([(i, 'a fermer') for i in range(1, 6001)])
+                self.assertIsNotNone(panel._insert_job)
+            finally:
+                panel.destroy()
+            self.root.update()
+
     def test_discarded_view_releases_frames_and_callbacks(self):
         class Preview(BaseView):
             def __init__(self, master):

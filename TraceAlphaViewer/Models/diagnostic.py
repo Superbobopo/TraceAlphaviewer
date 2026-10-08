@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from bisect import bisect_left, bisect_right
+from operator import itemgetter
 import re
 from dataclasses import dataclass, field
 
@@ -991,9 +993,10 @@ def _dimension_context_labels(
     margin: int = 30,
 ) -> list[str]:
     labels: list[str] = []
-    for current_line, text, _ in line_states:
-        if current_line < line_num - margin or current_line > line_num + margin:
-            continue
+    # Les lignes issues des frames sont ordonnees par numero de fichier.
+    start = bisect_left(line_states, line_num - margin, key=itemgetter(0))
+    end = bisect_right(line_states, line_num + margin, key=itemgetter(0))
+    for _, text, _ in line_states[start:end]:
         for label, pattern in _DIMENSION_CONTEXT_PATTERNS:
             if label not in labels and pattern.search(text):
                 labels.append(label)

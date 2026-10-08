@@ -197,12 +197,15 @@ def build_reference_records(
             ('T3', frame.box_on_T3),
             ('T4', frame.box_on_T4),
         ):
-            if box is None:
+            # Les boites sans alias seraient eliminees de la liste finale.
+            if box is None or not (box.id_alpha or box.id_b or box.barcode or box.source_ref):
                 continue
             record = _record_for_box(records, alias_to_key, box, active_keys | current_keys)
             _update_record(record, box, stage, frame)
             current_keys.add(record.key)
         for box in frame.boxes_on_T5:
+            if not (box.id_alpha or box.id_b or box.barcode or box.source_ref):
+                continue
             record = _record_for_box(records, alias_to_key, box, active_keys | current_keys)
             _update_record(record, box, 'T5', frame)
             current_keys.add(record.key)

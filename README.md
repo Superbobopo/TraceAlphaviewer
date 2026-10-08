@@ -97,6 +97,48 @@ viewer : identite des boites, recherche CIP, fermeture des vues et comparaison
 du rendu canvas avec un dessin complet. Les controles qui dependent d'une
 trace locale absente indiquent explicitement qu'ils sont ignores.
 
+## Mesurer l'ouverture des grosses traces
+
+Le benchmark conserve la precision complete et mesure separement le parsing,
+les evenements, les diagnostics, les references, la preparation de la vue et
+l'insertion de toute la trace brute. La fenetre est masquee par defaut ; ajouter
+`--show` pour la rendre visible. Il ne cree aucun cache de trace.
+
+```powershell
+python TraceAlphaViewer\Tools\benchmark_loading.py TraceAlphaViewer\TracAlpha1_monistrol.txt
+```
+
+Pour comparer avec un commit anterieur, remplacer `REVISION_AVANT` par son
+identifiant Git et executer ces commandes separement, sans autre traitement lourd :
+
+```powershell
+python TraceAlphaViewer\Tools\benchmark_loading.py TraceAlphaViewer\TracAlpha1_monistrol.txt --revision REVISION_AVANT --results-json TraceAlphaViewer\Tools\__pycache__\avant.json
+python TraceAlphaViewer\Tools\benchmark_loading.py TraceAlphaViewer\TracAlpha1_monistrol.txt --compare-results TraceAlphaViewer\Tools\__pycache__\avant.json
+```
+
+La version Git des trois modules optimises est chargee en memoire, sans modifier
+le depot. La comparaison verifie tous les champs et l'ordre des diagnostics et
+references, ainsi que les nombres de frames, evenements et lignes. Le JSON
+contient des donnees de diagnostic de la trace : il reste local et ne doit pas
+etre versionne. Les temps incluent l'ouverture complete, sans profileur.
+
+Les recherches de contexte diagnostic parcourent seulement la fenetre de lignes
+utile. Les boites sans identite ne creent pas de fiches temporaires. Le texte brut
+est insere par blocs en conservant les tags et la navigation ; les callbacks
+entre blocs laissent l'interface traiter les autres actions.
+
+Mesures locales du 8 octobre 2026, sans profileur et sans cache applicatif,
+jusqu'a la fin du chargement du texte brut :
+
+| Trace | Avant | Apres | Acceleration |
+| --- | ---: | ---: | ---: |
+| Monistrol | 242,4 s | 69,8 s | x3,47 |
+| Marche | 125,8 s | 42,8 s | x2,94 |
+| Domineuc | 4,2 s | 3,3 s | x1,27 |
+
+Les diagnostics et references ont ete compares integralement et sont identiques
+sur les trois traces. Ces durees correspondent a la machine de validation.
+
 ## Fichiers importants
 
 - `TraceAlphaViewer/Main.py` : point d'entree de l'application
