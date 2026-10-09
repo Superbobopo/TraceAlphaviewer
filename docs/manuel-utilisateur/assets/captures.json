@@ -1,0 +1,54 @@
+{
+  "accueil": {
+    "width": 1780,
+    "height": 1000
+  },
+  "chargement": {
+    "width": 1780,
+    "height": 1000
+  },
+  "vue-ensemble": {
+    "width": 1780,
+    "height": 1000
+  },
+  "capteurs": {
+    "width": 1780,
+    "height": 1000
+  },
+  "references": {
+    "width": 1780,
+    "height": 1000
+  },
+  "unknown": {
+    "width": 1780,
+    "height": 1000
+  },
+  "recherche-trace": {
+    "width": 1780,
+    "height": 1000
+  },
+  "diagnostic-global": {
+    "width": 1780,
+    "height": 1000
+  },
+  "diagnostic-detail": {
+    "width": 1780,
+    "height": 1000
+  },
+  "erreurs": {
+    "width": 1780,
+    "height": 1000
+  },
+  "evenements": {
+    "width": 1780,
+    "height": 1000
+  },
+  "rapport": {
+    "width": 1440,
+    "height": 850
+  },
+  "dossier": {
+    "width": 1780,
+    "height": 1000
+  }
+}

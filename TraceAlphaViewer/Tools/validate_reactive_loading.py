@@ -362,12 +362,14 @@ class UiTests(unittest.TestCase):
             from Views.accueilView import AccueilView
             home = AccueilView(self.app)
             self.app.switch_view(home)
-            home._load(str(path))
-            owner = home._load_session
-            self.pump(lambda: isinstance(self.app.main_view, TraceView))
-            self.assertTrue(self.app.main_view._trace_panel._loading)
-            self.app.main_view._close()
-            close_session(owner)
+            # Suspendre la reception Tk : un petit fichier peut finir avant l'assertion.
+            with patch('Widgets.trace_panel.TracePanel._poll_results', return_value=None):
+                home._load(str(path))
+                owner = home._load_session
+                self.pump(lambda: isinstance(self.app.main_view, TraceView))
+                self.assertTrue(self.app.main_view._trace_panel._loading)
+                self.app.main_view._close()
+                close_session(owner)
         finally:
             close_session(session)
 

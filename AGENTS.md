@@ -13,6 +13,7 @@ Ce fichier est la memoire projet versionnee. Les regles techniques partagees doi
 - Les nouveaux commentaires de code doivent etre en francais.
 - Ne pas traduire les identifiants techniques, noms de fichiers, constantes, classes, fonctions ou libelles issus des traces.
 - Garder les commentaires courts et utiles ; ne pas commenter ce que le code dit deja clairement.
+- Le manuel debutant est dans `docs/manuel-utilisateur/index.html` ; son PDF est genere depuis ce meme HTML. Apres un changement visible de l'interface, verifier les instructions, reperes et captures concernes. Utiliser `Tools/generate_user_manual.py --captures --pdf` avec des donnees fictives et une capture du HWND du viewer uniquement ; ne jamais capturer le bureau ou publier les traces terrain. Controler la pagination et les images du PDF avant livraison.
 
 ## Lancement et commandes
 

@@ -10,6 +10,33 @@ Il parse les lignes de trace en frames `MachineState`, puis affiche :
 - les evenements et diagnostics ;
 - la trace brute avec navigation cliquable.
 
+## Manuel utilisateur illustre
+
+Pour decouvrir le logiciel sans connaitre les traces Alpha :
+
+- [Guide HTML « Bien demarrer avec TraceAlphaViewer »](docs/manuel-utilisateur/index.html) : ouvrir le fichier local dans un navigateur, avec sommaire cliquable et captures expliquees.
+- [Manuel PDF a partager ou imprimer](docs/manuel-utilisateur/Bien-demarrer-avec-TraceAlphaViewer.pdf).
+
+Le guide couvre l'ouverture, les capteurs et couleurs, le player, la recherche
+CIP, les references, les diagnostics, les evenements, les rapports et les
+dossiers/CSV. Il comprend une prise en main en cinq minutes, trois exercices,
+une fiche des commandes et un glossaire. Les treize captures utilisent des
+donnees fictives ; les traces terrain restent locales. Pour distribuer la
+version HTML hors connexion, conserver le dossier du manuel avec `assets`.
+
+Pour reproduire les captures et reconstruire le PDF, sous Windows avec Pillow
+et Edge (Chrome est accepte en fallback) :
+
+```powershell
+python -m pip install pillow
+python TraceAlphaViewer\Tools\generate_user_manual.py --captures --pdf
+```
+
+Les illustrations utilisent les vrais widgets et les parcours sont verifies
+pendant leur generation. Apres un changement d'interface, relire les reperes
+du HTML et controler le PDF. Les donnees de demonstration et profils navigateur
+sont crees dans `.trace_work`, puis nettoyes.
+
 ## Etat actuel
 
 Le depot suit la derniere version utilisable sur `main`.
