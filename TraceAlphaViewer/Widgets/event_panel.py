@@ -8,9 +8,14 @@ from typing import Callable, Optional
 
 import customtkinter as ctk
 import tkinter as tk
+from queue import Empty
+import time
 
 from Models.event_cycles import BusinessEvent, build_business_events
 from Models.state import MachineEvent
+from Models.frame_store import FrameStore
+from Models.loading_client import LoadingSession
+from Widgets.text_renderer import TextRenderer
 
 
 _SEVERITY_TAGS = {
@@ -71,6 +76,7 @@ class EventPanel(ctk.CTkFrame):
         title: str = 'EVENEMENTS',
         empty_text: str = 'Aucun evenement detecte',
         show_belt_filters: bool = False,
+        load_session=None,
         **kwargs,
     ):
         kwargs.setdefault('fg_color', '#12121f')
@@ -86,7 +92,15 @@ class EventPanel(ctk.CTkFrame):
         self._active_belt_filter = 'Tous'
         self._filter_buttons: dict[str, ctk.CTkButton] = {}
         self._line_to_event: dict[int, MachineEvent | BusinessEvent] = {}
+        self._load_session = load_session
+        self._own_session = None
+        self._filter_task = None
+        self._filter_job = None
+        self._highlight_line = None
         self._build()
+        self._renderer = TextRenderer(self, self._text,
+            on_row=lambda line, item: self._line_to_event.__setitem__(line, item),
+            on_done=self._restore_highlight)
         self.set_events(events)
 
     def _build(self) -> None:
@@ -174,7 +188,59 @@ class EventPanel(ctk.CTkFrame):
         ]
 
     def _render_events(self) -> None:
+        self._cancel_filter()
+        if isinstance(self._frames, FrameStore) and self._active_belt_filter != 'Tous':
+            self._renderer.cancel()
+            try:
+                if self._load_session is None:
+                    self._own_session = self._own_session or LoadingSession()
+                    self._load_session = self._own_session
+                self._filter_items = []
+                self._filter_task = self._load_session.start(
+                    'business', store=str(self._frames.directory), belt=self._active_belt_filter)
+            except Exception as exc:
+                self._title.configure(text=f'Erreur filtre : {exc}')
+                return
+            self._title.configure(text=f'{self._panel_title} - {self._active_belt_filter} : chargement...')
+            self._filter_job = self.after(10, self._poll_filter)
+            return
         events = self._filtered_events()
+        self._display_events(events)
+
+    def _cancel_filter(self):
+        if self._filter_job is not None:
+            self.after_cancel(self._filter_job)
+            self._filter_job = None
+        if self._filter_task is not None:
+            self._filter_task.cancel()
+            self._filter_task = None
+        self._filter_items = []
+
+    def _poll_filter(self):
+        self._filter_job = None
+        deadline = time.perf_counter() + 0.008
+        try:
+            while time.perf_counter() < deadline:
+                kind, payload = self._filter_task.results.get_nowait()
+                if kind == 'items':
+                    self._filter_items.extend(payload)
+                elif kind == 'done':
+                    self._filter_task = None
+                    self._display_events(self._filter_items)
+                    return
+                elif kind == 'error':
+                    self._cancel_filter()
+                    self._title.configure(text=f'Erreur filtre : {payload}')
+                    return
+        except Empty:
+            pass
+        self._filter_job = self.after(10, self._poll_filter)
+
+    @property
+    def loading(self):
+        return self._renderer.loading or self._filter_task is not None
+
+    def _display_events(self, events):
         self._visible_events = events
         self._line_to_event = {}
         if self._active_belt_filter == 'Tous':
@@ -182,15 +248,10 @@ class EventPanel(ctk.CTkFrame):
         else:
             self._title.configure(text=f'{self._panel_title} - {self._active_belt_filter} ({len(events)})')
 
-        self._text.configure(state='normal')
-        self._text.delete('1.0', 'end')
-
-        if not events:
-            self._text.insert('end', f'{self._empty_text}\n', ('line',))
-        else:
-            for idx, event in enumerate(events, 1):
-                display_line = int(self._text.index('end-1c').split('.')[0])
-                self._line_to_event[display_line] = event
+        def rows():
+            if not events:
+                yield f'{self._empty_text}\n', ('line',), None
+            for event in events:
                 severity = event.severity if event.severity in _SEVERITY_TAGS else 'info'
                 indent = '  ' * int(getattr(event, 'indent', 0))
                 if getattr(event, 'header', False):
@@ -200,7 +261,7 @@ class EventPanel(ctk.CTkFrame):
                         f'L.{event.line_num:<7} '
                         f'{event.title}\n'
                     )
-                    self._text.insert('end', text, ('header', severity))
+                    yield text, ('header', severity), event
                 else:
                     text = (
                         f'{event.timestamp_str:<8} '
@@ -208,20 +269,25 @@ class EventPanel(ctk.CTkFrame):
                         f'L.{event.line_num:<7} '
                         f'{indent}{event.title}\n'
                     )
-                    self._text.insert('end', text, (severity,))
+                    yield text, (severity,), event
                     detail = getattr(event, 'detail', '')
                     if detail and self._active_belt_filter != 'Tous':
-                        detail_line = int(self._text.index('end-1c').split('.')[0])
-                        self._line_to_event[detail_line] = event
-                        self._text.insert(
-                            'end',
-                            f'{"":<8} {"":<9} {"":<9} {indent}  {detail}\n',
-                            ('detail',),
-                        )
+                        yield f'{"":<8} {"":<9} {"":<9} {indent}  {detail}\n', ('detail',), event
+        self._renderer.start(rows())
 
-        self._text.configure(state='disabled')
+    def _restore_highlight(self):
+        if self._highlight_line is not None:
+            self.highlight_for_line(self._highlight_line)
+
+    def destroy(self):
+        self._cancel_filter()
+        self._renderer.cancel()
+        if self._own_session is not None:
+            self._own_session.close()
+        super().destroy()
 
     def highlight_for_line(self, file_line: int) -> None:
+        self._highlight_line = file_line
         self._text.tag_remove('current', '1.0', 'end')
         for severity in _SEVERITY_TAGS:
             self._text.tag_remove(f'{severity}_current', '1.0', 'end')

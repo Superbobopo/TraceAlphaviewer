@@ -9,6 +9,7 @@ import customtkinter as ctk
 import tkinter as tk
 
 from Models.reference_index import ReferenceRecord
+from Widgets.text_renderer import TextRenderer
 
 
 class ReferencePanel(ctk.CTkFrame):
@@ -29,6 +30,10 @@ class ReferencePanel(ctk.CTkFrame):
         self._search_var = tk.StringVar()
         self._unknown_only = False
         self._build()
+        self._highlight_line = None
+        self._renderer = TextRenderer(self, self._text,
+            on_row=lambda line, item: self._line_to_record.__setitem__(line, item),
+            on_done=self._restore_highlight)
         self.set_records(records)
 
     def _build(self) -> None:
@@ -146,19 +151,11 @@ class ReferencePanel(ctk.CTkFrame):
         self._line_to_record = {}
         self._title.configure(text=f'REFERENCES ({len(records)}/{len(self._records)})')
 
-        self._text.configure(state='normal')
-        self._text.delete('1.0', 'end')
-        self._text.insert(
-            'end',
-            f'{"Heure":<8} {"Ligne":<9} {"Parcours":<13} {"Ids":<20} Reference / nom\n',
-            ('header',),
-        )
-        if not records:
-            self._text.insert('end', 'Aucune reference trouvee.\n', ('normal',))
-        else:
+        def rows():
+            yield f'{"Heure":<8} {"Ligne":<9} {"Parcours":<13} {"Ids":<20} Reference / nom\n', ('header',), None
+            if not records:
+                yield 'Aucune reference trouvee.\n', ('normal',), None
             for record in records:
-                display_line = int(self._text.index('end-1c').split('.')[0])
-                self._line_to_record[display_line] = record
                 ids = ' '.join(
                     part for part in (
                         f'idB:{record.id_b}' if record.id_b else '',
@@ -179,10 +176,23 @@ class ReferencePanel(ctk.CTkFrame):
                     tag = 'taken'
                 else:
                     tag = 'normal'
-                self._text.insert('end', text, (tag,))
-        self._text.configure(state='disabled')
+                yield text, (tag,), record
+        self._renderer.start(rows())
+
+    @property
+    def loading(self):
+        return self._renderer.loading
+
+    def _restore_highlight(self):
+        if self._highlight_line is not None:
+            self.highlight_for_line(self._highlight_line)
+
+    def destroy(self):
+        self._renderer.cancel()
+        super().destroy()
 
     def highlight_for_line(self, file_line: int) -> None:
+        self._highlight_line = file_line
         self._text.tag_remove('current', '1.0', 'end')
         best_line = None
         best_record = None

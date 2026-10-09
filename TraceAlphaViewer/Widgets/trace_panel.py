@@ -1,7 +1,7 @@
 """
 TracePanel – affiche la trace complète du fichier .old.
 
-• Chargement asynchrone du fichier (chunks de 3000 lignes)
+• Chargement asynchrone du fichier (blocs de 500 lignes)
 • Chaque ligne = "L.XXXXXX  texte"
 • Lignes du frame courant surlignées en bleu
 • Clic sur une ligne → callback(file_line_num: int)
@@ -10,7 +10,8 @@ TracePanel – affiche la trace complète du fichier .old.
 from __future__ import annotations
 
 import threading
-from queue import Empty, Queue
+from queue import Empty, Queue, Full
+import time
 from typing import Callable, List, Optional, Tuple
 
 import customtkinter as ctk
@@ -32,7 +33,8 @@ class TracePanel(ctk.CTkFrame):
         self._hi_end:   int = 0
         self._load_generation = 0
         self._load_cancel = threading.Event()
-        self._load_results = Queue()
+        self._load_results = Queue(maxsize=4)
+        self._stream_started = False
         self._poll_job = None
         self._insert_job = None
         self._search_job = None
@@ -116,7 +118,9 @@ class TracePanel(ctk.CTkFrame):
         cancel = self._load_cancel
         self._load_generation += 1
         generation = self._load_generation
+        self._load_results = Queue(maxsize=4)
         results = self._load_results
+        self._stream_started = False
         self._loading = True
         self._total_lines = 0
         self._hi_start = self._hi_end = 0
@@ -131,29 +135,75 @@ class TracePanel(ctk.CTkFrame):
         self._text.configure(state='disabled')
 
         def _worker():
-            lines: List[Tuple[int, str]] = []
+            def put(kind, value):
+                while not cancel.is_set():
+                    try:
+                        results.put((generation, kind, value), timeout=0.05)
+                        return True
+                    except Full:
+                        pass
+                return False
             try:
+                lines = []
+                total_lines = 0
                 with open(filepath, encoding='latin-1', errors='replace') as fh:
                     for i, raw in enumerate(fh, 1):
                         if cancel.is_set():
                             return
                         lines.append((i, raw.rstrip('\r\n')))
+                        total_lines = i
+                        if len(lines) == 500:
+                            if not put('lines', lines):
+                                return
+                            lines = []
+                if lines and not put('lines', lines):
+                    return
+                put('done', total_lines)
             except Exception as exc:
-                lines = [(1, f'Erreur lecture : {exc}')]
-            if not cancel.is_set():
-                results.put((generation, lines))
+                put('error', f'Erreur lecture : {exc}')
 
         threading.Thread(target=_worker, daemon=True).start()
 
     def _poll_results(self) -> None:
+        self._poll_job = None
+        deadline = time.perf_counter() + 0.008
         try:
-            while True:
-                generation, lines = self._load_results.get_nowait()
+            while time.perf_counter() < deadline:
+                generation, kind, value = self._load_results.get_nowait()
                 if generation == self._load_generation:
-                    self._start_insert(lines)
+                    if not self._stream_started:
+                        self._text.configure(state='normal')
+                        self._text.delete('1.0', 'end')
+                        self._text.configure(state='disabled')
+                        self._stream_started = True
+                    if kind == 'lines':
+                        self._append_lines(value)
+                        self._total_lines = value[-1][0]
+                    else:
+                        if kind == 'error':
+                            self._append_lines([(self._total_lines + 1, value)])
+                            self._total_lines += 1
+                        else:
+                            self._total_lines = value
+                        self._finish_insert()
         except Empty:
             pass
-        self._poll_job = self.after(30, self._poll_results)
+        self._poll_job = self.after(1 if self._loading else 30, self._poll_results)
+
+    def _append_lines(self, lines):
+        segments = []
+        for num, text in lines:
+            segments.extend((f'L.{num:<7} ', ('linenum',), text + '\n', ('known',)))
+        if segments:
+            self._text.configure(state='normal')
+            self._text.insert('end', *segments)
+            self._text.configure(state='disabled')
+
+    def _finish_insert(self):
+        self._loading = False
+        self._queue_search()
+        if self._hi_start > 0:
+            self.highlight_lines(self._hi_start, self._hi_end)
 
     def _start_insert(self, lines: List[Tuple[int, str]]) -> None:
         self._total_lines = len(lines)
@@ -163,29 +213,17 @@ class TracePanel(ctk.CTkFrame):
         self._insert_chunk(lines, 0)
 
     def _insert_chunk(self, lines: List[Tuple[int, str]], start: int,
-                      chunk: int = 3000) -> None:
+                      chunk: int = 500) -> None:
         self._insert_job = None
         if start >= len(lines):
-            self._loading = False
-            self._queue_search()
+            self._finish_insert()
             return
-        self._text.configure(state='normal')
         end = min(start + chunk, len(lines))
-        segments = []
-        for (num, text) in lines[start:end]:
-            prefix = f'L.{num:<7} '
-            segments.extend((prefix, ('linenum',), text + '\n', ('known',)))
-        # Un seul appel Tcl par bloc, avec les tags de chaque segment.
-        self._text.insert('end', *segments)
-        self._text.configure(state='disabled')
+        self._append_lines(lines[start:end])
         if end < len(lines):
-            self._insert_job = self.after(5, lambda: self._insert_chunk(lines, end, chunk))
+            self._insert_job = self.after(1, lambda: self._insert_chunk(lines, end, chunk))
         else:
-            self._loading = False
-            self._queue_search()
-            # Restaure le highlight si on était déjà sur un frame
-            if self._hi_start > 0:
-                self.highlight_lines(self._hi_start, self._hi_end)
+            self._finish_insert()
 
     def _queue_search(self) -> None:
         if self._search_job:

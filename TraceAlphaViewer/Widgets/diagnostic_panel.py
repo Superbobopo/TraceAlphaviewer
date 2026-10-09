@@ -7,6 +7,8 @@ import json
 import os
 import re
 import webbrowser
+import time
+from queue import Empty
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -17,6 +19,9 @@ from tkinter import messagebox
 from Models.diagnostic import DiagnosticIncident
 from Models.diagnostic_report import write_diagnostic_report
 from Models.state import MachineState
+from Models.frame_store import FrameStore
+from Models.loading_client import LoadingSession
+from Widgets.text_renderer import TextRenderer
 
 
 _SEVERITY_STYLES = {
@@ -157,6 +162,7 @@ class DiagnosticPanel(ctk.CTkFrame):
         incidents: list[DiagnosticIncident],
         frames: list[MachineState] | None = None,
         on_incident_click: Optional[Callable[[DiagnosticIncident], None]] = None,
+        load_session=None,
         **kwargs,
     ):
         kwargs.setdefault('fg_color', '#12121f')
@@ -168,9 +174,19 @@ class DiagnosticPanel(ctk.CTkFrame):
         self._line_to_incident: dict[int, DiagnosticIncident] = {}
         self._split_widths = _load_split_widths()
         self._split_ready = False
+        self._split_job = None
+        self._mode_job = None
         self._window_mode = 'normal'
         self._showing_global = True
+        self._load_session = load_session
+        self._own_session = None
+        self._report_task = None
+        self._report_job = None
+        self._highlight_line = None
         self._build()
+        self._renderer = TextRenderer(self, self._list,
+            on_row=lambda line, item: self._line_to_incident.__setitem__(line, item),
+            on_done=self._restore_highlight)
         self.set_incidents(incidents)
 
     def _build(self) -> None:
@@ -219,7 +235,8 @@ class DiagnosticPanel(ctk.CTkFrame):
         self._paned.add(right, minsize=_INCIDENTS_MIN_WIDTH, stretch='never')
         self._paned.bind('<Configure>', self._on_paned_configure)
         self._paned.bind('<ButtonRelease-1>', self._on_split_release)
-        self.winfo_toplevel().bind('<Configure>', self._on_host_configure, add='+')
+        self._host = self.winfo_toplevel()
+        self._host_binding = self._host.bind('<Configure>', self._on_host_configure, add='+')
 
         detail_bar = tk.Frame(left, bg='#0f0f1c', height=34)
         detail_bar.pack(fill='x')
@@ -299,7 +316,8 @@ class DiagnosticPanel(ctk.CTkFrame):
 
     def _on_paned_configure(self, _event) -> None:
         if not self._split_ready:
-            self.after_idle(self._apply_split_width)
+            if self._split_job is None:
+                self._split_job = self.after_idle(self._apply_split_width)
             return
         self._clamp_split_width()
 
@@ -328,6 +346,7 @@ class DiagnosticPanel(ctk.CTkFrame):
         return int(self._paned.sash_coord(index)[0])
 
     def _apply_mode_width(self) -> None:
+        self._mode_job = None
         if not self._split_ready:
             return
         try:
@@ -346,14 +365,17 @@ class DiagnosticPanel(ctk.CTkFrame):
         if mode == self._window_mode:
             return
         self._window_mode = mode
-        self.after_idle(self._apply_mode_width)
+        if self._mode_job is not None:
+            self.after_cancel(self._mode_job)
+        self._mode_job = self.after_idle(self._apply_mode_width)
 
     def _apply_split_width(self) -> None:
+        self._split_job = None
         try:
             self._window_mode = self._host_mode()
             total_width = self._paned.winfo_width()
             if total_width <= (_DETAILS_MIN_WIDTH + _INCIDENTS_MIN_WIDTH):
-                self.after(30, self._apply_split_width)
+                self._split_job = self.after(30, self._apply_split_width)
                 return
             max_left = max(_DETAILS_MIN_WIDTH, total_width - _INCIDENTS_MIN_WIDTH)
             target = min(max(self._current_split_width(), _DETAILS_MIN_WIDTH), max_left)
@@ -405,20 +427,12 @@ class DiagnosticPanel(ctk.CTkFrame):
             text=f'Trace complete: {errors} critiques, {warnings} alertes, {len(incidents)} incidents. {focus}'
         )
 
-        self._list.configure(state='normal')
-        self._list.delete('1.0', 'end')
-
-        if not incidents:
-            self._list.insert('end', 'Aucun incident detecte sur l ensemble de la trace.\n', ('info',))
-        else:
-            self._list.insert(
-                'end',
-                'Heure    Niveau    Zone Ligne    Occ.  Incident\n',
-                ('header',),
-            )
+        def rows():
+            if not incidents:
+                yield 'Aucun incident detecte sur l ensemble de la trace.\n', ('info',), None
+            else:
+                yield 'Heure    Niveau    Zone Ligne    Occ.  Incident\n', ('header',), None
             for incident in incidents:
-                display_line = int(self._list.index('end-1c').split('.')[0])
-                self._line_to_incident[display_line] = incident
                 severity = incident.severity if incident.severity in _SEVERITY_STYLES else 'info'
                 severity_label = _SEVERITY_LABELS.get(severity, severity.upper())
                 zone = incident.belt or '-'
@@ -430,12 +444,20 @@ class DiagnosticPanel(ctk.CTkFrame):
                     f'{incident.count:>3}x  '
                     f'{incident.title} ({incident.duration_label()})\n'
                 )
-                self._list.insert('end', text, (severity,))
-
-        self._list.configure(state='disabled')
+                yield text, (severity,), incident
+        self._renderer.start(rows())
         self._show_global_summary()
 
+    @property
+    def loading(self):
+        return self._renderer.loading
+
+    def _restore_highlight(self):
+        if self._highlight_line is not None:
+            self.highlight_for_line(self._highlight_line)
+
     def highlight_for_line(self, file_line: int) -> None:
+        self._highlight_line = file_line
         self._list.tag_remove('current', '1.0', 'end')
         for severity in _SEVERITY_STYLES:
             self._list.tag_remove(f'{severity}_current', '1.0', 'end')
@@ -629,6 +651,22 @@ class DiagnosticPanel(ctk.CTkFrame):
         self._details.configure(state='disabled')
 
     def _open_web_report(self) -> None:
+        if isinstance(self._frames, FrameStore):
+            if self._report_task is not None:
+                return
+            try:
+                if self._load_session is None:
+                    self._own_session = self._own_session or LoadingSession()
+                    self._load_session = self._own_session
+                self._report_task = self._load_session.start(
+                    'report', store=str(self._frames.directory), incidents=self._incidents)
+            except Exception as exc:
+                messagebox.showerror('Rapport web', str(exc))
+                return
+            self._report_path = None
+            self._report_btn.configure(text='Rapport en preparation...', state='disabled')
+            self._report_job = self.after(10, self._poll_report)
+            return
         try:
             report_path = write_diagnostic_report(self._incidents, frames=self._frames)
             webbrowser.open(report_path.resolve().as_uri(), new=2)
@@ -637,6 +675,40 @@ class DiagnosticPanel(ctk.CTkFrame):
                 'Rapport web',
                 f"Impossible de generer ou ouvrir le rapport diagnostic.\n\n{exc}",
             )
+
+    def _poll_report(self):
+        self._report_job = None
+        deadline = time.perf_counter() + 0.008
+        try:
+            while time.perf_counter() < deadline:
+                kind, payload = self._report_task.results.get_nowait()
+                if kind == 'result':
+                    self._report_path = Path(payload)
+                elif kind in ('done', 'error'):
+                    self._report_task = None
+                    self._report_btn.configure(text='Rapport web', state='normal')
+                    if kind == 'error':
+                        messagebox.showerror('Rapport web', payload)
+                    elif self._report_path is not None:
+                        webbrowser.open(self._report_path.resolve().as_uri(), new=2)
+                    return
+        except Empty:
+            pass
+        self._report_job = self.after(10, self._poll_report)
+
+    def destroy(self):
+        self._host.unbind('<Configure>', self._host_binding)
+        for job in (self._split_job, self._mode_job):
+            if job is not None:
+                self.after_cancel(job)
+        self._renderer.cancel()
+        if self._report_job is not None:
+            self.after_cancel(self._report_job)
+        if self._report_task is not None:
+            self._report_task.cancel()
+        if self._own_session is not None:
+            self._own_session.close()
+        super().destroy()
 
     def _on_click(self, event) -> None:
         idx = self._list.index(f'@{event.x},{event.y}')

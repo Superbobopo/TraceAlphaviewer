@@ -32,9 +32,11 @@ class FolderEventRef:
 
 
 class FolderTraceView(BaseView):
-    def __init__(self, master, report: FolderReport, **kwargs):
+    def __init__(self, master, report: FolderReport, load_session=None, **kwargs):
         super().__init__(master, fg_color='#12121f', **kwargs)
         self._report = report
+        self._load_session = load_session
+        self._prepared = False
         self._selected_entry: TraceReportEntry | None = None
         self._trace_loaded_path: str = ''
         self._details_height = 280
@@ -50,7 +52,10 @@ class FolderTraceView(BaseView):
 
     def show(self) -> None:
         super().show()
+        if self._prepared:
+            return
         self._build()
+        self._prepared = True
         if self._selected_entry is not None:
             selected = next(
                 (entry for entry in self._report.entries if entry.filepath == self._selected_entry.filepath),
@@ -68,6 +73,31 @@ class FolderTraceView(BaseView):
         self._close_viewer_window()
         for widget in self.winfo_children():
             widget.destroy()
+        self._prepared = False
+
+    def prepare(self, on_ready, on_error=None) -> None:
+        self.after(5, self.preparation_step, lambda: self._prepare_layout(on_ready, on_error), on_error)
+
+    def _prepare_layout(self, on_ready, on_error=None) -> None:
+        self._build()
+        if self._report.entries:
+            first = next((entry for entry in self._report.entries if entry.has_data), self._report.entries[0])
+            self._select_entry(first)
+
+        def wait_panels():
+            panels = (self._trace_list, self._diagnostic_panel, self._error_panel, self._event_panel)
+            if any(panel.loading for panel in panels):
+                self.after(5, self.preparation_step, wait_panels, on_error)
+            else:
+                self._prepared = True
+                on_ready()
+        self.after(5, self.preparation_step, wait_panels, on_error)
+
+    def destroy(self) -> None:
+        self._close_viewer_window()
+        if self._load_session is not None:
+            self._load_session.close()
+        super().destroy()
 
     def _build(self) -> None:
         self._build_title_bar()

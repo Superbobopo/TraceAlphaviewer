@@ -116,7 +116,7 @@ python TraceAlphaViewer\Tools\benchmark_loading.py TraceAlphaViewer\TracAlpha1_m
 python TraceAlphaViewer\Tools\benchmark_loading.py TraceAlphaViewer\TracAlpha1_monistrol.txt --compare-results TraceAlphaViewer\Tools\__pycache__\avant.json
 ```
 
-La version Git des trois modules optimises est chargee en memoire, sans modifier
+La version Git des modules concernes est chargee en memoire, sans modifier
 le depot. La comparaison verifie tous les champs et l'ordre des diagnostics et
 references, ainsi que les nombres de frames, evenements et lignes. Le JSON
 contient des donnees de diagnostic de la trace : il reste local et ne doit pas
@@ -138,6 +138,64 @@ jusqu'a la fin du chargement du texte brut :
 
 Les diagnostics et references ont ete compares integralement et sont identiques
 sur les trois traces. Ces durees correspondent a la machine de validation.
+
+## Garder la fenetre reactive pendant le chargement
+
+L'ouverture depuis l'accueil, pour un fichier ou un dossier, execute le parser
+et les analyses dans un processus Python separe sans interface graphique.
+L'accueil affiche la progression jusqu'a la preparation des analyses et des
+listes du viewer. La precision reste `min_dt=0.0`.
+
+Les frames sont conservees uniquement pour la session dans
+`TraceAlphaViewer/.trace_work/session-*`, ignore par Git. `FrameStore` expose une
+sequence : blocs de 500 frames, cache de deux blocs et index compact des lignes.
+La navigation lit uniquement les blocs utiles. Ce stockage temporaire demande
+de l'espace disque, mais ne constitue pas un cache de reouverture. La fermeture
+ou l'annulation supprime la session en arriere-plan ; une vue gardee comme
+`_return_view` garde sa session jusqu'a sa destruction. Les filtres metier et le
+rapport utilisent un lecteur independant dans leur propre worker.
+
+Les files de reception sont bornees a quatre messages. La reception et le texte
+brut rendent la main apres un budget d'environ 8 ms ; chaque insertion brute
+porte sur 500 lignes au maximum. Les listes sont remplies progressivement avec
+un appel Tk groupe par bloc et la construction des widgets est decoupee.
+Un appel Tk individuel ne peut pas etre interrompu : la mesure des intervalles
+reste donc le controle effectif de la reactivite.
+
+Pour mesurer une ouverture reelle avec deplacements, redimensionnements et
+reductions de la fenetre :
+
+```powershell
+python TraceAlphaViewer\Tools\benchmark_loading.py TraceAlphaViewer\TracAlpha1_monistrol.txt --ui-latency --exercise-window --require-responsive --timeout 180 --results-json TraceAlphaViewer\Tools\__pycache__\monistrol_reactif.json
+```
+
+Executer les deux grosses traces separement, sans profileur ni autre traitement
+lourd. `--require-responsive` exige un percentile 95 sous 100 ms et aucun
+intervalle superieur ou egal a 500 ms. `--compare-results` verifie les analyses
+contre l'export precedent. Ajouter `--verify-frames --verify-analyses` pour
+comparer tous les champs des frames et evenements au parser direct, les six
+filtres metier et le rapport complet (hors date de generation). Ces comparaisons
+ont lieu apres la mesure, une fois la fenetre fermee. `--check-navigation`
+controle la recherche CIP, la synchronisation des frames et le player ;
+`--screenshot` permet une capture locale du viewer.
+
+Mesures locales du 9 octobre 2026, depuis l'accueil jusqu'a la fin du texte brut :
+
+| Trace | Ouverture initiale | Chargement reactif | Gain | Percentile 95 | Pause maximale |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Monistrol | 242,4 s | 82,1 s | x2,95 | 20,7 ms | 230,2 ms |
+| Marche | 125,8 s | 55,3 s | x2,28 | 20,2 ms | 149,4 ms |
+
+Domineuc charge tout son texte en 4,7 s (pause maximale 131,3 ms), avec les memes
+diagnostics et references et une navigation validee. Sur une petite trace, le
+lancement du processus et le stockage temporaire ajoutent un cout fixe ;
+l'objectif de gain x2 concerne les deux grosses traces.
+
+Les frames, evenements, diagnostics, references, filtres et rapports ont ete
+compares integralement sur les deux traces. `validate_reactive_loading.py`,
+inclus dans `validate_all.py`, controle aussi les lectures aleatoires, les
+limites des blocs, le cache, les erreurs de stockage/worker, les annulations,
+le nettoyage, les vues de retour et le viewer de dossier.
 
 ## Fichiers importants
 

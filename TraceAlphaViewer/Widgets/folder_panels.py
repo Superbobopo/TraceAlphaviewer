@@ -7,6 +7,7 @@ import customtkinter as ctk
 import tkinter as tk
 
 from Models.folder_report import TraceReportEntry
+from Widgets.text_renderer import TextRenderer
 
 
 T = TypeVar('T')
@@ -33,6 +34,21 @@ class TraceListPanel(ctk.CTkFrame):
         self._selected_path: str = ''
         self._on_select = on_select
         self._build()
+        self._renderer = TextRenderer(self, self._text,
+            on_row=lambda line, item: self._line_to_entry.__setitem__(line, item),
+            on_done=self._restore_highlight)
+
+    def _restore_highlight(self):
+        if self._selected_path:
+            self.highlight_entry(self._selected_path)
+
+    @property
+    def loading(self):
+        return self._renderer.loading
+
+    def destroy(self):
+        self._renderer.cancel()
+        super().destroy()
 
     def _build(self) -> None:
         header = ctk.CTkFrame(self, fg_color='#1e1e30', height=28, corner_radius=0)
@@ -73,25 +89,15 @@ class TraceListPanel(ctk.CTkFrame):
     def set_entries(self, entries: list[TraceReportEntry]) -> None:
         self._entries = entries
         self._line_to_entry = {}
-        self._text.configure(state='normal')
-        self._text.delete('1.0', 'end')
-        if not entries:
-            self._text.insert('end', 'Aucune trace trouvee.\n', ('meta',))
-        for entry in entries:
-            line_title = int(self._text.index('end-1c').split('.')[0])
-            self._line_to_entry[line_title] = entry
-            tags = ('title',)
-            if entry.parse_error:
-                tags = ('error',)
-            self._text.insert('end', f'{entry.name}\n', tags)
-            meta = (
-                f'  {entry.status_label} | {entry.frame_count} frames | '
-                f'{entry.diagnostic_count} diag | {entry.error_count} err\n'
-            )
-            self._text.insert('end', meta, ('meta',))
-        self._text.configure(state='disabled')
-        if self._selected_path:
-            self.highlight_entry(self._selected_path)
+        def rows():
+            if not entries:
+                yield 'Aucune trace trouvee.\n', ('meta',), None
+            for entry in entries:
+                tags = ('error',) if entry.parse_error else ('title',)
+                yield f'{entry.name}\n', tags, entry
+                yield (f'  {entry.status_label} | {entry.frame_count} frames | '
+                       f'{entry.diagnostic_count} diag | {entry.error_count} err\n'), ('meta',), None
+        self._renderer.start(rows())
 
     def highlight_entry(self, filepath: str) -> None:
         self._selected_path = filepath
@@ -132,7 +138,28 @@ class GroupedItemPanel(ctk.CTkFrame, Generic[T]):
         self._empty_text = empty_text
         self._line_to_item: dict[int, T] = {}
         self._item_id_to_line: dict[int, int] = {}
+        self._pending_selection = None
         self._build(title)
+        self._renderer = TextRenderer(self, self._list, on_row=self._map_row,
+                                      on_done=self._restore_selection)
+
+    def _restore_selection(self):
+        if self._pending_selection is not None:
+            item, trigger = self._pending_selection
+            self._pending_selection = None
+            self.select_item(item, trigger_callback=trigger)
+
+    def _map_row(self, line, item):
+        self._line_to_item[line] = item
+        self._item_id_to_line[id(item)] = line
+
+    @property
+    def loading(self):
+        return self._renderer.loading
+
+    def destroy(self):
+        self._renderer.cancel()
+        super().destroy()
 
     def _build(self, title: str) -> None:
         header = ctk.CTkFrame(self, fg_color='#1e1e30', height=50, corner_radius=0)
@@ -207,33 +234,23 @@ class GroupedItemPanel(ctk.CTkFrame, Generic[T]):
         self._list.bind('<Button-1>', self._on_click)
 
     def set_groups(self, groups: list[GroupSection[T]], summary: str = '') -> None:
+        self._pending_selection = None
         self._line_to_item = {}
         self._item_id_to_line = {}
         self._summary.configure(text=summary)
-        self._list.configure(state='normal')
-        self._list.delete('1.0', 'end')
-        if not groups:
-            self._list.insert('end', f'{self._empty_text}\n', ('meta',))
-            self._list.configure(state='disabled')
-            self._show_details(None)
-            return
-
-        first_item: T | None = None
-        for section in groups:
-            self._list.insert('end', f'{section.title}\n', ('group',))
-            if not section.items:
-                self._list.insert('end', '  Aucun element\n', ('meta',))
-                continue
-            for item in section.items:
-                display_line = int(self._list.index('end-1c').split('.')[0])
-                self._line_to_item[display_line] = item
-                self._item_id_to_line[id(item)] = display_line
-                tags = self._item_tags(item) if self._item_tags else ()
-                self._list.insert('end', f'  {self._item_label(item)}\n', tags)
-                if first_item is None:
-                    first_item = item
-            self._list.insert('end', '\n', ('meta',))
-        self._list.configure(state='disabled')
+        first_item = next((section.items[0] for section in groups if section.items), None)
+        def rows():
+            if not groups:
+                yield f'{self._empty_text}\n', ('meta',), None
+            for section in groups:
+                yield f'{section.title}\n', ('group',), None
+                if not section.items:
+                    yield '  Aucun element\n', ('meta',), None
+                for item in section.items:
+                    tags = self._item_tags(item) if self._item_tags else ()
+                    yield f'  {self._item_label(item)}\n', tags, item
+                yield '\n', ('meta',), None
+        self._renderer.start(rows())
         self._show_details(first_item)
 
     def select_item(self, item: T | None, trigger_callback: bool = False) -> bool:
@@ -246,6 +263,8 @@ class GroupedItemPanel(ctk.CTkFrame, Generic[T]):
                     display_line = line
                     break
         if display_line is None:
+            if self.loading:
+                self._pending_selection = (item, trigger_callback)
             return False
         self._select_display_line(display_line, trigger_callback=trigger_callback)
         return True
@@ -258,6 +277,7 @@ class GroupedItemPanel(ctk.CTkFrame, Generic[T]):
         return None
 
     def clear_selection(self) -> None:
+        self._pending_selection = None
         self._list.tag_remove('selected', '1.0', 'end')
 
     def _show_details(self, item: T | None) -> None:

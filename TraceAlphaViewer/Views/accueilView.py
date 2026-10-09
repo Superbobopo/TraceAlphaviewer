@@ -4,15 +4,15 @@ AccueilView - ecran de demarrage avec ouverture de fichier trace (.old/.txt).
 from __future__ import annotations
 
 import os
-import threading
+import time
+from queue import Empty
 from pathlib import Path
 from tkinter import filedialog
 
 import customtkinter as ctk
 
-from Models.diagnostic import build_diagnostics
-from Models.folder_report import build_folder_report
-from Models.reference_index import build_reference_records
+from Models.folder_report import FolderReport, TraceReportEntry
+from Models.loading_client import LoadingSession
 from Models.state import MachineEvent, MachineState
 from Views.BaseView import BaseView
 
@@ -204,9 +204,15 @@ class AccueilView(BaseView):
             self._load_folder(path)
 
     def _load(self, path: str) -> None:
-        """Lance le parsing dans un thread et affiche la progression."""
+        self._start_loading('file', path)
+
+    def _load_folder(self, path: str) -> None:
+        self._start_loading('folder', path)
+
+    def _start_loading(self, mode: str, path: str) -> None:
         if getattr(self, '_load_busy', False):
             return
+        path = str(Path(path).resolve())
         self._load_busy = True
         self._show_progress(True)
         self._progress_bar.set(0)
@@ -216,69 +222,99 @@ class AccueilView(BaseView):
             current_step='read',
         )
 
-        min_dt = 0.0
+        self._load_mode = mode
+        self._load_path = path
+        self._loaded_entries = []
+        self._load_data = None
+        self._prepared_view = None
+        try:
+            self._load_session = LoadingSession()
+            self._load_task = self._load_session.start(mode, path=path)
+            self.after(10, self._poll_loading)
+        except Exception as exc:
+            self._on_error(str(exc))
 
-        def worker():
-            from Parser.trace_parser import parse_file
-
-            def on_progress(done, total):
-                ratio = done / max(total, 1)
-                self.post_ui(self._progress_bar.set, ratio)
-
-            try:
-                frames = parse_file(path, progress_cb=on_progress, min_dt=min_dt)
-                self.post_ui(self._progress_bar.set, 1.0)
-                self.post_ui(self._set_progress_text, f'Analyse de la trace : {os.path.basename(path)}',
-                           'Construction des evenements...', 'events')
-                events = _collect_events(frames)
-                self.post_ui(self._set_progress_text, f'Analyse de la trace : {os.path.basename(path)}',
-                           'Analyse diagnostic...', 'diagnostic')
-                diagnostics = build_diagnostics(frames, events)
-                self.post_ui(self._set_progress_text, f'Analyse de la trace : {os.path.basename(path)}',
-                           'Index references...', 'references')
-                references = build_reference_records(frames, events)
-                self.post_ui(self._set_progress_text, f'Analyse de la trace : {os.path.basename(path)}',
-                           "Preparation de l'affichage...", 'display')
-                self.post_ui(self._on_loaded, path, frames, events, diagnostics, references)
-            except Exception as e:
-                self.post_ui(self._on_error, str(e))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _load_folder(self, path: str) -> None:
-        if getattr(self, '_load_busy', False):
+    def _poll_loading(self) -> None:
+        deadline = time.perf_counter() + 0.008
+        progress = None
+        try:
+            while time.perf_counter() < deadline:
+                kind, payload = self._load_task.results.get_nowait()
+                if kind == 'progress':
+                    progress = payload
+                elif kind == 'step':
+                    if progress is not None:
+                        self._progress_bar.set(progress)
+                        progress = None
+                    self._set_progress_text(*payload)
+                elif kind == 'entry':
+                    self._load_data = dict(payload, events=[], diagnostics=[], references=[])
+                    self._load_data['frames'] = (
+                        self._load_session.open_store(payload['store']) if payload['store'] else []
+                    )
+                elif kind in ('events', 'diagnostics', 'references'):
+                    self._load_data[kind].extend(payload)
+                elif kind == 'entry_done':
+                    data = self._load_data
+                    for key, expected in payload.items():
+                        if len(data[key]) != expected:
+                            raise OSError('Resultats de chargement incomplets')
+                    self._loaded_entries.append(data)
+                elif kind == 'done':
+                    self._load_timings = payload['timings']
+                    self._prepare_loaded_view()
+                    return
+                elif kind == 'error':
+                    self._on_error(payload)
+                    return
+        except Empty:
+            pass
+        except Exception as exc:
+            self._on_error(str(exc))
             return
-        self._load_busy = True
-        self._show_progress(True)
-        self._progress_bar.set(0)
-        self._set_progress_text(
-            f'Analyse du dossier : {os.path.basename(path)}',
-            'Lecture et diagnostics des traces...',
-            current_step='read',
-        )
+        if progress is not None:
+            self._progress_bar.set(progress)
+        self.after(10, self._poll_loading)
 
-        min_dt = 0.0
+    def _prepare_loaded_view(self) -> None:
+        self._progress_bar.set(1.0)
+        self._set_progress_text('Preparation du viewer', "Preparation de l'affichage...", 'display')
+        if self._load_mode == 'file':
+            data = self._loaded_entries[0]
+            from Views.traceView import TraceView
+            view = TraceView(self.master, data['filepath'], data['frames'],
+                             events=data['events'], diagnostics=data['diagnostics'],
+                             references=data['references'], load_session=self._load_session)
+        else:
+            from Views.folderTraceView import FolderTraceView
+            entries = [TraceReportEntry(
+                filepath=data['filepath'], name=data['name'], modified_ts=data['modified_ts'],
+                frames=data['frames'], events=data['events'], diagnostics=data['diagnostics'],
+                error_events=[event for event in data['events'] if event.severity == 'error'],
+                parse_error=data['parse_error'],
+            ) for data in self._loaded_entries]
+            view = FolderTraceView(self.master, FolderReport(self._load_path, entries),
+                                   load_session=self._load_session)
+        self._prepared_view = view
+        view.prepare(lambda: self._finish_loading(view), on_error=self._on_error)
 
-        def worker():
-            def on_progress(done, total, current_name):
-                ratio = done / max(total, 1) if total else 1.0
-                self.post_ui(self._progress_bar.set, ratio)
-                folder_name = os.path.basename(path)
-                self.post_ui(
-                    lambda name=current_name, current=done, count=total, folder=folder_name: self._set_progress_text(
-                        f'Analyse du dossier : {folder}',
-                        f'Lecture et diagnostics des traces : {name} ({current}/{count})',
-                        'diagnostic',
-                    ),
-                )
+    def _finish_loading(self, view) -> None:
+        self._load_busy = False
+        self._load_session = None
+        self._prepared_view = None
+        self._loaded_entries = []
+        self._load_data = None
+        self._load_task = None
+        self.master.switch_view(view)
 
-            try:
-                report = build_folder_report(path, progress_cb=on_progress, min_dt=min_dt)
-                self.post_ui(self._on_folder_loaded, report)
-            except Exception as exc:
-                self.post_ui(self._on_error, str(exc))
-
-        threading.Thread(target=worker, daemon=True).start()
+    def destroy(self) -> None:
+        session = getattr(self, '_load_session', None)
+        if session is not None:
+            session.close()
+        prepared = getattr(self, '_prepared_view', None)
+        if prepared is not None:
+            prepared.destroy()
+        super().destroy()
 
     def _show_progress(self, visible: bool) -> None:
         if visible:
@@ -335,6 +371,17 @@ class AccueilView(BaseView):
         self.master.switch_view(view)
 
     def _on_error(self, msg: str) -> None:
+        session = getattr(self, '_load_session', None)
+        if session is not None:
+            session.close()
+            self._load_session = None
+        prepared = getattr(self, '_prepared_view', None)
+        if prepared is not None:
+            prepared.destroy()
+            self._prepared_view = None
+        self._load_task = None
+        self._load_data = None
+        self._loaded_entries = []
         self._load_busy = False
         self._show_progress(False)
         self._progress_lbl.configure(

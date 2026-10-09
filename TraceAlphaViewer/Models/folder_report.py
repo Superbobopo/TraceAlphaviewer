@@ -4,10 +4,12 @@ import csv
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
+from collections.abc import Sequence
 
 from Models.diagnostic import DiagnosticIncident, build_diagnostics
 from Models.state import MachineEvent, MachineState
 from Parser.trace_parser import parse_file
+from Models.frame_store import FrameStore
 
 
 TRACE_EXTENSIONS = {'.old', '.txt'}
@@ -18,7 +20,7 @@ class TraceReportEntry:
     filepath: str
     name: str
     modified_ts: float = 0.0
-    frames: list[MachineState] = field(default_factory=list)
+    frames: Sequence[MachineState] = field(default_factory=list)
     events: list[MachineEvent] = field(default_factory=list)
     diagnostics: list[DiagnosticIncident] = field(default_factory=list)
     error_events: list[MachineEvent] = field(default_factory=list)
@@ -46,12 +48,16 @@ class TraceReportEntry:
 
     @property
     def start_time_str(self) -> str:
+        if isinstance(self.frames, FrameStore):
+            return self.frames.start_time_str
         if not self.frames:
             return '--:--:--'
         return self.frames[0].timestamp_str
 
     @property
     def end_time_str(self) -> str:
+        if isinstance(self.frames, FrameStore):
+            return self.frames.end_time_str
         if not self.frames:
             return '--:--:--'
         return self.frames[-1].timestamp_str

@@ -40,6 +40,7 @@ rg --files
 - `main` doit representer la derniere version utilisable du projet.
 - Conserver les anciens etats par l'historique Git normal et les tags, pas par des branches d'archive.
 - Utiliser une branche courte seulement pour un travail risque, puis revenir sur `main`.
+- Pour un travail risque, pousser la branche de travail apres chaque etape fonctionnelle terminee et validee, afin de garder des points de retour sur GitHub. Integrer a `main` seulement apres validation finale ; les controles obligatoires restent applicables a chaque commit.
 - Ne pas pousser les fichiers de traces sur GitHub : pas de `*.old`, pas de gros `.txt` de trace.
 - Avant chaque commit, verifier `git status --short` et la liste des fichiers indexes.
 - Si des traces sont indexees, les retirer avant de committer.
@@ -179,6 +180,11 @@ Exception d'installation : cette mise a jour des instructions reste locale, sans
 - Le canvas reutilise ses primitives sans changer leur ordre, leurs options ni la geometrie T5. Comparer le rendu reutilise au dessin complet avant toute modification de ce mecanisme.
 - Les lignes issues des frames parser sont ordonnees par numero de fichier ; les recherches de contexte diagnostic utilisent cette propriete pour borner leurs parcours, avec des limites inclusives et l'ordre des libelles conserve.
 - La trace brute est inseree par blocs avec un appel Tk groupe conservant les tags de chaque segment. Garder les callbacks entre blocs et leur annulation au remplacement ou a la fermeture.
+- Le chargement fichier/dossier utilise un processus autonome qui importe uniquement le parser et les modules metier, jamais Tk ni `Views`. La reception/deserialisation reste hors du thread Tk, avec une file bornee et un identifiant par worker.
+- `FrameStore` conserve toutes les frames par blocs de 500, avec deux blocs en cache et un index compact des lignes. Ne pas recreer une liste ni parcourir toute cette sequence dans un constructeur de viewer. Les filtres metier et rapports utilisent un lecteur independant dans un worker.
+- Les fichiers `.trace_work/session-*` sont un stockage temporaire de session, jamais un cache de reouverture. Leur proprietaire annule ses workers et ferme ses lecteurs a sa destruction ; le nettoyage attend hors du thread Tk. Une vue `_return_view` conserve sa session, un popup de dossier l'emprunte sans la fermer.
+- La reception UI utilise un budget d'environ 8 ms, la trace brute une file bornee et des blocs de 500 lignes maximum, les listes une insertion progressive groupee. Attendre la preparation des analyses/listes avant de quitter l'accueil. Annuler aussi les callbacks de mise en page et retirer les bindings a la destruction des panneaux.
+- Les raccourcis se lient via `tkinter.Misc.bind/unbind` avec leur identifiant, pour retirer seulement les callbacks de la vue ; les wrappers `CTkFrame.bind` ne rendent pas cet identifiant et peuvent conserver une vue detruite.
 
 ## Diagnostics terrain
 
@@ -204,6 +210,7 @@ Exception d'installation : cette mise a jour des instructions reste locale, sans
 - Compiler les fichiers principaux avec la commande `py_compile` indiquee plus haut apres toute modification Python.
 - Lancer `python TraceAlphaViewer\Tools\validate_all.py` pour regrouper les controles metier et les regressions du viewer ; signaler les controles ignores faute de trace locale.
 - Pour une optimisation de chargement, mesurer les grosses traces separement et sans profileur avec `Tools/benchmark_loading.py` ; utiliser `--revision` et `--compare-results` pour comparer tous les diagnostics et references. Les exports JSON restent locaux.
+- Pour la reactivite, mesurer l'ouverture depuis l'accueil avec `--ui-latency --exercise-window --require-responsive` : percentile 95 sous 100 ms, maximum sous 500 ms. Ajouter `--verify-frames --verify-analyses` pour comparer frames/evenements, six filtres et rapport hors mesure, et `--check-navigation` pour la recherche CIP et le player. Garder au moins le gain x2 face a la version precedant les premieres optimisations.
 - Controler `TracAlpha1_012.old` autour de `24|08:31:15` a `08:31:18` : l'IBUPROFENE suit le mouvement T5 sans saut visuel.
 - Controler `TracAlpha1_012.old` autour de `24|08:31:52` a `08:31:55` : meme invariant sur le second IBUPROFENE.
 - Controler une sequence multi-boites vers `08:15:02` : les boites suivent le meme tapis et gardent leur espacement relatif.

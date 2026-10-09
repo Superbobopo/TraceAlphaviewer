@@ -10,3 +10,4 @@ build/
 node_modules/
 .next/
 TraceAlphaViewer/report_app/out/
+TraceAlphaViewer/.trace_work/

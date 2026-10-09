@@ -9,6 +9,7 @@ import tkinter as tk
 
 from Models.folder_report import TraceReportEntry
 from Models.state import MachineState
+from Models.frame_store import FrameStore
 from Views.BaseView import BaseView
 from Widgets.machine_canvas import CANVAS_H, CANVAS_W, MachineCanvas
 
@@ -41,7 +42,7 @@ class FolderPlaybackView(BaseView):
         self._speed_value = 1.0
         self._error_events = entry.error_events
         self._current_error_line: Optional[int] = None
-        self._line_map: list[tuple[int, int]] = sorted(
+        self._line_map: list[tuple[int, int]] = [] if isinstance(self._frames, FrameStore) else sorted(
             [(frame.line_num, index) for index, frame in enumerate(self._frames)],
             key=lambda item: item[0],
         )
@@ -231,7 +232,13 @@ class FolderPlaybackView(BaseView):
             return
         idx = max(0, min(idx, len(self._frames) - 1))
         self._idx = idx
-        state = self._frames[idx]
+        try:
+            state = self._frames[idx]
+        except OSError as exc:
+            from tkinter import messagebox
+            self._stop_playback()
+            messagebox.showerror('Lecture trace', str(exc))
+            return
 
         self._canvas.update_state(state)
         self._lbl_ts.configure(text=state.timestamp_str)
@@ -347,6 +354,8 @@ class FolderPlaybackView(BaseView):
         self._set_error_reference(None)
 
     def _frame_for_file_line(self, file_line: int) -> int:
+        if isinstance(self._frames, FrameStore):
+            return self._frames.frame_index_for_line(file_line)
         keys = [item[0] for item in self._line_map]
         pos = bisect.bisect_right(keys, file_line) - 1
         if pos < 0:

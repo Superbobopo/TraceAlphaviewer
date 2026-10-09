@@ -20,13 +20,16 @@ import copy
 import math
 import os
 from typing import Callable, List, Optional
+from collections.abc import Sequence
 
 import customtkinter as ctk
 import tkinter as tk
+from tkinter import messagebox
 
 from Models.diagnostic import DiagnosticIncident, build_diagnostics
 from Models.reference_index import ReferenceRecord, build_reference_records
 from Models.state import MachineEvent, MachineState
+from Models.frame_store import FrameStore
 from Views.BaseView import BaseView
 from Widgets.diagnostic_panel import DiagnosticPanel
 from Widgets.event_panel import EventPanel
@@ -64,12 +67,13 @@ class TraceView(BaseView):
         self,
         master,
         filepath: str,
-        frames: List[MachineState],
+        frames: Sequence[MachineState],
         events: list[MachineEvent] | None = None,
         diagnostics: list[DiagnosticIncident] | None = None,
         references: list[ReferenceRecord] | None = None,
         return_view: BaseView | None = None,
         on_close: Callable[[], None] | None = None,
+        load_session=None,
         **kwargs,
     ):
         super().__init__(master, fg_color='#12121f', **kwargs)
@@ -77,6 +81,8 @@ class TraceView(BaseView):
         self._frames      = frames
         self._return_view = return_view
         self._on_close    = on_close
+        self._load_session = load_session
+        self._prepared = False
         self._events      = events if events is not None else self._collect_events(frames)
         self._diagnostics = diagnostics if diagnostics is not None else build_diagnostics(frames, self._events)
         self._references  = references if references is not None else build_reference_records(frames, self._events)
@@ -98,7 +104,7 @@ class TraceView(BaseView):
 
         # Table de correspondance fichier-ligne → index frame (tri croissant)
         # Chaque entrée = (line_num_fichier, frame_idx)
-        self._line_map: List[tuple] = sorted(
+        self._line_map: List[tuple] = [] if isinstance(frames, FrameStore) else sorted(
             [(f.line_num, i) for i, f in enumerate(frames)],
             key=lambda x: x[0]
         )
@@ -134,12 +140,44 @@ class TraceView(BaseView):
     # ── Affichage / fermeture ─────────────────────────────────────────────────
     def show(self) -> None:
         super().show()
-        self._build_title_bar()
-        self._build_split_layout()
+        if not self._prepared:
+            self._build_title_bar()
+            self._build_split_layout()
+            self._prepared = True
+        self._trace_panel.load_file(self._filepath)
         if self._frames:
             self._go_to(0)
-        # Charge le fichier trace complet en arrière-plan
-        self._trace_panel.load_file(self._filepath)
+
+    def prepare(self, on_ready, on_error=None) -> None:
+        self._build_title_bar()
+
+        def layout():
+            self._build_split_layout(build_children=False)
+            self.after(5, self.preparation_step, middle, on_error)
+
+        def middle():
+            self._build_middle(self._middle_pane)
+            self.after(5, self.preparation_step, bottom, on_error)
+
+        def bottom():
+            self._build_bottom(self._bottom_pane)
+            self.after(80, lambda: self._set_bottom_height(self._details_height))
+            self.after(5, self.preparation_step, wait_panels, on_error)
+
+        def wait_panels():
+            panels = (self._event_panel, self._error_panel, self._reference_panel, self._diagnostic_panel)
+            if any(panel.loading for panel in panels):
+                self.after(5, self.preparation_step, wait_panels, on_error)
+            else:
+                self._prepared = True
+                on_ready()
+
+        self.after(5, self.preparation_step, layout, on_error)
+
+    def destroy(self) -> None:
+        if self._load_session is not None:
+            self._load_session.close()
+        super().destroy()
 
     def hide(self) -> None:
         super().hide()
@@ -149,6 +187,7 @@ class TraceView(BaseView):
             self._resize_job = None
         for w in self.winfo_children():
             w.destroy()
+        self._prepared = False
 
     # ── Barre de titre ────────────────────────────────────────────────────────
     def _build_title_bar(self) -> None:
@@ -191,7 +230,7 @@ class TraceView(BaseView):
                       command=self._close).pack(side='right', padx=8, pady=4)
 
     # ── Zone centrale : graphique (gauche) + état capteurs/tapis (droite) ─────
-    def _build_split_layout(self) -> None:
+    def _build_split_layout(self, build_children=True) -> None:
         self._main_pane = ctk.CTkFrame(self, fg_color='#12121f', corner_radius=0)
         self._main_pane.pack(fill='both', expand=True, side='top')
 
@@ -207,9 +246,10 @@ class TraceView(BaseView):
         self._middle_pane = ctk.CTkFrame(self._main_pane, fg_color='#12121f', corner_radius=0)
         self._middle_pane.pack(fill='both', expand=True, side='top')
 
-        self._build_middle(self._middle_pane)
-        self._build_bottom(self._bottom_pane)
-        self.after(80, lambda: self._set_bottom_height(self._details_height))
+        if build_children:
+            self._build_middle(self._middle_pane)
+            self._build_bottom(self._bottom_pane)
+            self.after(80, lambda: self._set_bottom_height(self._details_height))
 
     def _bottom_total_height(self) -> int:
         details_h = self._details_height if self._details_visible else 0
@@ -388,6 +428,7 @@ class TraceView(BaseView):
                 diag_tab, self._diagnostics,
                 frames=self._frames,
                 on_incident_click=self._on_incident_click,
+                load_session=self._load_session,
             )
             self._diagnostic_panel.pack(fill='both', expand=True, padx=0, pady=0)
             self._reference_panel = ReferencePanel(
@@ -407,6 +448,7 @@ class TraceView(BaseView):
                 frames=self._frames,
                 on_event_click=self._on_event_click,
                 show_belt_filters=True,
+                load_session=self._load_session,
             )
             self._event_panel.pack(fill='both', expand=True, padx=0, pady=0)
             tabs.set('Diagnostic')
@@ -439,6 +481,7 @@ class TraceView(BaseView):
             self._analysis_fallback_tab_frames['Diagnostic'], self._diagnostics,
             frames=self._frames,
             on_incident_click=self._on_incident_click,
+            load_session=self._load_session,
         )
         self._diagnostic_panel.pack(fill='both', expand=True)
         self._reference_panel = ReferencePanel(
@@ -458,6 +501,7 @@ class TraceView(BaseView):
             frames=self._frames,
             on_event_click=self._on_event_click,
             show_belt_filters=True,
+            load_session=self._load_session,
         )
         self._event_panel.pack(fill='both', expand=True)
         self._show_analysis_fallback_tab('Diagnostic')
@@ -516,7 +560,12 @@ class TraceView(BaseView):
             return
         idx = max(0, min(idx, len(self._frames) - 1))
         self._idx = idx
-        st = self._frames[idx]
+        try:
+            st = self._frames[idx]
+        except OSError as exc:
+            self._stop_playback()
+            messagebox.showerror('Lecture trace', str(exc))
+            return
 
         # Canvas
         self._canvas.update_state(st)
@@ -551,6 +600,8 @@ class TraceView(BaseView):
 
     def _frame_for_file_line(self, file_line: int) -> int:
         """Retourne l'index du frame qui contient la ligne fichier donnée."""
+        if isinstance(self._frames, FrameStore):
+            return self._frames.frame_index_for_line(file_line)
         keys = [x[0] for x in self._line_map]
         pos = bisect.bisect_right(keys, file_line) - 1
         if pos < 0:
@@ -760,9 +811,13 @@ class TraceView(BaseView):
             return
         if step <= steps:
             ratio = step / (steps + 1)
-            self._canvas.update_state(
-                self._interpolated_state(self._frames[self._idx], self._frames[next_idx], ratio)
-            )
+            try:
+                state = self._interpolated_state(self._frames[self._idx], self._frames[next_idx], ratio)
+            except OSError as exc:
+                self._stop_playback()
+                messagebox.showerror('Lecture trace', str(exc))
+                return
+            self._canvas.update_state(state)
             self._play_job = self.after(
                 delay,
                 lambda: self._animate_to_frame(next_idx, step + 1, steps, delay),
