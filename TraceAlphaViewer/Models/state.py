@@ -47,7 +47,7 @@ class BoxInfo:
     measured_t5_width_mm: int = 0
     measured_t5_height_mm: int = 0
     measured_t5_length_mm: int = 0
-    measurement_status: str = ""  # ok, orientation, bad, c9_error apres mesure Alpha
+    measurement_status: str = ""  # Statut partage : conforme, axe, orientation, multiple ou C9.
     t5_footprint_mm: int = 0  # largeur occupee sur T5/goulotte (mm)
     id_b: int = 0        # identifiant de cheminement Alpha (Nboite / idB)
     id_alpha: int = 0    # identifiant BdD alpha

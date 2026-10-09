@@ -13,6 +13,7 @@ from pathlib import Path
 
 from Models.diagnostic import DiagnosticIncident, camera_report_stats
 from Models.state import MachineState
+from Models.measurement_analysis import analyze_measurements, representative_samples
 
 
 _SEVERITY_LABELS = {
@@ -68,7 +69,15 @@ def _duration_label(start: float, end: float) -> str:
     return f"{seconds}s"
 
 
-def _metric_from_summary(summary: str, code: str, occurrence_count: int) -> str:
+def _metric_from_summary(summary: str, code: str, occurrence_count: int, metrics=None) -> str:
+    metrics = metrics or {}
+    if code == 'ALPHA_CARD_RESET' and 'trace_duration' in metrics:
+        return f"{occurrence_count} reset(s) sur {metrics['trace_duration']} de trace"
+    if code == 'UNKNOWN' and metrics.get('total_boxes'):
+        total = metrics['total_boxes']
+        return f"{occurrence_count} unknown / {total} boites ({100 * occurrence_count / total:.1f}%)"
+    if code == 'CAM-NO-READ' and 'missing_cameras' in metrics:
+        return 'cameras sans lecture: ' + ', '.join(metrics['missing_cameras'])
     if code == "ALPHA_CARD_RESET":
         match = re.search(r"(\d+) reset(?:\(s\))? carte Alpha .*? sur ([^.]+?) de trace", summary)
         if match:
@@ -422,9 +431,14 @@ def _apply_field_severity(grouped: list[dict[str, object]], total_boxes: int) ->
         elif str(group["code"]) == "ALPHA_CARD_RESET":
             group["affected_ratio"] = 0.0
             group["affected_label"] = str(group["metric"])
+        elif str(group['code']) in _DIMENSION_CODES:
+            population = group.get('measurement_stats', {})
+            total = population.get('comparable_count', 0) + population.get('excluded', {}).get('orientation', 0)
+            group['affected_ratio'] = _ratio(count,total)
+            group['affected_label'] = _affected_label(count,total)
         else:
-            group["affected_ratio"] = _ratio(count, total_boxes)
-            group["affected_label"] = _affected_label(count, total_boxes)
+            group['affected_ratio'] = _ratio(count,total_boxes) if str(group['code']) == 'UNKNOWN' else 0
+            group['affected_label'] = str(group['metric'])
         group["field_explanation"] = explanation
         group["field_impact"] = impact
         group["field_action"] = action
@@ -469,6 +483,9 @@ def _incident_payload(incident: DiagnosticIncident) -> dict[str, object]:
         "checks": incident.checks,
         "confidence": incident.confidence or "-",
         "event_lines": incident.event_lines,
+        "measurement_stats": incident.measurement_stats,
+        "examples": incident.examples,
+        "metrics": incident.metrics,
     }
 
 
@@ -498,6 +515,7 @@ def _group_incidents(incidents: list[DiagnosticIncident]) -> list[dict[str, obje
                 "incident_count": 1,
                 "occurrence_count": incident.count,
                 "summary": incident.summary,
+                "metrics": incident.metrics,
                 "symptom": incident.symptom,
                 "probable_causes": list(incident.probable_causes),
                 "checks": list(incident.checks),
@@ -509,8 +527,9 @@ def _group_incidents(incidents: list[DiagnosticIncident]) -> list[dict[str, obje
 
         group["incident_count"] = int(group["incident_count"]) + 1
         group["occurrence_count"] = int(group["occurrence_count"]) + incident.count
-        if len(group["incidents"]) < 3:  # type: ignore[arg-type]
-            group["incidents"].append(_incident_payload(incident))  # type: ignore[index, union-attr]
+        group["incidents"].append(_incident_payload(incident))
+        for field in ('probable_causes', 'checks'):
+            group[field] = list(dict.fromkeys(group[field] + getattr(incident, field)))
         if incident.first_line < int(group["first_line"]):
             group["first_line"] = incident.first_line
             group["start_time"] = incident.start_time
@@ -525,7 +544,7 @@ def _group_incidents(incidents: list[DiagnosticIncident]) -> list[dict[str, obje
         code = str(group["code"])
         belt = str(group["belt"])
         group["duration"] = _duration_label(float(group["start_time"]), float(group["end_time"]))
-        group["metric"] = _metric_from_summary(str(group["summary"]), code, int(group["occurrence_count"]))
+        group["metric"] = _metric_from_summary(str(group["summary"]), code, int(group["occurrence_count"]), group['metrics'])
         if code == "T5_STALE_UNMEASURED_BOX":
             group["business_lines"] = _stale_t5_business_lines(group)
         group["action"] = _action_label(code, belt, str(group["title"]))
@@ -644,13 +663,76 @@ def _empty_camera_stats() -> dict[str, object]:
     }
 
 
+def _sample_box_details(frame, belt, text):
+    candidates = {
+        'T4': [frame.box_on_T4], 'T5': frame.boxes_on_T5,
+        'EA': [frame.box_in_EA], 'T3': [frame.box_on_T3],
+        'IDENTIF': [frame.box_in_EA, frame.box_on_T3],
+    }.get(belt, [])
+    candidates = [box for box in candidates if box is not None]
+    for pattern, attribute in ((r'\bIdA\s*[:=]?\s*(\d+)', 'id_alpha'),
+                               (r'\b(?:idB|Nboite)\s*[:=]?\s*(\d+)', 'id_b')):
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            candidates = [b for b in candidates if getattr(b, attribute) == int(match[1])]
+    if len(candidates) != 1:
+        return {}
+    box = candidates[0]
+    details = {'box': f'IdA:{box.id_alpha}' if box.id_alpha else f'idB:{box.id_b}' if box.id_b else '',
+               'barcode': box.barcode or box.source_ref, 'source_ref': box.source_ref}
+    expected = [box.bdd_width_mm, box.bdd_height_mm, box.bdd_length_mm]
+    measured = [box.measured_t5_width_mm, box.measured_t5_height_mm,
+                box.measured_t4_length_mm or box.measured_t5_length_mm]
+    if all(v > 0 for v in expected) and (all(v > 0 for v in measured) or box.measurement_status == 'c9_error'):
+        details.update(expected=expected, measured=measured, deltas=[m-e for m,e in zip(measured,expected)],
+                       invalid=box.measurement_status == 'c9_error')
+    return details
+
+
 def build_report_payload(
     incidents: list[DiagnosticIncident],
     frames: list[MachineState] | None = None,
+    source_name: str = '',
 ) -> dict[str, object]:
     camera_stats = camera_report_stats(frames) if frames is not None else _empty_camera_stats()
     total_boxes = int(camera_stats.get("total_boxes") or 0)
     grouped = _group_incidents(incidents)
+    analysis = (frames.read_measurements() if hasattr(frames, 'read_measurements') else
+                analyze_measurements(frames if frames is not None else []))
+    wanted = set()
+    targets = {}
+    for group in grouped:
+        group['id'] = f"{group['code']}:{group['first_line']}:{group['belt']}"
+        if group['code'] in _DIMENSION_CODES:
+            examples = [dict(sample) for sample in analysis['samples'] if sample['code'] == group['code']]
+        else:
+            examples = []
+            for incident in group['incidents']:
+                for line in dict.fromkeys(incident['event_lines'] or [incident['first_line']]):
+                    examples.append({'line': line, 'time_str': incident['start_time_str'],
+                                     'box': '', 'barcode': '', 'detail': incident['summary'],
+                                     'incident_line': incident['first_line']})
+        group['examples'] = examples
+        for index, sample in enumerate(examples):
+            sample.update(id=f"{group['id']}:{index}", group_id=group['id'])
+            if 'measured' not in sample:
+                targets.setdefault(sample['line'], []).append((group['belt'], sample))
+            wanted.update(range(max(1, sample['line'] - 2), sample['line'] + 3))
+    raw = {}
+    if frames is not None:
+        for frame in frames:
+            for line, text, *_ in frame.raw_lines:
+                if line in wanted:
+                    raw[line] = (text, frame.timestamp_str)
+                    for belt, sample in targets.pop(line, []):
+                        sample.update(_sample_box_details(frame, belt, text))
+    for group in grouped:
+        for sample in group['examples']:
+            sample['context'] = [{'line': n, 'text': raw[n][0]} for n in range(max(1, sample['line'] - 2), sample['line'] + 3) if n in raw]
+            if sample['line'] in raw:
+                sample['time_str'] = raw[sample['line']][1]
+        group['representative_ids'] = [s['id'] for s in representative_samples(group['examples'])]
+        group['measurement_stats'] = analysis['summary'] if group['code'] in _DIMENSION_CODES else {}
     _apply_field_severity(grouped, total_boxes)
     grouped.sort(
         key=lambda group: (
@@ -669,9 +751,14 @@ def build_report_payload(
         "incidents": len(incidents),
         "types": len(grouped),
         "total_boxes": total_boxes,
+        "analyzed_boxes": max(total_boxes, analysis['summary'].get('cycle_count', 0)),
     }
     return {
         "generated_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        "source": {'name': source_name, 'start': frames[0].timestamp_str if frames else '',
+                   'end': frames[-1].timestamp_str if frames else '',
+                   'duration': _duration_label(frames[0].timestamp, frames[-1].timestamp) if frames else ''},
+        "measurements": analysis['summary'],
         "counts": counts,
         "verdict": _verdict(counts),
         "groups": grouped,
@@ -682,10 +769,13 @@ def build_report_payload(
             {"id": "all", "label": _FAMILY_LABELS["all"]},
             {"id": "critical", "label": _FAMILY_LABELS["critical"]},
             {"id": "system", "label": _FAMILY_LABELS["system"]},
+            {"id": "t2", "label": _FAMILY_LABELS["t2"]},
             {"id": "t4", "label": _FAMILY_LABELS["t4"]},
             {"id": "t5", "label": _FAMILY_LABELS["t5"]},
             {"id": "camera", "label": _FAMILY_LABELS["camera"]},
             {"id": "dimensions", "label": _FAMILY_LABELS["dimensions"]},
+            {"id": "robot", "label": _FAMILY_LABELS["robot"]},
+            {"id": "other", "label": _FAMILY_LABELS["other"]},
         ],
     }
 
@@ -696,9 +786,7 @@ def _copy_report_app_assets(output_dir: Path) -> bool:
     if not index_path.exists() or not next_dir.exists():
         return False
     target_next = output_dir / "_next"
-    if target_next.exists():
-        shutil.rmtree(target_next)
-    shutil.copytree(next_dir, target_next)
+    shutil.copytree(next_dir, target_next, dirs_exist_ok=True)
     return True
 
 
@@ -707,10 +795,10 @@ def _react_report_html(payload: dict[str, object]) -> str | None:
     if not index_path.exists():
         return None
     template = index_path.read_text(encoding="utf-8")
-    data_json = json.dumps(payload, ensure_ascii=False)
+    data_json = json.dumps(payload, ensure_ascii=False).replace('<', '\\u003c')
     data_script = (
         '<script id="trace-report-data">'
-        f"window.__TRACE_REPORT_DATA__={json.dumps(data_json, ensure_ascii=False)};"
+        f"window.__TRACE_REPORT_DATA__={json.dumps(data_json, ensure_ascii=False).replace('<', r'\u003c')};"
         "window.__TRACE_REPORT_DATA__=JSON.parse(window.__TRACE_REPORT_DATA__);"
         "</script>"
     )
@@ -721,11 +809,12 @@ def write_diagnostic_report(
     incidents: list[DiagnosticIncident],
     output_dir: Path | None = None,
     frames: list[MachineState] | None = None,
+    source_name: str = '',
 ) -> Path:
     output_dir = output_dir or reports_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    payload = build_report_payload(incidents, frames=frames)
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    payload = build_report_payload(incidents, frames=frames, source_name=source_name)
     data_path = output_dir / f"report_data_{stamp}.json"
     data_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -736,882 +825,19 @@ def write_diagnostic_report(
             output_path.write_text(html_text, encoding="utf-8")
             return output_path
 
-    output_path.write_text(build_diagnostic_report_html(incidents, frames=frames), encoding="utf-8")
+    output_path.write_text(build_diagnostic_report_html(incidents, frames=frames, payload=payload), encoding="utf-8")
     return output_path
 
 
-def build_diagnostic_report_html(
-    incidents: list[DiagnosticIncident],
-    frames: list[MachineState] | None = None,
-) -> str:
-    payload = build_report_payload(incidents, frames=frames)
-    data_json = json.dumps(payload, ensure_ascii=False)
-    return f"""<!doctype html>
-<html lang="fr">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Rapport diagnostic TraceAlphaViewer</title>
-  <style>{_CSS}</style>
-</head>
-<body>
-  <header class="topbar no-print">
-    <div>
-      <span class="eyebrow">TraceAlphaViewer</span>
-      <h1>Rapport diagnostic terrain</h1>
-      <p id="generated" class="muted"></p>
-    </div>
-    <button type="button" class="primary-btn" onclick="downloadGlobalPdf()">Exporter PDF</button>
-  </header>
-  <main>
-    <section id="verdict" class="verdict"></section>
-    <section id="summary" class="summary-grid"></section>
-    <section class="layout">
-      <aside class="side-panel">
-        <h2>Zones a controler</h2>
-        <div id="zones"></div>
-      </aside>
-      <section class="main-panel">
-        <div class="section-title">
-          <div>
-            <span class="eyebrow">A traiter en premier</span>
-            <h2>Actions prioritaires</h2>
-          </div>
-          <span class="hint">Classement terrain: gravite, diagnostic metier, volume.</span>
-        </div>
-        <div id="priority"></div>
-      </section>
-    </section>
-    <section class="toolbar no-print">
-      <div id="quick-filters" class="quick-filters"></div>
-      <input id="search" type="search" placeholder="Rechercher zone, code, action, preuve...">
-      <span id="visible-count" class="hint"></span>
-    </section>
-    <section id="camera-section" class="camera-panel">
-      <div class="section-title">
-        <div>
-          <span class="eyebrow">Lecture cameras</span>
-          <h2>Performance des cameras</h2>
-        </div>
-        <span class="hint">Classement de la camera qui lit le plus a celle qui lit le moins.</span>
-      </div>
-      <div id="camera-chart"></div>
-    </section>
-    <section class="grouped-panel">
-      <div class="section-title">
-        <h2>Diagnostics detailles</h2>
-        <span class="hint">Ouvrir une carte pour voir causes, controles et preuves.</span>
-      </div>
-      <div id="groups"></div>
-    </section>
-  </main>
-  <script id="report-data" type="application/json">{html.escape(data_json, quote=False)}</script>
-  <script>{_JS}</script>
-</body>
-</html>
-"""
-
-
-_CSS = r"""
-:root {
-  color-scheme: light;
-  --bg: #f4f6f8;
-  --panel: #ffffff;
-  --panel-soft: #f8fafc;
-  --text: #17212f;
-  --muted: #667085;
-  --line: #d8dee8;
-  --line-strong: #b7c1cf;
-  --error: #b4232f;
-  --error-bg: #fff1f2;
-  --warning: #a15c00;
-  --warning-bg: #fff7e6;
-  --info: #2563a7;
-  --info-bg: #eef6ff;
-  --ok: #227950;
-  --ok-bg: #ecfdf3;
-  --accent: #244f84;
-}
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font-family: "Segoe UI", Arial, sans-serif;
-  line-height: 1.38;
-}
-h1, h2, h3, p { margin: 0; }
-h1 { font-size: 24px; }
-h2 { font-size: 18px; }
-h3 { font-size: 15px; }
-main { max-width: 1360px; margin: 0 auto; padding: 22px; }
-.topbar {
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  align-items: center;
-  padding: 16px 24px;
-  background: rgba(255, 255, 255, .97);
-  border-bottom: 1px solid var(--line);
-  box-shadow: 0 5px 18px rgba(16, 24, 40, .07);
-}
-.eyebrow {
-  color: var(--muted);
-  display: inline-block;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-}
-.muted, .hint, .meta { color: var(--muted); }
-.primary-btn, input, .filter-btn {
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  font: inherit;
-}
-.primary-btn {
-  background: var(--accent);
-  color: #fff;
-  cursor: pointer;
-  font-weight: 800;
-  padding: 10px 14px;
-}
-input {
-  background: var(--panel);
-  color: var(--text);
-  min-width: 280px;
-  padding: 10px 12px;
-}
-.verdict {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  gap: 16px;
-  align-items: center;
-  margin-bottom: 14px;
-  padding: 18px;
-  border: 1px solid var(--line);
-  border-left: 8px solid var(--info);
-  border-radius: 8px;
-  background: var(--panel);
-}
-.verdict.critical { border-left-color: var(--error); background: var(--error-bg); }
-.verdict.warning { border-left-color: var(--warning); background: var(--warning-bg); }
-.verdict.ok { border-left-color: var(--ok); background: var(--ok-bg); }
-.verdict-label {
-  padding: 8px 10px;
-  border-radius: 6px;
-  color: #fff;
-  background: var(--accent);
-  font-weight: 900;
-}
-.verdict.critical .verdict-label { background: var(--error); }
-.verdict.warning .verdict-label { background: var(--warning); }
-.verdict.ok .verdict-label { background: var(--ok); }
-.summary-grid {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(130px, 1fr));
-  gap: 10px;
-  margin-bottom: 14px;
-}
-.stat, .side-panel, .main-panel, .toolbar, .camera-panel, .grouped-panel, .card {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-}
-.stat {
-  padding: 13px 14px;
-}
-.stat strong {
-  display: block;
-  font-size: 26px;
-  line-height: 1;
-}
-.layout {
-  display: grid;
-  grid-template-columns: 330px minmax(0, 1fr);
-  gap: 14px;
-  margin-bottom: 14px;
-}
-.side-panel, .main-panel, .toolbar, .camera-panel, .grouped-panel {
-  padding: 15px;
-}
-.section-title {
-  display: flex;
-  justify-content: space-between;
-  gap: 14px;
-  align-items: baseline;
-  margin-bottom: 12px;
-}
-.zone-card {
-  border-top: 1px solid var(--line);
-  padding: 11px 0;
-}
-.zone-card:first-child { border-top: 0; }
-.zone-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  font-weight: 900;
-}
-.zone-card p { margin-top: 5px; }
-.priority-list {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-.priority-card {
-  border: 1px solid var(--line);
-  border-left: 6px solid var(--info);
-  border-radius: 8px;
-  padding: 13px;
-  background: var(--panel-soft);
-}
-.priority-card.error { border-left-color: var(--error); background: var(--error-bg); }
-.priority-card.warning { border-left-color: var(--warning); background: var(--warning-bg); }
-.priority-card.info { border-left-color: var(--info); background: var(--info-bg); }
-.priority-card h3 { margin: 7px 0 6px; }
-.badges {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  align-items: center;
-}
-.badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 6px;
-  border: 1px solid var(--line);
-  padding: 4px 7px;
-  font-size: 12px;
-  font-weight: 900;
-}
-.severity-error { color: var(--error); background: var(--error-bg); border-color: #f0b7bd; }
-.severity-warning { color: var(--warning); background: var(--warning-bg); border-color: #e9ca8d; }
-.severity-info { color: var(--info); background: var(--info-bg); border-color: #bdd7f2; }
-.family-badge { color: #344054; background: #eef2f7; }
-.metric { color: var(--accent); font-weight: 900; }
-.toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-  margin-bottom: 14px;
-}
-.camera-panel {
-  margin-bottom: 14px;
-}
-.camera-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 310px;
-  gap: 14px;
-}
-.camera-bars {
-  display: grid;
-  gap: 10px;
-}
-.camera-row {
-  display: grid;
-  grid-template-columns: 145px minmax(0, 1fr) 84px;
-  gap: 10px;
-  align-items: center;
-}
-.camera-label {
-  font-weight: 900;
-}
-.bar-track {
-  height: 20px;
-  overflow: hidden;
-  border-radius: 5px;
-  border: 1px solid var(--line);
-  background: #eef2f7;
-}
-.bar-fill {
-  height: 100%;
-  min-width: 3px;
-  border-radius: 5px;
-  background: var(--info);
-}
-.bar-fill.reader-cb1 { background: #2e7d55; }
-.bar-fill.reader-cb2 { background: #2563a7; }
-.bar-fill.status-zero { background: var(--error); }
-.bar-fill.status-weak { background: var(--warning); }
-.camera-count {
-  font-weight: 900;
-  text-align: right;
-}
-.camera-side {
-  display: grid;
-  gap: 10px;
-}
-.reader-stat, .camera-alert {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 10px;
-  background: var(--panel-soft);
-}
-.camera-alert.zero { background: var(--error-bg); border-color: #f0b7bd; }
-.camera-alert.weak { background: var(--warning-bg); border-color: #e9ca8d; }
-.quick-filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
-}
-.filter-btn {
-  background: #fff;
-  color: #344054;
-  cursor: pointer;
-  font-weight: 800;
-  padding: 9px 11px;
-}
-.filter-btn.active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-}
-.card {
-  margin: 10px 0;
-  overflow: hidden;
-}
-.card-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(170px, auto);
-  gap: 12px;
-  padding: 14px;
-  cursor: pointer;
-}
-.card-head:hover { background: var(--panel-soft); }
-.card-title { margin: 7px 0 5px; }
-.card-body {
-  display: none;
-  border-top: 1px solid var(--line);
-  background: #fcfdff;
-  padding: 14px;
-}
-.card.open .card-body { display: block; }
-.detail-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-.detail-box {
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 11px;
-  background: #fff;
-}
-.detail-box h4 {
-  margin: 0 0 7px;
-  font-size: 13px;
-  text-transform: uppercase;
-  color: #344054;
-}
-ul { margin: 6px 0 0 18px; padding: 0; }
-li + li { margin-top: 4px; }
-.proof-lines {
-  margin-top: 8px;
-  color: var(--muted);
-  font-family: Consolas, monospace;
-  font-size: 12px;
-}
-.sample {
-  border-top: 1px solid var(--line);
-  margin-top: 10px;
-  padding-top: 10px;
-}
-@media (max-width: 960px) {
-  .layout { grid-template-columns: 1fr; }
-  .priority-list { grid-template-columns: 1fr; }
-  .summary-grid { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
-  .card-head { grid-template-columns: 1fr; }
-  .detail-grid { grid-template-columns: 1fr; }
-  .camera-layout { grid-template-columns: 1fr; }
-  .camera-row { grid-template-columns: 1fr; }
-  .camera-count { text-align: left; }
-  input { min-width: 100%; }
-}
-@media print {
-  .no-print, .toolbar { display: none !important; }
-  body { background: #fff; }
-  main { padding: 0; }
-  .topbar { position: static; box-shadow: none; }
-  .card-body { display: block; }
-}
-"""
-
-
-_JS = r"""
-const data = JSON.parse(document.getElementById('report-data').textContent);
-let activeFilter = 'all';
-
-const esc = (value) => String(value ?? '').replace(/[&<>"']/g, ch => ({
-  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-}[ch]));
-const fieldSeverity = (group) => group.field_severity || group.severity || 'info';
-const fieldSeverityLabel = (group) => group.field_severity_label || group.severity_label || fieldSeverity(group);
-const fieldAction = (group) => group.field_action || group.action || group.title || '-';
-const fieldImpact = (group) => group.field_impact || group.impact || '-';
-const fieldZone = (group) => group.field_zone_label || group.family_label || '-';
-
-document.getElementById('generated').textContent = `Genere le ${data.generated_at}`;
-
-function renderVerdict() {
-  const verdict = data.verdict;
-  document.getElementById('verdict').className = `verdict ${esc(verdict.level)}`;
-  document.getElementById('verdict').innerHTML = `
-    <span class="verdict-label">${esc(verdict.label)}</span>
-    <div>
-      <h2>${esc(verdict.title)}</h2>
-      <p class="muted">${esc(verdict.text)}</p>
-    </div>
-    <strong>${esc(data.counts.types)} type(s)</strong>
-  `;
-}
-
-function renderSummary() {
-  const labels = [
-    ['Critiques', data.counts.error],
-    ['Alertes', data.counts.warning],
-    ['Infos', data.counts.info],
-    ['Incidents', data.counts.incidents],
-    ['Types', data.counts.types],
-  ];
-  document.getElementById('summary').innerHTML = labels.map(([label, value]) =>
-    `<div class="stat"><strong>${esc(value)}</strong><span class="muted">${esc(label)}</span></div>`
-  ).join('');
-}
-
-function renderZones() {
-  const html = data.zones.length ? data.zones.map(zone => `
-    <article class="zone-card">
-      <div class="zone-head">
-        <span>${esc(zone.label)}</span>
-        <span>${esc(zone.groups)} type(s)</span>
-      </div>
-      <p class="meta">${esc(zone.occurrences)} occurrence(s), ${esc(zone.errors)} critique(s), ${esc(zone.warnings)} alerte(s)</p>
-      <p>${esc(zone.top_action || 'Controle terrain recommande')}</p>
-    </article>
-  `).join('') : '<p>Aucune zone en anomalie.</p>';
-  document.getElementById('zones').innerHTML = html;
-}
-
-function renderCameraChart() {
-  const target = document.getElementById('camera-chart');
-  const camera = data.camera || {};
-  if (!camera.available) {
-    target.innerHTML = '<p class="muted">Donnees cameras indisponibles pour ce rapport.</p>';
-    return;
-  }
-  const chart = camera.chart || [];
-  const maxCount = Math.max(1, ...chart.map(item => Number(item.success_count || 0)));
-  const bars = chart.length ? chart.map(item => {
-    const count = Number(item.success_count || 0);
-    const pct = Math.max(0, Math.round((count / maxCount) * 100));
-    const readerClass = String(item.reader || '').toLowerCase();
-    const statusClass = `status-${esc(item.status || 'ok')}`;
-    return `
-      <div class="camera-row">
-        <div>
-          <div class="camera-label">${esc(item.label)}</div>
-          <div class="meta">${esc(item.status_label)}</div>
-        </div>
-        <div class="bar-track" title="${esc(count)} lecture(s) reussie(s)">
-          <div class="bar-fill reader-${esc(readerClass)} ${statusClass}" style="width:${pct}%"></div>
-        </div>
-        <div class="camera-count">${esc(count)} lecture(s)</div>
-      </div>
-    `;
-  }).join('') : '<p class="muted">Aucune reussite camera observee.</p>';
-
-  const readerStats = (camera.reader_stats || []).map(item => `
-    <article class="reader-stat">
-      <strong>${esc(item.reader)}</strong>
-      <p class="meta">Cameras attendues: ${esc(item.expected_cameras)}</p>
-      <p>${esc(item.zero_code_label)} lectures a 0 code</p>
-    </article>
-  `).join('');
-  const alerts = (camera.alerts || []).length
-    ? (camera.alerts || []).map(item => `
-      <article class="camera-alert ${esc(item.status)}">
-        <strong>${esc(item.label)}</strong>
-        <p>${esc(item.status_label)} (${esc(item.success_count)} reussite(s))</p>
-      </article>
-    `).join('')
-    : '<article class="camera-alert"><strong>Aucune camera a zero</strong><p class="meta">Toutes les cameras attendues contribuent dans cette trace.</p></article>';
-
-  target.innerHTML = `
-    <div class="camera-layout">
-      <div>
-        <p class="meta">${esc(camera.note)} Total boites vues: ${esc(camera.total_boxes)}.</p>
-        <div class="camera-bars">${bars}</div>
-      </div>
-      <aside class="camera-side">
-        <div>
-          <h3>Lecteurs</h3>
-          ${readerStats}
-        </div>
-        <div>
-          <h3>Alertes cameras</h3>
-          ${alerts}
-        </div>
-      </aside>
-    </div>
-  `;
-}
-
-function badges(group) {
-  return `
-    <div class="badges">
-      <span class="badge severity-${esc(fieldSeverity(group))}">${esc(fieldSeverityLabel(group))}</span>
-      <span class="badge family-badge">${esc(fieldZone(group))}</span>
-      <span class="badge family-badge">${esc(group.belt)} / ${esc(group.code)}</span>
-    </div>
-  `;
-}
-
-function priorityCard(group, index) {
-  return `
-    <article class="priority-card ${esc(fieldSeverity(group))}">
-      ${badges(group)}
-      <h3>${esc(index)}. ${esc(fieldAction(group))}</h3>
-      <p class="metric">${esc(group.affected_label || group.metric)}</p>
-      <p>${esc(fieldImpact(group))}</p>
-      <p class="meta">${esc(group.evidence)}</p>
-    </article>
-  `;
-}
-
-function renderPriority() {
-  document.getElementById('priority').innerHTML = data.priority.length
-    ? `<div class="priority-list">${data.priority.map((group, index) => priorityCard(group, index + 1)).join('')}</div>`
-    : '<p>Aucun incident detecte.</p>';
-}
-
-function list(items) {
-  const values = (items || []).filter(Boolean);
-  return values.length ? `<ul>${values.map(item => `<li>${esc(item)}</li>`).join('')}</ul>` : '<p class="muted">Non renseigne.</p>';
-}
-
-function samples(group) {
-  const incidents = group.incidents || [];
-  return incidents.slice(0, 3).map(incident => `
-    <article class="sample">
-      <strong>${esc(incident.start_time_str)} -> ${esc(incident.end_time_str)}</strong>
-      <p class="meta">L.${esc(incident.first_line)} -> L.${esc(incident.last_line)} | ${esc(incident.count)} occurrence(s)</p>
-      <p>${esc(incident.summary || '-')}</p>
-      <p class="proof-lines">Lignes utiles: ${(incident.event_lines || []).slice(0, 10).map(line => `L.${esc(line)}`).join(', ') || '-'}</p>
-    </article>
-  `).join('');
-}
-
-function groupCard(group, index) {
-  const searchText = `${fieldSeverityLabel(group)} ${fieldZone(group)} ${group.belt} ${group.code} ${group.title} ${fieldAction(group)} ${fieldImpact(group)} ${group.field_explanation || ''} ${group.summary} ${(group.business_lines || []).join(' ')}`.toLowerCase();
-  return `
-    <article class="card"
-      data-severity="${esc(fieldSeverity(group))}"
-      data-family="${esc(group.family)}"
-      data-search="${esc(searchText)}">
-      <div class="card-head" onclick="this.parentElement.classList.toggle('open')">
-        <div>
-          ${badges(group)}
-          <h3 class="card-title">${esc(index)}. ${esc(fieldAction(group))}</h3>
-          <p>${esc(fieldImpact(group))}</p>
-          <p class="meta">${esc(group.evidence)} | ${esc(group.incident_count)} diagnostic(s)</p>
-        </div>
-        <div class="metric">${esc(group.affected_label || group.metric)}</div>
-      </div>
-      <div class="card-body">
-        <section class="detail-box sample">
-          <h4>Lecture terrain</h4>
-          <p><strong>${esc(group.field_explanation || fieldImpact(group))}</strong></p>
-          <p>${esc(fieldAction(group))}</p>
-        </section>
-        <div class="detail-grid">
-          <section class="detail-box">
-            <h4>Constat</h4>
-            ${list(group.business_lines)}
-          </section>
-          <section class="detail-box">
-            <h4>Impact probable</h4>
-            <p>${esc(fieldImpact(group))}</p>
-          </section>
-          <section class="detail-box">
-            <h4>Causes probables</h4>
-            ${list(group.probable_causes)}
-          </section>
-          <section class="detail-box">
-            <h4>Controles a faire</h4>
-            ${list(group.checks)}
-          </section>
-        </div>
-        <section class="detail-box sample">
-          <h4>Preuves trace</h4>
-          ${samples(group)}
-        </section>
-      </div>
-    </article>
-  `;
-}
-
-function renderFilters() {
-  const target = document.getElementById('quick-filters');
-  target.innerHTML = data.families.map(item =>
-    `<button type="button" class="filter-btn ${item.id === activeFilter ? 'active' : ''}" data-filter="${esc(item.id)}">${esc(item.label)}</button>`
-  ).join('');
-  target.querySelectorAll('.filter-btn').forEach(button => {
-    button.addEventListener('click', () => {
-      activeFilter = button.dataset.filter;
-      renderFilters();
-      applyFilters();
-      if (activeFilter === 'camera') {
-        document.getElementById('camera-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }
-    });
-  });
-}
-
-function renderGroups() {
-  document.getElementById('groups').innerHTML =
-    data.groups.map((group, index) => groupCard(group, index + 1)).join('');
-  applyFilters();
-}
-
-function applyFilters() {
-  const text = document.getElementById('search').value.trim().toLowerCase();
-  let visible = 0;
-  document.querySelectorAll('#groups .card').forEach(card => {
-    const quickOk = activeFilter === 'all'
-      || (activeFilter === 'critical' && card.dataset.severity === 'error')
-      || card.dataset.family === activeFilter;
-    const textOk = !text || card.dataset.search.includes(text);
-    const ok = quickOk && textOk;
-    card.style.display = ok ? '' : 'none';
-    if (ok) visible += 1;
-  });
-  document.getElementById('visible-count').textContent = `${visible} diagnostic(s) visible(s)`;
-}
-
-document.getElementById('search').addEventListener('input', applyFilters);
-
-function pdfEscape(text) {
-  return String(text ?? '')
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^\x20-\x7E]/g, ' ')
-    .replace(/\\/g, '\\\\')
-    .replace(/\(/g, '\\(')
-    .replace(/\)/g, '\\)');
-}
-
-function wrapText(text, maxChars) {
-  const words = String(text ?? '').replace(/\s+/g, ' ').trim().split(' ');
-  const lines = [];
-  let line = '';
-  words.forEach(word => {
-    if (!word) return;
-    const candidate = line ? `${line} ${word}` : word;
-    if (candidate.length > maxChars && line) {
-      lines.push(line);
-      line = word;
-    } else {
-      line = candidate;
-    }
-  });
-  if (line) lines.push(line);
-  return lines.length ? lines : [''];
-}
-
-function pdfTextLine(text, x, y, size = 10, bold = false) {
-  const font = bold ? 'F2' : 'F1';
-  return `BT /${font} ${size} Tf ${x} ${y} Td (${pdfEscape(text)}) Tj ET\n`;
-}
-
-function pdfRect(x, y, w, h, color = '0.97 0.98 0.99', stroke = '0.80 0.84 0.88') {
-  return `q ${color} rg ${stroke} RG ${x} ${y} ${w} ${h} re B Q\n`;
-}
-
-function pdfRule(x, y, w, color = '0.72 0.76 0.80') {
-  return `q ${color} RG ${x} ${y} m ${x + w} ${y} l S Q\n`;
-}
-
-function pdfSeverityColor(severity) {
-  if (severity === 'error') return '1 0.93 0.94';
-  if (severity === 'warning') return '1 0.97 0.88';
-  return '0.93 0.96 1';
-}
-
-function pdfLines() {
-  const lines = [
-    { kind: 'hero', text: `${data.verdict.label} - ${data.verdict.title}`, size: 16, bold: true, gap: 54 },
-    { text: data.verdict.text, size: 10, gap: 18 },
-    { text: `Critiques: ${data.counts.error} | Alertes: ${data.counts.warning} | Infos: ${data.counts.info} | Types: ${data.counts.types} | Incidents: ${data.counts.incidents}`, size: 10, bold: true, gap: 26 },
-    { kind: 'section', text: 'Actions prioritaires', size: 13, bold: true, gap: 24 },
-  ];
-  const addGroup = (group, index) => {
-    lines.push({ kind: 'group', severity: fieldSeverity(group), text: `${index}. [${fieldSeverityLabel(group)}] ${fieldZone(group)} - ${fieldAction(group)}`, size: 10, bold: true, gap: 24 });
-    lines.push({ text: `${group.affected_label || group.metric} | ${group.evidence}`, size: 9, gap: 12 });
-    wrapText(fieldImpact(group), 92).forEach(line => lines.push({ text: line, size: 9, gap: 10 }));
-    wrapText(group.field_explanation || fieldAction(group), 92).forEach(line => lines.push({ text: line, size: 9, gap: 10 }));
-    (group.checks || []).slice(0, 3).forEach(check => {
-      wrapText(`Controle: ${check}`, 90).forEach(line => lines.push({ text: line, size: 9, gap: 10 }));
-    });
-    lines.push({ text: '', size: 9, gap: 7 });
-  };
-  if (data.priority.length) {
-    data.priority.forEach((group, index) => addGroup(group, index + 1));
-  } else {
-    lines.push({ text: 'Aucun incident detecte.', size: 10, gap: 16 });
-  }
-  if (data.camera && data.camera.available) {
-    lines.push({ kind: 'section', text: 'Lecture cameras', size: 13, bold: true, gap: 24 });
-    (data.camera.chart || []).slice(0, 8).forEach(item => {
-      lines.push({
-        text: `${item.label}: ${item.success_count} lecture(s) reussie(s) - ${item.status_label}`,
-        size: 9,
-        gap: 11,
-      });
-    });
-    (data.camera.reader_stats || []).forEach(item => {
-      lines.push({
-        text: `${item.reader}: ${item.zero_code_label} lectures a 0 code, cameras ${item.expected_cameras}`,
-        size: 9,
-        gap: 11,
-      });
-    });
-  }
-  lines.push({ kind: 'section', text: 'Diagnostics par zone', size: 13, bold: true, gap: 24 });
-  data.groups.forEach((group, index) => addGroup(group, index + 1));
-  return lines;
-}
-
-function buildPdf(lines) {
-  const pageWidth = 595;
-  const pageHeight = 842;
-  const marginLeft = 42;
-  const marginTop = 770;
-  const bottom = 58;
-  const pages = [];
-  let y = marginTop;
-  let content = '';
-  let pageNo = 1;
-
-  const footer = () => {
-    content += pdfRule(42, 52, 511, '0.82 0.85 0.88');
-    content += pdfTextLine(`TraceAlphaViewer - page ${pageNo}`, 42, 35, 8, false);
-  };
-  const newPage = () => {
-    footer();
-    pages.push(content);
-    content = pdfTextLine('Rapport diagnostic terrain', 42, 808, 14, true);
-    y = marginTop;
-    pageNo += 1;
-  };
-
-  content += pdfRect(36, 782, 523, 48, '0.93 0.96 1', '0.72 0.80 0.90');
-  content += pdfTextLine('Rapport diagnostic terrain TraceAlphaViewer', 48, 808, 16, true);
-  content += pdfTextLine(`Genere le ${data.generated_at}`, 48, 792, 9, false);
-
-  lines.forEach(item => {
-    if (item.kind === 'hero') {
-      if (y - 54 < bottom) newPage();
-      content += pdfRect(42, y - 38, 511, 42, '0.98 0.99 1', '0.78 0.82 0.88');
-      content += pdfTextLine(item.text, 54, y - 12, item.size, true);
-      y -= item.gap;
-      return;
-    }
-    if (item.kind === 'section') {
-      if (y - 30 < bottom) newPage();
-      content += pdfRule(42, y + 6, 511);
-      content += pdfTextLine(item.text, 42, y - 10, item.size, true);
-      y -= item.gap;
-      return;
-    }
-    if (item.kind === 'group') {
-      if (y - 54 < bottom) newPage();
-      content += pdfRect(42, y - 42, 511, 46, pdfSeverityColor(item.severity), '0.78 0.82 0.88');
-      content += pdfTextLine(item.text, 54, y - 12, item.size, true);
-      y -= item.gap;
-      return;
-    }
-    wrapText(item.text, item.size >= 13 ? 70 : 96).forEach((line, idx, arr) => {
-      const gap = idx === arr.length - 1 ? item.gap : Math.max(10, item.size + 2);
-      if (y - gap < bottom) newPage();
-      content += pdfTextLine(line, marginLeft, y, item.size, item.bold);
-      y -= gap;
-    });
-  });
-  if (content) {
-    footer();
-    pages.push(content);
-  }
-
-  const objects = [];
-  const addObject = body => {
-    objects.push(body);
-    return objects.length;
-  };
-  const fontRegularId = addObject('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
-  const fontBoldId = addObject('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>');
-  const pageIds = [];
-  const pagePlaceholders = [];
-
-  pages.forEach(pageContent => {
-    const stream = `<< /Length ${pageContent.length} >>\nstream\n${pageContent}endstream`;
-    const contentId = addObject(stream);
-    const placeholder = `__PARENT_${pageIds.length}__`;
-    const pageId = addObject(
-      `<< /Type /Page /Parent ${placeholder} 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] ` +
-      `/Resources << /Font << /F1 ${fontRegularId} 0 R /F2 ${fontBoldId} 0 R >> >> ` +
-      `/Contents ${contentId} 0 R >>`
-    );
-    pageIds.push(pageId);
-    pagePlaceholders.push(placeholder);
-  });
-
-  const pagesId = addObject(`<< /Type /Pages /Kids [${pageIds.map(id => `${id} 0 R`).join(' ')}] /Count ${pageIds.length} >>`);
-  const catalogId = addObject(`<< /Type /Catalog /Pages ${pagesId} 0 R >>`);
-  pagePlaceholders.forEach((placeholder, idx) => {
-    const pageObjectId = pageIds[idx];
-    objects[pageObjectId - 1] = objects[pageObjectId - 1].replace(placeholder, String(pagesId));
-  });
-
-  let pdf = '%PDF-1.4\n';
-  const offsets = [0];
-  objects.forEach((body, idx) => {
-    offsets.push(pdf.length);
-    pdf += `${idx + 1} 0 obj\n${body}\nendobj\n`;
-  });
-  const xref = pdf.length;
-  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
-  for (let idx = 1; idx <= objects.length; idx += 1) {
-    pdf += `${String(offsets[idx]).padStart(10, '0')} 00000 n \n`;
-  }
-  pdf += `trailer\n<< /Size ${objects.length + 1} /Root ${catalogId} 0 R >>\nstartxref\n${xref}\n%%EOF`;
-  return pdf;
-}
-
-function downloadGlobalPdf() {
-  const pdf = buildPdf(pdfLines());
-  const blob = new Blob([pdf], { type: 'application/pdf' });
-  const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '');
-  const link = document.createElement('a');
-  link.href = URL.createObjectURL(blob);
-  link.download = `diagnostic_terrain_${stamp}.pdf`;
-  document.body.appendChild(link);
-  link.click();
-  setTimeout(() => {
-    URL.revokeObjectURL(link.href);
-    link.remove();
-  }, 1000);
-}
-
-renderVerdict();
-renderSummary();
-renderZones();
-renderPriority();
-renderCameraChart();
-renderFilters();
-renderGroups();
-"""
+def build_diagnostic_report_html(incidents, frames=None, payload=None) -> str:
+    payload = payload if payload is not None else build_report_payload(incidents, frames=frames)
+    public = _REPORT_APP_DIR / 'public'
+    script = (public / 'report-ui.js').read_text(encoding='utf-8')
+    styles = (public / 'report-ui.css').read_text(encoding='utf-8')
+    data = json.dumps(payload, ensure_ascii=False).replace('<', '\\u003c')
+    return ('<!doctype html><html lang="fr"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1">'
+            '<title>Rapport diagnostic TraceAlphaViewer</title><style>' + styles +
+            '</style></head><body><div id="report"></div><script>window.__TRACE_REPORT_DATA__=' +
+            data + ';</script><script>' + script +
+            '</script><script>TraceReport.mount(document.getElementById("report"),window.__TRACE_REPORT_DATA__);</script></body></html>')

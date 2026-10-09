@@ -28,6 +28,7 @@ import tkinter as tk
 from typing import Optional
 
 from Models.state import BoxInfo, MachineState
+from Models.dimension_check import MEASUREMENT_STYLES, MEASUREMENT_STATUS_COLORS, measurement_label
 
 # ── Couleurs ──────────────────────────────────────────────────────────────────
 C = {
@@ -55,12 +56,6 @@ C = {
     'cubestop_unknown': '#8899aa',
 }
 
-MEASUREMENT_STATUS_COLORS = {
-    'ok': '#2ECC71',
-    'orientation': '#F5B041',
-    'bad': '#E74C3C',
-    'c9_error': '#FF2DAA',
-}
 
 
 def _box_fill_color(box: Optional[BoxInfo]) -> str:
@@ -642,9 +637,19 @@ class MachineCanvas(tk.Canvas):
             lines.append(box.barcode)
         if box.dim_label():
             lines.append(box.dim_label())
+        lines.append(measurement_label(box.measurement_status))
+        for label, measured, expected in (
+            ('Longueur T4/C6', box.measured_t4_length_mm or box.measured_t5_length_mm, box.bdd_length_mm),
+            ('Largeur T5/C9', box.measured_t5_width_mm, box.bdd_width_mm),
+            ('Hauteur T5/LzB', box.measured_t5_height_mm, box.bdd_height_mm),
+        ):
+            if measured > 0 and expected > 0:
+                lines.append(f'{label}: {measured} / BdD {expected} mm ({measured - expected:+.1f} mm)')
+            else:
+                lines.append(f'{label}: donnees insuffisantes')
         text = '\n'.join(lines)
-        tx = min(x + 12, CANVAS_W - 150)
-        ty = max(8, y - 44)
+        tx = min(x + 12, CANVAS_W - 380)
+        ty = max(8, min(y - 44, CANVAS_H - 175))
         tid = self.create_text(
             tx + 6, ty + 5, text=text, anchor='nw',
             fill='#ddeeff', font=('Consolas', 8),
@@ -879,3 +884,13 @@ class MachineCanvas(tk.Canvas):
 
         cv.create_text(CANVAS_W - 4, 4, text=st.timestamp_str,
                        fill='#445566', font=('Consolas', 9), anchor='ne')
+        # Espace libre a droite de T5 : aucune geometrie machine ne change.
+        x, y = 758, 347
+        cv.create_rectangle(x, y, 918, 537, fill='#141424', outline='#445566')
+        cv.create_text(x + 8, y + 8, text='COULEURS DES BOITES', anchor='nw',
+                       fill='#ddeeff', font=('Consolas', 8, 'bold'))
+        for index, (status, (color, label)) in enumerate(MEASUREMENT_STYLES.items()):
+            row_y = y + 33 + index * 19
+            cv.create_rectangle(x + 8, row_y, x + 18, row_y + 10, fill=color, outline='')
+            cv.create_text(x + 24, row_y + 5, text=label, anchor='w',
+                           fill='#ccddee', font=('Consolas', 7))

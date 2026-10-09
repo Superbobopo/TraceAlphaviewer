@@ -155,6 +155,7 @@ Exception d'installation : cette mise a jour des instructions reste locale, sans
 - Les couleurs de diagnostic mesure Alpha changent uniquement le remplissage des boites T5 ; elles ne doivent pas recalibrer T5 ni modifier les dimensions/positions.
 - La ligne jaune de position `pT5` ne doit pas etre reintroduite dans le canvas.
 - Le point `Mesure H.` / `LzB` reste hors tapis pour ne pas etre masque par les boites.
+- Les statuts/couleurs de mesure partagent `Models/dimension_check.py` : longueur violet, largeur turquoise, hauteur jaune, plusieurs axes rouge ; `c9_error` reste prioritaire et `bad` reste rouge.
 
 ## UI et navigation
 
@@ -189,9 +190,16 @@ Exception d'installation : cette mise a jour des instructions reste locale, sans
 - Les fichiers `.trace_work/session-*` sont un stockage temporaire de session, jamais un cache de reouverture. Leur proprietaire annule ses workers et ferme ses lecteurs a sa destruction ; le nettoyage attend hors du thread Tk. Une vue `_return_view` conserve sa session, un popup de dossier l'emprunte sans la fermer.
 - La reception UI utilise un budget d'environ 8 ms, la trace brute une file bornee et des blocs de 500 lignes maximum, les listes une insertion progressive groupee. Attendre la preparation des analyses/listes avant de quitter l'accueil. Annuler aussi les callbacks de mise en page et retirer les bindings a la destruction des panneaux.
 - Les raccourcis se lient via `tkinter.Misc.bind/unbind` avec leur identifiant, pour retirer seulement les callbacks de la vue ; les wrappers `CTkFrame.bind` ne rendent pas cet identifiant et peuvent conserver une vue detruite.
+- Ne jamais remplacer le champ interne `_canvas` d'une `CTkFrame` : le graphique du viewer utilise `_machine_canvas`, conserve 920 x 540 pixels et un conteneur Tk sans agrandissement DPI. La trace brute adapte sa hauteur pour garder T5 visible.
+- Le rapport React et le secours HTML partagent `report_app/public/report-ui.js` et sa feuille de style. Les exemples sont structures, avec trois cas representatifs puis des pages de 25.
+- Les compteurs metier UNKNOWN, cameras et resets proviennent de `DiagnosticIncident.metrics`, pas du texte de resume ; le parsing de resume reste seulement un fallback de compatibilite. Conserver les anciens fichiers `_next` lors d'un nouvel export pour garder les rapports deja enregistres lisibles hors connexion.
+- La liaison rapport/viewer reste locale a `127.0.0.1`, protegee par un jeton de session et limitee aux exemples enregistres pour la vue source. Les commandes passent par une file Tk ; fermeture/remplacement invalide la liaison et les commandes perimees ne naviguent pas.
 
 ## Diagnostics terrain
 
+- Les bilans de dimensions se calculent dans le worker via `Models/measurement_analysis.py`, une fois par cycle avec la derniere mesure complete exploitable. Les preuves distinctes restent dans `measurements.pkl` ; seule la synthese compacte est lue par le thread UI.
+- L'ecart signe vaut mesure moins BdD. Orientations differentes, C9 invalide, references absentes, mesures incompletes et identites ambigues sont exclus du bilan de reglage et comptes separement. `diffT4` compare T4C/T4T et ne constitue pas une comparaison mesure/BdD.
+- Un decalage regulier exige au moins 10 boites, avec 80 % des ecarts a +/-1 mm autour d'une mediane non nulle. Au-dela de 3 mm sur au moins deux references, proposer une verification du calibrage et de la BdD ; sur une seule reference, verifier d'abord sa fiche et sa presentation. Ne pas conclure automatiquement a un mauvais reglage.
 - `Temps depuis RESET carte ALPHA` est un compteur d'uptime : une valeur elevee et croissante est normale.
 - Un reset carte Alpha est compte uniquement quand ce compteur chute vers `0..10 mn` pendant la trace ; les releves bas consecutifs apres la chute appartiennent au meme reset.
 - Le rapport doit afficher le nombre de resets carte Alpha et la duree couverte par la trace, jamais un ratio par nombre de boites.
@@ -213,6 +221,7 @@ Exception d'installation : cette mise a jour des instructions reste locale, sans
 
 - Compiler les fichiers principaux avec la commande `py_compile` indiquee plus haut apres toute modification Python.
 - Lancer `python TraceAlphaViewer\Tools\validate_all.py` pour regrouper les controles metier et les regressions du viewer ; signaler les controles ignores faute de trace locale.
+- Les validations automatiques restent en arriere-plan, sans prise de focus. `validate_all.py --visual` et `benchmark_loading.py --show` sont reserves a une demande explicite de controle visible ; les controles d'affichage deja valides ne sont pas repetes sans modification pertinente.
 - Pour une optimisation de chargement, mesurer les grosses traces separement et sans profileur avec `Tools/benchmark_loading.py` ; utiliser `--revision` et `--compare-results` pour comparer tous les diagnostics et references. Les exports JSON restent locaux.
 - Pour la reactivite, mesurer l'ouverture depuis l'accueil avec `--ui-latency --exercise-window --require-responsive` : percentile 95 sous 100 ms, maximum sous 500 ms. Ajouter `--verify-frames --verify-analyses` pour comparer frames/evenements, six filtres et rapport hors mesure, et `--check-navigation` pour la recherche CIP et le player. Garder au moins le gain x2 face a la version precedant les premieres optimisations.
 - Controler `TracAlpha1_012.old` autour de `24|08:31:15` a `08:31:18` : l'IBUPROFENE suit le mouvement T5 sans saut visuel.

@@ -10,6 +10,7 @@ from Models.diagnostic import build_diagnostics
 from Models.folder_report import _collect_events, find_trace_files
 from Models.frame_store import FrameStore, write_frame_store
 from Models.reference_index import build_reference_records
+from Models.measurement_analysis import analyze_measurements
 from Parser.trace_parser import parse_file
 
 
@@ -25,7 +26,8 @@ def run(request, send):
             else:
                 from Models.diagnostic_report import write_diagnostic_report
                 output_dir = Path(request['output_dir']) if request.get('output_dir') else None
-                path = write_diagnostic_report(request['incidents'], output_dir=output_dir, frames=frames)
+                path = write_diagnostic_report(request['incidents'], output_dir=output_dir, frames=frames,
+                                               source_name=request.get('source_name', ''))
                 send('result', str(path.resolve()))
         send('done', {})
         return
@@ -66,13 +68,18 @@ def run(request, send):
         step('events', 'Construction des evenements...')
         events = measure('evenements', lambda: _collect_events(frames))
         step('diagnostic', 'Analyse diagnostic...')
-        diagnostics = measure('diagnostics', lambda: build_diagnostics(frames, events))
+        measurements = measure('mesures', lambda: analyze_measurements(frames))
+        diagnostics = measure('diagnostics', lambda: build_diagnostics(frames, events, measurements))
         step('references', 'Index references...')
         references = measure('references', lambda: build_reference_records(frames, events)) if mode == 'file' else []
         step('display', "Preparation de l'affichage...")
         directory = Path(request['session']) / f'entry-{number}'
         count = len(frames)
-        measure('stockage', lambda: write_frame_store(frames, directory, release=True))
+        measure('stockage', lambda: write_frame_store(frames, directory, release=True,
+                                                     measurement_summary=measurements['summary']))
+        with (directory / 'measurements.pkl').open('wb') as output:
+            pickle.dump(measurements, output, protocol=pickle.HIGHEST_PROTOCOL)
+        del measurements
         del frames
         with (directory / 'events.pkl').open('wb') as output:
             pickle.dump(events, output, protocol=pickle.HIGHEST_PROTOCOL)

@@ -107,6 +107,33 @@ npm run build
 
 Si le build React est absent, le generateur Python conserve un fallback HTML local.
 
+Le rapport et ce secours partagent le meme affichage : synthese, filtres par niveau
+et famille, recherche, fiches de problemes et exemples pages par 25. Le PDF se
+telecharge directement. `Voir dans AlphaViewer` rejoint un exemple dans sa trace
+source encore ouverte ; cette liaison locale expire a la fermeture de la vue.
+Les fichiers enregistres restent consultables hors connexion.
+
+Les boites T5 disposent d'une legende permanente : bleu clair non evalue,
+vert conforme (+/-3 mm), orange orientation differente, violet longueur T4/C6,
+turquoise largeur T5/C9, jaune hauteur T5/LzB, rouge plusieurs dimensions hors
+tolerance, rose largeur invalide avec C9 actif. Le survol donne les mesures,
+references et ecarts. Le graphique garde sa taille native 920 x 540, y compris
+lorsque Windows agrandit les autres controles.
+
+Le diagnostic affiche des incidents multiligne et deux panneaux defilants.
+Les bilans distinguent anomalies et toutes les mesures comparables, une fois
+par cycle Alpha : erreur absolue minimale/maximale/moyenne et decalage signe
+(mesure moins BdD). Les exclusions sont explicites ; les pistes de decalage
+regulier restent a confirmer sur le terrain. `diffT4` reste un ecart firmware
+T4C/T4T distinct. Les preuves detaillees sont conservees dans la session locale,
+sans parcours complet de `FrameStore` dans le thread de l'interface.
+
+Les controles de navigateur et PDF necessitent `playwright`, Microsoft Edge et
+`pypdfium2` dans l'environnement de validation, pas dans le logiciel livre.
+`validate_all.py` reste en arriere-plan ; ajouter `--visual` seulement pour
+autoriser les controles avec fenetres visibles. Les benchmarks restent aussi
+masques sauf avec `--show`, y compris avec `--exercise-window`.
+
 ## Validation rapide
 
 Compiler les modules principaux :
@@ -242,6 +269,12 @@ Mesures locales du 9 octobre 2026, depuis l'accueil jusqu'a la fin du texte brut
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Monistrol | 242,4 s | 82,1 s | x2,95 | 20,7 ms | 230,2 ms |
 | Marche | 125,8 s | 55,3 s | x2,28 | 20,2 ms | 149,4 ms |
+
+Apres ajout des bilans de mesure, controles en arriere-plan le 9 octobre 2026 :
+Monistrol 79,4 s (p95 16,5 ms, maximum 215 ms), Marche 55,3 s
+(p95 16,4 ms, maximum 210,2 ms). Les benchmarks n'ouvrent plus de fenetre
+visible par defaut. Les controles de disposition 1920 x 1080 ont ete valides
+separement aux echelles d'interface 100 %, 125 % et 150 %.
 
 Domineuc charge tout son texte en 4,7 s (pause maximale 131,3 ms), avec les memes
 diagnostics et references et une navigation validee. Sur une petite trace, le

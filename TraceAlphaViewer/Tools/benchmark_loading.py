@@ -108,10 +108,10 @@ def measure_ui(path, timeout, show, exercise_window, screenshot=None, check_navi
 
     def move_window():
         nonlocal geometry_step
-        if exercise_window and started is not None:
+        if exercise_window and started is not None and not completed:
             geometry_step += 1
             app.geometry(f'{1500 + (geometry_step % 2) * 10}x860+{20 + (geometry_step % 4) * 15}+20')
-            if geometry_step % 25 == 0:
+            if show and geometry_step % 25 == 0:
                 app.iconify()
                 app.after(80, app.deiconify)
         app.after(300, move_window)
@@ -192,7 +192,7 @@ def main() -> None:
     if (args.check_navigation or args.screenshot) and not args.ui_latency:
         parser.error('--check-navigation et --screenshot exigent --ui-latency')
     if args.ui_latency:
-        values = measure_ui(path, args.timeout, args.show or args.exercise_window,
+        values = measure_ui(path, args.timeout, args.show,
                             args.exercise_window, args.screenshot, args.check_navigation)
         frames, events, diagnostics, references, total_lines, timings, latency, session = values
         try:

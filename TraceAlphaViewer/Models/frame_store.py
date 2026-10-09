@@ -17,7 +17,7 @@ CACHE_BLOCKS = 2
 
 
 def write_frame_store(frames: Sequence[MachineState], directory: Path,
-                      release: bool = False) -> None:
+                      release: bool = False, measurement_summary=None) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     lines = array('Q', (frame.line_num for frame in frames))
     start_time = frames[0].timestamp_str if frames else '--:--:--'
@@ -31,7 +31,8 @@ def write_frame_store(frames: Sequence[MachineState], directory: Path,
             if release:
                 frames[start:start + len(batch)] = [None] * len(batch)
     metadata = {'version': 1, 'block_size': BLOCK_SIZE, 'lines': lines, 'offsets': offsets,
-                'start_time': start_time, 'end_time': end_time}
+                'start_time': start_time, 'end_time': end_time,
+                'measurement_summary': measurement_summary or {}}
     temporary = directory / 'index.tmp'
     with temporary.open('wb') as output:
         pickle.dump(metadata, output, protocol=pickle.HIGHEST_PROTOCOL)
@@ -55,6 +56,7 @@ class FrameStore(Sequence[MachineState]):
         self.line_numbers = metadata['lines']
         self.start_time_str = metadata['start_time']
         self.end_time_str = metadata['end_time']
+        self.measurement_summary = metadata.get('measurement_summary', {})
         self._offsets = metadata['offsets']
         if len(self._offsets) != (len(self) + BLOCK_SIZE - 1) // BLOCK_SIZE:
             raise OSError('Index de frames incomplet')
@@ -95,6 +97,14 @@ class FrameStore(Sequence[MachineState]):
 
     def read_events(self):
         with (self.directory / 'events.pkl').open('rb') as source:
+            return pickle.load(source)
+
+    def read_measurements(self):
+        from Models.measurement_analysis import analyze_measurements
+        path = self.directory / 'measurements.pkl'
+        if not path.exists():
+            return analyze_measurements(self)
+        with path.open('rb') as source:
             return pickle.load(source)
 
     def close(self) -> None:

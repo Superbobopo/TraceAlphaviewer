@@ -3,6 +3,7 @@ from dataclasses import asdict
 from pathlib import Path
 from queue import Empty
 import ctypes
+import os
 from ctypes import wintypes
 import shutil
 import subprocess
@@ -32,6 +33,12 @@ def receive(task, timeout=60):
 
 
 def launch_window(executable, directory):
+    if os.environ.get('TRACE_ALPHA_BACKGROUND_VALIDATION', '1') == '1':
+        result = subprocess.run([str(executable), '--validate-startup'], cwd=directory,
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW, timeout=30)
+        assert result.returncode == 0, 'Le demarrage/fermeture masque du .exe echoue'
+        return
     user32 = ctypes.WinDLL('user32', use_last_error=True)
     kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
     kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]

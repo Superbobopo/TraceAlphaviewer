@@ -15,6 +15,7 @@ analysis = Analysis(
         (str(app / 'assets' / 'trace-alpha.ico'), 'assets'),
         (str(app / 'assets' / 'trace-alpha.png'), 'assets'),
         (str(report), 'report_app/out'),
+        (str(app / 'report_app' / 'public'), 'report_app/public'),
     ],
     hiddenimports=['Models.loading_worker'],
     excludes=['numpy'],

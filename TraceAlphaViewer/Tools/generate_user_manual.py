@@ -131,7 +131,23 @@ def captures():
     session = LoadingSession()
     path, frames, events, diagnostics, records = demonstration(session.directory)
     app = TraceAlphaViewer()
+    # Garder la fenetre derriere les applications et sans activation.
+    app.withdraw()
     app.geometry('1780x1000+10+10')
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.WinDLL('user32')
+    user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+    user32.GetAncestor.restype = wintypes.HWND
+    user32.GetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+    user32.SetWindowLongPtrW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
+    hwnd = user32.GetAncestor(app.winfo_id(), 2)
+    style = user32.GetWindowLongPtrW(hwnd, -20)
+    user32.SetWindowLongPtrW(hwnd, -20, (style | 0x08000080) & ~0x00040000)
+    user32.SetWindowPos.argtypes = [wintypes.HWND,wintypes.HWND,ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_int,wintypes.UINT]
+    app.deiconify()
+    user32.SetWindowPos(hwnd, 1, 0, 0, 0, 0, 0x0013)
     errors = []
     app.report_callback_exception = lambda *args: errors.append(str(args[1]))
     metadata = {}
@@ -153,6 +169,8 @@ def captures():
         pump()
         app.update_idletasks()
         image = ImageGrab.grab(window=app.winfo_id())
+        if image.convert('RGB').getextrema() == ((255,255),(255,255),(255,255)):
+            raise AssertionError('Capture HWND vide')
         image.save(assets / f'{name}.png')
         metadata[name] = {'width': image.width, 'height': image.height}
         print(f'Capture : {name}', flush=True)
@@ -160,8 +178,10 @@ def captures():
     try:
         photograph('accueil')
         home = app.main_view
-        home._load(str(path))
-        photograph('chargement', settle=False)
+        with patch.object(home, '_poll_loading', return_value=None):
+            home._load(str(path))
+            photograph('chargement', settle=False)
+        home._poll_loading()
         pump(lambda: isinstance(app.main_view, TraceView))
         pump(lambda: not app.main_view._trace_panel._loading)
         # Les etats fictifs sont injectes dans les vrais widgets de l'application.
@@ -216,12 +236,12 @@ def captures():
         view._set_speed(1)
 
         report_paths = []
-        def report_writer(incidents, frames=None):
-            return write_diagnostic_report(incidents, output_dir=session.directory / 'reports', frames=frames)
+        def report_writer(incidents, frames=None, **kwargs):
+            return write_diagnostic_report(incidents, output_dir=session.directory / 'reports', frames=frames, **kwargs)
         with patch('Widgets.diagnostic_panel.write_diagnostic_report', side_effect=report_writer), \
              patch('Widgets.diagnostic_panel.webbrowser.open', side_effect=lambda uri, **kwargs: report_paths.append(uri)):
             view._diagnostic_panel._open_web_report()
-        assert report_paths
+            pump(lambda: bool(report_paths))
         report = next((session.directory / 'reports').glob('diagnostic_report_*.html'))
         browser = browser_path()
         if not browser:
@@ -246,7 +266,13 @@ def captures():
         with (session.directory / 'rapport-demo.csv').open(encoding='utf-8-sig', newline='') as source:
             rows = list(csv.DictReader(source))
         assert rows and any(row['type'] == 'diagnostic' for row in rows)
-        folder._open_selected_trace()
+        import customtkinter as ctk
+        original_toplevel = ctk.CTkToplevel.__init__
+        def hidden_toplevel(window, *args, **kwargs):
+            original_toplevel(window, *args, **kwargs)
+            window.withdraw()
+        with patch.object(ctk.CTkToplevel, '__init__', hidden_toplevel):
+            folder._open_selected_trace()
         pump(lambda: folder._viewer_view is not None)
         folder._close_viewer_window()
         (assets / 'captures.json').write_text(json.dumps(metadata, indent=2), encoding='utf-8')

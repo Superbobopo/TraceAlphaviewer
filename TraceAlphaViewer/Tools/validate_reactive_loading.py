@@ -240,10 +240,17 @@ class UiTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = TraceAlphaViewer()
         cls.app.withdraw()
+        original = ctk.CTkToplevel.__init__
+        def hidden_window(window, *args, **kwargs):
+            original(window, *args, **kwargs)
+            window.withdraw()
+        cls.hidden_windows = patch.object(ctk.CTkToplevel, '__init__', hidden_window)
+        cls.hidden_windows.start()
 
     @classmethod
     def tearDownClass(cls):
         cls.app.destroy()
+        cls.hidden_windows.stop()
 
     def setUp(self):
         from Views.accueilView import AccueilView

@@ -35,6 +35,9 @@ class DiagnosticIncident:
     checks: list[str] = field(default_factory=list)
     confidence: str = ""
     event_lines: list[int] = field(default_factory=list)
+    measurement_stats: dict = field(default_factory=dict)
+    examples: list[dict] = field(default_factory=list)
+    metrics: dict = field(default_factory=dict)
 
     def duration_label(self) -> str:
         duration = max(0, int(self.end_time - self.start_time))
@@ -278,19 +281,19 @@ def _build_t4_diff_incidents(events: list[MachineEvent]) -> list[DiagnosticIncid
 
     return [_event_group_incident(
         'warning',
-        f'T4 - Ecart longueur mesuree > 10mm (max {max_diff}mm)',
+        f'T4 - Ecart firmware T4C/T4T > 10mm (max {max_diff}mm)',
         'T4',
         'diffT4',
         sorted(group, key=lambda event: event.line_num),
-        "Une ou plusieurs mesures T4 different trop de la reference BdD/T4.",
+        "Le firmware signale un ecart diffT4 entre T4C et T4T ; ce bilan est distinct des ecarts mesure/BdD.",
         [
             "Boite mal tassee ou glissement pendant la mesure longueur.",
             "C6 declenche trop tot/trop tard.",
-            "Mesure T4C/T4T incoherente ou reference BdD inadaptee.",
+            "Mesures T4C/T4T incoherentes.",
         ],
-        symptom="La mesure de longueur T4 s'ecarte sensiblement de la reference attendue.",
+        symptom="Les mesures firmware T4C et T4T different de plus de 10 mm.",
         checks=[
-            "Comparer les mesures T4C/T4T avec la reference BdD.",
+            "Comparer T4C et T4T dans les lignes sources ; verifier separement la longueur mesuree face a la BdD.",
             "Verifier le declenchement de C6 pendant la mesure.",
         ],
         confidence='possible',
@@ -661,12 +664,13 @@ def _build_cubestop_c4_blocked_incidents(
     severity = 'error' if explicit or len(attempts) >= 2 else 'warning'
     examples = []
     event_lines: list[int] = []
-    for item in attempts[:4]:
+    for item in attempts:
         error_code = f" eT3:{item['error_code']}" if item.get('error_code') else ""
-        examples.append(
-            f"L.{item['first_line']}->{item['last_line']} "
-            f"C4 reste actif pendant transfert EA->T3{error_code}"
-        )
+        if len(examples) < 4:
+            examples.append(
+                f"L.{item['first_line']}->{item['last_line']} "
+                f"C4 reste actif pendant transfert EA->T3{error_code}"
+            )
         key_lines = [int(item['first_line']), int(item['last_line'])]
         key_lines.extend(line for line in item.get('lines', []) if isinstance(line, int))
         for line in key_lines:
@@ -695,7 +699,7 @@ def _build_cubestop_c4_blocked_incidents(
         probable_causes=list(rule.get('causes', [])),
         checks=list(rule.get('checks', [])),
         confidence=str(rule.get('confidence', '')),
-        event_lines=event_lines[:12],
+        event_lines=event_lines,
     )]
 
 
@@ -768,7 +772,7 @@ def _t4_repeated_init_incident(
         probable_causes=list(rule.get('causes', [])),
         checks=list(rule.get('checks', [])),
         confidence=str(rule.get('confidence', '')),
-        event_lines=[line_num for line_num, _ in sequence[:12]],
+        event_lines=[line_num for line_num, _ in sequence],
     )
 
 
@@ -875,7 +879,7 @@ def _build_text_pattern_incidents(
             probable_causes=list(rule.get('causes', [])),
             checks=list(rule.get('checks', [])),
             confidence=str(rule.get('confidence', '')),
-            event_lines=[line_num for line_num, _, _ in matched[:12]],
+            event_lines=[line_num for line_num, _, _ in matched],
         ))
     return incidents
 
@@ -938,6 +942,7 @@ def _build_alpha_card_reset_incident(
             checks=["Aucune action requise sur la base de ce compteur."],
             confidence='forte',
             event_lines=[first_line, last_line] if first_line != last_line else [first_line],
+            metrics={'trace_duration': trace_duration},
         )]
 
     event_lines: list[int] = []
@@ -973,6 +978,7 @@ def _build_alpha_card_reset_incident(
         checks=list(rule.get('checks', [])),
         confidence=str(rule.get('confidence', 'forte')),
         event_lines=list(dict.fromkeys(event_lines)),
+        metrics={'trace_duration': trace_duration},
     )]
 
 
@@ -1069,87 +1075,39 @@ def _dimension_causes_checks(code: str) -> tuple[list[str], list[str], str]:
     )
 
 
-def _build_dimension_incidents(
-    frames: list[MachineState],
-    line_states: list[tuple[int, str, MachineState]],
-) -> list[DiagnosticIncident]:
-    findings_by_code: dict[str, list[dict[str, object]]] = {}
-    seen: set[tuple[object, tuple[int, int, int], tuple[int, int, int]]] = set()
-
-    for frame in frames:
-        for box in frame.boxes_on_T5:
-            expected = (box.bdd_width_mm, box.bdd_height_mm, box.bdd_length_mm)
-            if any(value <= 0 for value in expected):
-                continue
-            measured_length = box.measured_t4_length_mm or box.measured_t5_length_mm
-            if box.measured_t5_width_mm <= 0 or measured_length <= 0:
-                continue
-            measured = (box.measured_t5_width_mm, box.measured_t5_height_mm, measured_length)
-            code = _dimension_finding_code(measured, expected)
-            if not code:
-                continue
-            key_id = box.id_alpha or box.id_b or box.barcode or box.source_ref
-            key = (key_id, expected, measured)
-            if key in seen:
-                continue
-            seen.add(key)
-            findings_by_code.setdefault(code, []).append({
-                'line': frame.line_num,
-                'time': frame.timestamp,
-                'time_str': frame.timestamp_str,
-                'box': _dimension_box_label(box),
-                'barcode': box.barcode or box.source_ref,
-                'expected': expected,
-                'measured': measured,
-                'context': _dimension_context_labels(line_states, frame.line_num),
-            })
-
-    incidents: list[DiagnosticIncident] = []
-    for code, findings in findings_by_code.items():
-        findings.sort(key=lambda item: int(item['line']))
-        first = findings[0]
-        last = findings[-1]
-        examples = []
-        context_labels: list[str] = []
-        for item in findings:
-            for label in item['context']:
+def _build_dimension_incidents(frames, line_states, measurement_analysis=None):
+    from Models.measurement_analysis import analyze_measurements, representative_samples
+    analysis = measurement_analysis if measurement_analysis is not None else analyze_measurements(frames)
+    grouped = {}
+    for sample in analysis['finals']:
+        if sample['code']:
+            grouped.setdefault(sample['code'], []).append(sample)
+    incidents = []
+    for code, findings in grouped.items():
+        findings.sort(key=lambda s: s['line'])
+        first, last = findings[0], findings[-1]
+        causes, checks, confidence = _dimension_causes_checks(code)
+        context_labels = []
+        examples = representative_samples(findings)
+        for sample in examples:
+            for label in _dimension_context_labels(line_states, sample['line']):
                 if label not in context_labels:
                     context_labels.append(label)
-            if len(examples) >= 4:
-                continue
-            expected = item['expected']
-            measured = item['measured']
-            examples.append(
-                f"{item['box']} {item['barcode']} mesure "
-                f"{measured[0]}x{measured[1]}x{measured[2]} "
-                f"pour BdD {expected[0]}x{expected[1]}x{expected[2]}"
-            )
-        context = f" Contexte proche: {', '.join(context_labels)}." if context_labels else ""
-        summary = (
-            f"{len(findings)} boite(s) avec dimensions hors tolerance "
-            f"(>{_DIMENSION_TOLERANCE_MM}mm). "
-            f"Exemples: {'; '.join(examples)}.{context}"
-        )
-        causes, checks, confidence = _dimension_causes_checks(code)
+        summary = (f"{len(findings)} boite(s), derniere mesure complete par cycle, "
+                   f"hors tolerance (>{_DIMENSION_TOLERANCE_MM} mm).")
+        if code == 'ORIENTATION':
+            summary = f"{len(findings)} boite(s) avec dimensions compatibles dans une autre orientation."
+        if context_labels:
+            summary += " Contexte proche: " + ', '.join(context_labels) + '.'
         incidents.append(DiagnosticIncident(
-            severity='warning',
-            title=_dimension_title(code),
-            belt='T5' if code != 'T4_LENGTH' else 'T4',
-            code=code,
-            first_line=int(first['line']),
-            last_line=int(last['line']),
-            start_time=float(first['time']),
-            end_time=float(last['time']),
-            start_time_str=str(first['time_str']),
-            end_time_str=str(last['time_str']),
-            count=len(findings),
-            summary=summary,
-            symptom="Les dimensions mesurees ne correspondent pas aux dimensions BdD attendues.",
-            probable_causes=causes,
-            checks=checks,
-            confidence=confidence,
-            event_lines=[int(item['line']) for item in findings[:12]],
-        ))
+            severity='warning', title=_dimension_title(code), belt='T4' if code == 'T4_LENGTH' else 'T5',
+            code=code, first_line=first['line'], last_line=last['line'],
+            start_time=first['time'], end_time=last['time'], start_time_str=first['time_str'],
+            end_time_str=last['time_str'], count=len(findings), summary=summary,
+            symptom="Les dimensions mesurees sont comparees aux dimensions BdD de la meme boite.",
+            probable_causes=causes, checks=checks, confidence=confidence,
+            event_lines=[sample['line'] for sample in findings],
+            measurement_stats=analysis['summary'], examples=examples))
     return incidents
 
 
@@ -1332,7 +1290,7 @@ def _build_stale_unmeasured_t5_incidents(
             ]
             if value
         ]
-        for line in list(info.get('event_lines', []))[:6]:
+        for line in info.get('event_lines', []):
             if line not in useful_lines:
                 useful_lines.append(int(line))
 
@@ -1364,7 +1322,7 @@ def _build_stale_unmeasured_t5_incidents(
                 "Verifier si une vidange T5 tardive supprime plusieurs boites non mesurees.",
             ],
             confidence='forte',
-            event_lines=useful_lines[:12],
+            event_lines=useful_lines,
         ))
 
     return incidents
@@ -1411,7 +1369,7 @@ def _build_c9_invalid_width_incidents(
             "Comparer avec les lignes de vidage T5 et de boites trop proches autour de l'heure.",
         ],
         confidence='forte',
-        event_lines=[line_num for line_num, _, _ in matches[:12]],
+        event_lines=[line_num for line_num, _, _ in matches],
     )]
 
 
@@ -1574,7 +1532,8 @@ def _build_unknown_camera_incident(stats: dict[str, object]) -> list[DiagnosticI
         probable_causes=list(rule.get('causes', [])),
         checks=checks,
         confidence=str(rule.get('confidence', '')),
-        event_lines=[line_num for line_num, *_ in confirmed_unknown[:12]],
+        event_lines=[line_num for line_num, *_ in confirmed_unknown],
+        metrics={'total_boxes': total_boxes, 'confirmed_count': confirmed_count, 'unknown_buckets': by_bucket},
     )]
 
 
@@ -1620,7 +1579,8 @@ def _build_inactive_camera_incident(stats: dict[str, object]) -> list[Diagnostic
         probable_causes=list(rule.get('causes', [])),
         checks=list(rule.get('checks', [])),
         confidence=str(rule.get('confidence', '')),
-        event_lines=[line_num for line_num, _, _ in hist_samples[:12]],
+        event_lines=[line_num for line_num, _, _ in hist_samples],
+        metrics={'total_boxes': total_boxes, 'missing_cameras': missing_labels},
     )]
 
 
@@ -1688,6 +1648,7 @@ def camera_report_stats(frames: list[MachineState]) -> dict[str, object]:
 def build_diagnostics(
     frames: list[MachineState],
     events: list[MachineEvent],
+    measurement_analysis=None,
 ) -> list[DiagnosticIncident]:
     incidents: list[DiagnosticIncident] = []
     line_states = _frame_line_states(frames)
@@ -1703,7 +1664,7 @@ def build_diagnostics(
     incidents.extend(_build_alpha_card_reset_incident(line_states))
     incidents.extend(_build_stale_unmeasured_t5_incidents(line_states))
     incidents.extend(_build_c9_invalid_width_incidents(line_states))
-    incidents.extend(_build_dimension_incidents(frames, line_states))
+    incidents.extend(_build_dimension_incidents(frames, line_states, measurement_analysis))
     camera_stats = _camera_stats(line_states)
     incidents.extend(_build_unknown_camera_incident(camera_stats))
     incidents.extend(_build_inactive_camera_incident(camera_stats))

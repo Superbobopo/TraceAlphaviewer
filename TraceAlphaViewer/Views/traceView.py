@@ -19,6 +19,9 @@ import bisect
 import copy
 import math
 import os
+import threading
+import webbrowser
+from queue import Empty
 from typing import Callable, List, Optional
 from collections.abc import Sequence
 
@@ -78,6 +81,8 @@ class TraceView(BaseView):
     ):
         super().__init__(master, fg_color='#12121f', **kwargs)
         self._filepath    = filepath
+        self._report_bridge = None
+        self._bridge_job = None
         self._frames      = frames
         self._return_view = return_view
         self._on_close    = on_close
@@ -108,6 +113,11 @@ class TraceView(BaseView):
             [(f.line_num, i) for i, f in enumerate(frames)],
             key=lambda x: x[0]
         )
+        tk.Misc.bind(self, '<Configure>', self._on_view_resize, add='+')
+
+    def _on_view_resize(self, event):
+        if event.widget is self and hasattr(self, '_bottom_pane') and self._bottom_pane.winfo_exists():
+            self._queue_bottom_height(self._details_height)
 
     def _collect_events(self, frames: List[MachineState]) -> List[MachineEvent]:
         events: list[MachineEvent] = []
@@ -175,11 +185,13 @@ class TraceView(BaseView):
         self.after(5, self.preparation_step, layout, on_error)
 
     def destroy(self) -> None:
+        self._close_report_bridge()
         if self._load_session is not None:
             self._load_session.close()
         super().destroy()
 
     def hide(self) -> None:
+        self._close_report_bridge()
         super().hide()
         self._stop_playback()
         if self._resize_job:
@@ -254,7 +266,7 @@ class TraceView(BaseView):
     def _bottom_total_height(self) -> int:
         details_h = self._details_height if self._details_visible else 0
         handle_h = RESIZE_HANDLE_H if self._details_visible else 0
-        return NAV_BAR_H + handle_h + details_h
+        return NAV_BAR_H + (handle_h + details_h) / self._get_widget_scaling()
 
     def _current_bottom_height(self) -> int:
         if not hasattr(self, '_details_frame') or not self._details_visible:
@@ -263,12 +275,15 @@ class TraceView(BaseView):
         return max(160, height if height > 1 else self._details_height)
 
     def _set_bottom_height(self, bottom_height: int) -> None:
-        if not hasattr(self, '_bottom_pane'):
+        if not hasattr(self, '_bottom_pane') or not hasattr(self, '_details_frame') or not self._details_frame.winfo_exists():
             return
 
-        self._details_height = max(160, int(bottom_height))
+        scale = self._get_widget_scaling()
+        available = self.winfo_height() - (38 + NAV_BAR_H + 12) * scale - CANVAS_H - RESIZE_HANDLE_H - 8
+        maximum = max(100, int(available)) if self.winfo_height() > 1 else bottom_height
+        self._details_height = min(maximum, max(100, int(bottom_height)))
         if self._details_visible:
-            self._details_frame.configure(height=self._details_height)
+            self._details_frame.configure(height=self._details_height / scale)
             self._bottom_pane.configure(height=self._bottom_total_height())
 
     def _start_details_resize(self, event) -> None:
@@ -288,18 +303,22 @@ class TraceView(BaseView):
         self._resize_job = None
         self._set_bottom_height(getattr(self, '_pending_details_height', self._details_height))
 
+    def _set_scaling(self, *args, **kwargs):
+        super()._set_scaling(*args, **kwargs)
+        if hasattr(self, '_bottom_pane') and self._bottom_pane.winfo_exists():
+            self.after_idle(lambda: self._set_bottom_height(self._details_height))
+
     def _build_middle(self, parent) -> None:
         mid = ctk.CTkFrame(parent, fg_color='#12121f', corner_radius=0)
         mid.pack(fill='both', expand=True)
 
         # Graphique machine (gauche, largeur fixe = taille native du canvas)
-        canvas_frame = ctk.CTkFrame(mid, fg_color='#1a1a2e',
-                                    width=CANVAS_W + 8, corner_radius=6)
+        canvas_frame = tk.Frame(mid, bg='#1a1a2e', width=CANVAS_W + 8)
         canvas_frame.pack(side='left', fill='y', padx=(6, 3), pady=6)
         canvas_frame.pack_propagate(False)
 
-        self._canvas = MachineCanvas(canvas_frame, width=CANVAS_W, height=CANVAS_H)
-        self._canvas.pack(padx=2, pady=2)
+        self._machine_canvas = MachineCanvas(canvas_frame, width=CANVAS_W, height=CANVAS_H)
+        self._machine_canvas.pack(padx=2, pady=2)
 
         analysis_frame = ctk.CTkFrame(mid, fg_color='#12121f', corner_radius=0)
         analysis_frame.pack(side='right', fill='both', expand=True, padx=(3, 6), pady=6)
@@ -429,6 +448,8 @@ class TraceView(BaseView):
                 frames=self._frames,
                 on_incident_click=self._on_incident_click,
                 load_session=self._load_session,
+                on_report_open=self._open_linked_report,
+                source_name=os.path.basename(self._filepath),
             )
             self._diagnostic_panel.pack(fill='both', expand=True, padx=0, pady=0)
             self._reference_panel = ReferencePanel(
@@ -482,6 +503,8 @@ class TraceView(BaseView):
             frames=self._frames,
             on_incident_click=self._on_incident_click,
             load_session=self._load_session,
+            on_report_open=self._open_linked_report,
+            source_name=os.path.basename(self._filepath),
         )
         self._diagnostic_panel.pack(fill='both', expand=True)
         self._reference_panel = ReferencePanel(
@@ -568,7 +591,7 @@ class TraceView(BaseView):
             return
 
         # Canvas
-        self._canvas.update_state(st)
+        self._machine_canvas.update_state(st)
 
         # Tableau capteurs + tapis
         self._state_table.update_state(st)
@@ -628,6 +651,68 @@ class TraceView(BaseView):
         self._stop_playback()
         self._reset_error_reference()
         self._go_to(idx)
+
+    def _open_linked_report(self, path):
+        from Models.report_bridge import ReportBridge
+        if self._report_bridge is None:
+            self._report_bridge = ReportBridge()
+            self._bridge_job = self.after(30, self._poll_report_bridge)
+        bridge = self._report_bridge
+
+        def register():
+            try:
+                url = bridge.register(path)
+                self.post_ui(open_url, url)
+            except Exception as exc:
+                self.post_ui(messagebox.showerror, 'Rapport web', str(exc))
+
+        def open_url(url):
+            if self._report_bridge is bridge and self._visible:
+                webbrowser.open(url, new=2)
+        threading.Thread(target=register, daemon=True).start()
+
+    def _poll_report_bridge(self):
+        self._bridge_job = None
+        bridge = self._report_bridge
+        if bridge is None or bridge.closed.is_set():
+            return
+        try:
+            target, complete, result = bridge.commands.get_nowait()
+        except Empty:
+            pass
+        else:
+            if not complete.is_set():
+                try:
+                    if not self._visible or self._disposed.is_set():
+                        raise RuntimeError('La trace source doit etre ouverte dans le viewer.')
+                    line = target['line']
+                    if not self._frames or not 1 <= line <= self._frames[-1].line_num:
+                        raise RuntimeError('La ligne de cet exemple est indisponible.')
+                    self._on_trace_click(line)
+                    self._trace_panel.highlight_lines(line, line)
+                    if hasattr(self, '_analysis_tabs'):
+                        self._analysis_tabs.set('Diagnostic')
+                    elif hasattr(self, '_show_analysis_fallback_tab'):
+                        self._show_analysis_fallback_tab('Diagnostic')
+                    incident = next((i for i in self._diagnostics if i.code == target['code'] and
+                                     i.first_line == target['first_line']), None)
+                    if incident:
+                        self._diagnostic_panel._show_details(incident)
+                    self.winfo_toplevel().deiconify()
+                    self.winfo_toplevel().lift()
+                    result.update(ok=True, line=line)
+                except Exception as exc:
+                    result.update(error=str(exc))
+                complete.set()
+        self._bridge_job = self.after(30, self._poll_report_bridge)
+
+    def _close_report_bridge(self):
+        if self._bridge_job is not None:
+            self.after_cancel(self._bridge_job)
+            self._bridge_job = None
+        if self._report_bridge is not None:
+            self._report_bridge.close()
+            self._report_bridge = None
 
     def _on_reference_click(self, record: ReferenceRecord) -> None:
         """Callback clic sur une reference -> navigation vers sa premiere apparition."""
@@ -817,7 +902,7 @@ class TraceView(BaseView):
                 self._stop_playback()
                 messagebox.showerror('Lecture trace', str(exc))
                 return
-            self._canvas.update_state(state)
+            self._machine_canvas.update_state(state)
             self._play_job = self.after(
                 delay,
                 lambda: self._animate_to_frame(next_idx, step + 1, steps, delay),

@@ -18,9 +18,11 @@ from tkinter import messagebox
 
 from Models.diagnostic import DiagnosticIncident
 from Models.diagnostic_report import write_diagnostic_report
+from Models.diagnostic_report import _metric_from_summary as _structured_metric
 from Models.state import MachineState
 from Models.frame_store import FrameStore
 from Models.loading_client import LoadingSession
+from Models.measurement_analysis import analyze_measurements, summary_text
 from Widgets.text_renderer import TextRenderer
 
 
@@ -38,10 +40,10 @@ _SEVERITY_LABELS = {
 
 _SEVERITY_ORDER = {'error': 0, 'warning': 1, 'info': 2}
 
-_DETAILS_DEFAULT_WIDTH = 860
-_DETAILS_FULLSCREEN_DEFAULT_WIDTH = 600
-_DETAILS_MIN_WIDTH = 420
-_INCIDENTS_MIN_WIDTH = 360
+_DETAILS_DEFAULT_WIDTH = 0
+_DETAILS_FULLSCREEN_DEFAULT_WIDTH = 0
+_DETAILS_MIN_WIDTH = 240
+_INCIDENTS_MIN_WIDTH = 280
 _SPLIT_PREF_KEY = 'diagnostic_split_left_width'
 _SPLIT_NORMAL_PREF_KEY = 'diagnostic_split_left_width_normal'
 _SPLIT_FULLSCREEN_PREF_KEY = 'diagnostic_split_left_width_fullscreen'
@@ -69,8 +71,8 @@ def _load_split_widths() -> dict[str, int]:
         fullscreen_width = _DETAILS_FULLSCREEN_DEFAULT_WIDTH
 
     return {
-        'normal': max(_DETAILS_MIN_WIDTH, normal_width),
-        'fullscreen': max(_DETAILS_MIN_WIDTH, fullscreen_width),
+        'normal': max(0, normal_width),
+        'fullscreen': max(0, fullscreen_width),
     }
 
 
@@ -110,7 +112,9 @@ def _shorten(text: str, max_len: int = 170) -> str:
     return text[:max_len - 3].rstrip() + '...'
 
 
-def _metric_from_summary(summary: str, code: str, occurrence_count: int) -> str:
+def _metric_from_summary(summary: str, code: str, occurrence_count: int, metrics=None) -> str:
+    if metrics:
+        return _structured_metric(summary, code, occurrence_count, metrics)
     if code == 'ALPHA_CARD_RESET':
         match = re.search(
             r'(\d+) reset(?:\(s\))? carte Alpha .*? sur ([^.]+?) de trace',
@@ -163,6 +167,8 @@ class DiagnosticPanel(ctk.CTkFrame):
         frames: list[MachineState] | None = None,
         on_incident_click: Optional[Callable[[DiagnosticIncident], None]] = None,
         load_session=None,
+        on_report_open=None,
+        source_name='',
         **kwargs,
     ):
         kwargs.setdefault('fg_color', '#12121f')
@@ -170,6 +176,10 @@ class DiagnosticPanel(ctk.CTkFrame):
         super().__init__(master, **kwargs)
         self._incidents = incidents
         self._frames = frames
+        self._measurement_summary = (frames.measurement_summary if isinstance(frames, FrameStore)
+                                     else analyze_measurements(frames)['summary'] if frames is not None else {})
+        self._on_report_open = on_report_open
+        self._source_name = source_name
         self._on_incident_click = on_incident_click
         self._line_to_incident: dict[int, DiagnosticIncident] = {}
         self._split_widths = _load_split_widths()
@@ -233,6 +243,7 @@ class DiagnosticPanel(ctk.CTkFrame):
         right.pack_propagate(False)
         self._paned.add(left, minsize=_DETAILS_MIN_WIDTH, stretch='always')
         self._paned.add(right, minsize=_INCIDENTS_MIN_WIDTH, stretch='never')
+        self._split_panes = (left, right)
         self._paned.bind('<Configure>', self._on_paned_configure)
         self._paned.bind('<ButtonRelease-1>', self._on_split_release)
         self._host = self.winfo_toplevel()
@@ -274,18 +285,24 @@ class DiagnosticPanel(ctk.CTkFrame):
         )
         self._report_btn.pack(side='left', padx=(0, 8), pady=6)
 
+        detail_body = tk.Frame(left, bg='#0f0f1c')
+        detail_body.pack(fill='both', expand=True)
+        detail_scroll = tk.Scrollbar(detail_body, orient='vertical')
+        detail_scroll.pack(side='right', fill='y')
         self._details = tk.Text(
-            left,
+            detail_body,
             bg='#0f0f1c',
             fg='#aabbcc',
             font=('Consolas', 9),
             wrap='word',
+            yscrollcommand=detail_scroll.set,
             cursor='arrow',
             state='disabled',
             relief='flat',
             borderwidth=0,
         )
         self._details.pack(fill='both', expand=True, padx=8, pady=8)
+        detail_scroll.configure(command=self._details.yview)
 
         vscroll = tk.Scrollbar(right, orient='vertical')
         vscroll.pack(side='right', fill='y')
@@ -296,6 +313,8 @@ class DiagnosticPanel(ctk.CTkFrame):
             fg='#aabbcc',
             font=('Consolas', 10),
             wrap='none',
+            padx=8,
+            spacing3=5,
             cursor='arrow',
             state='disabled',
             yscrollcommand=vscroll.set,
@@ -313,6 +332,7 @@ class DiagnosticPanel(ctk.CTkFrame):
             self._list.tag_configure(f'{severity}_current', foreground=fg, background=bg)
 
         self._list.bind('<Button-1>', self._on_click)
+        self._list.bind('<Map>', lambda _event: self._list.configure(wrap='word'))
 
     def _on_paned_configure(self, _event) -> None:
         if not self._split_ready:
@@ -329,7 +349,17 @@ class DiagnosticPanel(ctk.CTkFrame):
         return 'fullscreen' if state in ('zoomed', 'fullscreen') else 'normal'
 
     def _current_split_width(self) -> int:
-        return self._split_widths.get(self._window_mode, _DETAILS_DEFAULT_WIDTH)
+        stored = self._split_widths.get(self._window_mode, 0)
+        total = self._paned.winfo_width() if hasattr(self, '_paned') else 800
+        return stored or int(max(total, 1) * .4)
+
+    def _split_limits(self):
+        total = max(1, self._paned.winfo_width() - 8)
+        left = min(_DETAILS_MIN_WIDTH, int(total * .4))
+        right = min(_INCIDENTS_MIN_WIDTH, int(total * .5))
+        for pane, width in zip(self._split_panes, (left, right)):
+            self._paned.paneconfigure(pane, minsize=width)
+        return left, max(left, total - right)
 
     def _remember_current_width(self, width: int) -> None:
         self._split_widths[self._window_mode] = max(_DETAILS_MIN_WIDTH, int(width))
@@ -351,10 +381,10 @@ class DiagnosticPanel(ctk.CTkFrame):
             return
         try:
             total_width = self._paned.winfo_width()
-            if total_width <= (_DETAILS_MIN_WIDTH + _INCIDENTS_MIN_WIDTH):
+            if total_width <= 1:
                 return
-            max_left = max(_DETAILS_MIN_WIDTH, total_width - _INCIDENTS_MIN_WIDTH)
-            target = min(max(self._current_split_width(), _DETAILS_MIN_WIDTH), max_left)
+            min_left, max_left = self._split_limits()
+            target = min(max(self._current_split_width(), min_left), max_left)
             self._set_sash_pos(0, target)
             self._remember_current_width(target)
         except (tk.TclError, AttributeError):
@@ -374,11 +404,11 @@ class DiagnosticPanel(ctk.CTkFrame):
         try:
             self._window_mode = self._host_mode()
             total_width = self._paned.winfo_width()
-            if total_width <= (_DETAILS_MIN_WIDTH + _INCIDENTS_MIN_WIDTH):
+            if total_width <= 1:
                 self._split_job = self.after(30, self._apply_split_width)
                 return
-            max_left = max(_DETAILS_MIN_WIDTH, total_width - _INCIDENTS_MIN_WIDTH)
-            target = min(max(self._current_split_width(), _DETAILS_MIN_WIDTH), max_left)
+            min_left, max_left = self._split_limits()
+            target = min(max(self._current_split_width(), min_left), max_left)
             self._set_sash_pos(0, target)
             self._remember_current_width(target)
             self._split_ready = True
@@ -390,11 +420,11 @@ class DiagnosticPanel(ctk.CTkFrame):
             return
         try:
             total_width = self._paned.winfo_width()
-            if total_width <= (_DETAILS_MIN_WIDTH + _INCIDENTS_MIN_WIDTH):
+            if total_width <= 1:
                 return
-            max_left = max(_DETAILS_MIN_WIDTH, total_width - _INCIDENTS_MIN_WIDTH)
+            min_left, max_left = self._split_limits()
             current = self._get_sash_pos(0)
-            target = min(max(current, _DETAILS_MIN_WIDTH), max_left)
+            target = min(max(current, min_left), max_left)
             if target != current:
                 self._set_sash_pos(0, target)
             self._remember_current_width(target)
@@ -416,35 +446,22 @@ class DiagnosticPanel(ctk.CTkFrame):
         self._line_to_incident = {}
         errors = sum(1 for incident in incidents if incident.severity == 'error')
         warnings = sum(1 for incident in incidents if incident.severity == 'warning')
-        first_error = next((incident for incident in incidents if incident.severity == 'error'), None)
-        if first_error:
-            focus = f'Premier critique: L.{first_error.first_line} - {first_error.title}'
-        elif incidents:
-            focus = f'Premier incident: L.{incidents[0].first_line} - {incidents[0].title}'
-        else:
-            focus = 'Aucun incident detecte sur la trace complete.'
         self._summary.configure(
-            text=f'Trace complete: {errors} critiques, {warnings} alertes, {len(incidents)} incidents. {focus}'
+            text=f'Trace complete: {errors} critiques, {warnings} alertes, {len(incidents)} incidents.'
         )
 
         def rows():
             if not incidents:
                 yield 'Aucun incident detecte sur l ensemble de la trace.\n', ('info',), None
             else:
-                yield 'Heure    Niveau    Zone Ligne    Occ.  Incident\n', ('header',), None
+                yield 'Heure | Niveau | Zone | Ligne | Occurrences\n', ('header',), None
             for incident in incidents:
                 severity = incident.severity if incident.severity in _SEVERITY_STYLES else 'info'
                 severity_label = _SEVERITY_LABELS.get(severity, severity.upper())
                 zone = incident.belt or '-'
-                text = (
-                    f'{incident.start_time_str:<8} '
-                    f'{severity_label:<9} '
-                    f'{zone:<4} '
-                    f'L.{incident.first_line:<7} '
-                    f'{incident.count:>3}x  '
-                    f'{incident.title} ({incident.duration_label()})\n'
-                )
-                yield text, (severity,), incident
+                yield (f'{incident.start_time_str} | {severity_label} | {zone} | '
+                       f'L.{incident.first_line} | {incident.count}x\n'), (severity,), incident
+                yield f'{incident.title} ({incident.duration_label()})\n', (severity,), incident
         self._renderer.start(rows())
         self._show_global_summary()
 
@@ -475,8 +492,8 @@ class DiagnosticPanel(ctk.CTkFrame):
             return
 
         severity = best_incident.severity if best_incident.severity in _SEVERITY_STYLES else 'info'
-        self._list.tag_add('current', f'{best_line}.0', f'{best_line}.end')
-        self._list.tag_add(f'{severity}_current', f'{best_line}.0', f'{best_line}.end')
+        self._list.tag_add('current', f'{best_line}.0', f'{best_line + 1}.end')
+        self._list.tag_add(f'{severity}_current', f'{best_line}.0', f'{best_line + 1}.end')
         self._list.see(f'{best_line}.0')
         if not self._showing_global:
             self._show_details(best_incident)
@@ -497,6 +514,7 @@ class DiagnosticPanel(ctk.CTkFrame):
                 'Diagnostic global de la trace\n\n'
                 'Aucun incident detecte sur l ensemble de la trace chargee.'
             )
+            self._details.insert('end', '\n\nBILAN DES MESURES\n' + summary_text(self._measurement_summary))
             self._details.configure(state='disabled')
             return
 
@@ -522,6 +540,7 @@ class DiagnosticPanel(ctk.CTkFrame):
                     'incident_count': 1,
                     'occurrence_count': incident.count,
                     'summary': incident.summary,
+                    'metrics': incident.metrics,
                 }
                 continue
             group['incident_count'] = int(group['incident_count']) + 1
@@ -575,7 +594,7 @@ class DiagnosticPanel(ctk.CTkFrame):
             zone = str(group['belt'] or '-')
             code = str(group['code'] or '-')
             occurrence_count = int(group['occurrence_count'])
-            metric = _metric_from_summary(str(group['summary']), code, occurrence_count)
+            metric = _metric_from_summary(str(group['summary']), code, occurrence_count, group['metrics'])
             self._details.insert(
                 'end',
                 f'{idx}. [{severity}] {zone} {code} - {metric}\n'
@@ -598,7 +617,7 @@ class DiagnosticPanel(ctk.CTkFrame):
             duration = _duration_label(float(group['start_time']), float(group['end_time']))
             incident_count = int(group['incident_count'])
             occurrence_count = int(group['occurrence_count'])
-            metric = _metric_from_summary(str(group['summary']), code, occurrence_count)
+            metric = _metric_from_summary(str(group['summary']), code, occurrence_count, group['metrics'])
             count_label = f'{incident_count} type(s)' if incident_count == 1 else f'{incident_count} sequences'
             self._details.insert(
                 'end',
@@ -610,6 +629,7 @@ class DiagnosticPanel(ctk.CTkFrame):
             for line in _business_lines(str(group['summary']), code)[:2]:
                 self._details.insert('end', f'   {line}\n')
             self._details.insert('end', '------------------------------------------------------------\n')
+        self._details.insert('end', '\nBILAN DES MESURES\n' + summary_text(self._measurement_summary))
         self._details.configure(state='disabled')
 
     def _show_details(self, incident: DiagnosticIncident | None) -> None:
@@ -648,6 +668,13 @@ class DiagnosticPanel(ctk.CTkFrame):
                 f'Lignes utiles a ouvrir:\n{lines or "-"}'
             )
             self._details.insert('end', text)
+            if incident.measurement_stats:
+                names = {'T4_LENGTH': ('length',), 'T5_WIDTH': ('width',), 'T5_HEIGHT': ('height',)}.get(incident.code)
+                self._details.insert('end', '\n\nBILAN DES MESURES DE LA TRACE\n' +
+                                     summary_text(incident.measurement_stats, names))
+            for sample in incident.examples:
+                self._details.insert('end', f"\n\nExemple L.{sample['line']} - {sample['time_str']} - {sample['box']} {sample['barcode']}\n"
+                    f"Largeur / hauteur / longueur : {sample['measured']} mm ; BdD {sample['expected']} mm ; ecarts {sample['deltas']} mm.")
         self._details.configure(state='disabled')
 
     def _open_web_report(self) -> None:
@@ -659,7 +686,8 @@ class DiagnosticPanel(ctk.CTkFrame):
                     self._own_session = self._own_session or LoadingSession()
                     self._load_session = self._own_session
                 self._report_task = self._load_session.start(
-                    'report', store=str(self._frames.directory), incidents=self._incidents)
+                    'report', store=str(self._frames.directory), incidents=self._incidents,
+                    source_name=self._source_name)
             except Exception as exc:
                 messagebox.showerror('Rapport web', str(exc))
                 return
@@ -668,8 +696,8 @@ class DiagnosticPanel(ctk.CTkFrame):
             self._report_job = self.after(10, self._poll_report)
             return
         try:
-            report_path = write_diagnostic_report(self._incidents, frames=self._frames)
-            webbrowser.open(report_path.resolve().as_uri(), new=2)
+            report_path = write_diagnostic_report(self._incidents, frames=self._frames, source_name=self._source_name)
+            self._launch_report(report_path)
         except Exception as exc:
             messagebox.showerror(
                 'Rapport web',
@@ -690,11 +718,17 @@ class DiagnosticPanel(ctk.CTkFrame):
                     if kind == 'error':
                         messagebox.showerror('Rapport web', payload)
                     elif self._report_path is not None:
-                        webbrowser.open(self._report_path.resolve().as_uri(), new=2)
+                        self._launch_report(self._report_path)
                     return
         except Empty:
             pass
         self._report_job = self.after(10, self._poll_report)
+
+    def _launch_report(self, path):
+        if self._on_report_open is not None:
+            self._on_report_open(path)
+        else:
+            webbrowser.open(path.resolve().as_uri(), new=2)
 
     def destroy(self):
         self._host.unbind('<Configure>', self._host_binding)

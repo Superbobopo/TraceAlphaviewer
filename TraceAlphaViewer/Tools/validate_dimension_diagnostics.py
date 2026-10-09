@@ -44,7 +44,7 @@ def _check_statuses() -> None:
     expected = (76, 62, 110)
     _check(_status_for((76, 62, 110), expected) == "ok", "statut ok absent")
     _check(_status_for((110, 76, 62), expected) == "orientation", "statut orientation absent")
-    _check(_status_for((133, 62, 78), expected) == "bad", "statut bad absent")
+    _check(_status_for((133, 62, 78), expected) == "multiple", "statut multiple absent")
 
 
 def _check_routes_trace() -> None:

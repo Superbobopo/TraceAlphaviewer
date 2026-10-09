@@ -2,6 +2,24 @@ from __future__ import annotations
 
 DIMENSION_TOLERANCE_MM = 3
 
+MEASUREMENT_STYLES = {
+    '': ('#4FC3F7', 'Mesure non evaluee'),
+    'ok': ('#2ECC71', 'Conforme (+/-3 mm)'),
+    'orientation': ('#F5B041', 'Orientation differente'),
+    'length': ('#A78BFA', 'Longueur T4/C6 hors tol.'),
+    'width': ('#14B8A6', 'Largeur T5/C9 hors tol.'),
+    'height': ('#FDE047', 'Hauteur T5/LzB hors tol.'),
+    'multiple': ('#E74C3C', 'Plusieurs dim. hors tol.'),
+    'c9_error': ('#FF2DAA', 'Largeur invalide / C9'),
+}
+MEASUREMENT_STATUS_COLORS = {key: value[0] for key, value in MEASUREMENT_STYLES.items()}
+MEASUREMENT_STATUS_COLORS['bad'] = MEASUREMENT_STATUS_COLORS['multiple']
+
+
+def measurement_label(status: str) -> str:
+    return MEASUREMENT_STYLES.get('multiple' if status == 'bad' else status,
+                                  MEASUREMENT_STYLES[''])[1]
+
 
 def dimension_ok(measured: int, expected: int) -> bool:
     return abs(measured - expected) <= DIMENSION_TOLERANCE_MM
@@ -51,8 +69,5 @@ def dimension_finding_code(
 
 
 def measurement_status_from_code(code: str) -> str:
-    if not code:
-        return "ok"
-    if code == "ORIENTATION":
-        return "orientation"
-    return "bad"
+    return {'': 'ok', 'ORIENTATION': 'orientation', 'T4_LENGTH': 'length',
+            'T5_WIDTH': 'width', 'T5_HEIGHT': 'height', 'GLOBAL': 'multiple'}.get(code, 'bad')
