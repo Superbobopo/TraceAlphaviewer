@@ -28,7 +28,7 @@ figure{margin:20px 0;break-inside:avoid;border:1px solid #cad7e5;border-radius:8
 @media(max-width:600px){.grid{grid-template-columns:1fr}.toc{columns:1}table{font-size:12px}th,td{padding:7px}h1{font-size:30px}}
 @page{size:A4;margin:14mm 14mm 17mm;@bottom-left{content:"TraceAlphaViewer • Manuel utilisateur";font:8pt Arial;color:#54667c}@bottom-right{content:counter(page) " / " counter(pages);font:8pt Arial;color:#54667c}}
 @media print{html{scroll-behavior:auto}body{background:white;font:10pt/1.42 "Segoe UI",Arial,sans-serif;-webkit-print-color-adjust:exact;print-color-adjust:exact}.sidebar,.actions,.footer-link{display:none}main{margin:0;padding:0;max-width:none}.page{border:0;border-radius:0;padding:0;margin:0;break-before:page}.page:first-child{break-before:auto}.cover{min-height:241mm;padding:22mm 15mm;background:#173e72}h1{font-size:34pt}h2{font-size:21pt;margin-bottom:12px}h3{font-size:13pt;margin:16px 0 6px}.lead{font-size:14pt}.eyebrow,.chapter{font-size:9pt}.badge{font-size:9pt}p{margin:8px 0}li{margin:5px 0}table{font-size:9pt}th,td{padding:6px 8px}pre{font-size:9pt}.small,figcaption{font-size:8.5pt}.legend{font-size:9pt}.callout{padding:10px 12px;margin:12px 0}figure{margin:14px 0}.card{padding:10px}.toc{columns:2}.grid{gap:12px}h2,h3{break-after:avoid}a{color:#164ead;text-decoration:none}.cover a{color:white}.n{width:18px;height:18px;font-size:10px;line-height:18px}.exercise{padding-left:12px}}
-@media print{#ouvrir figure{width:65%;margin:14px auto}#incident figure{width:75%;margin:14px auto}#problemes{font-size:9.5pt;line-height:1.4}#problemes h3{margin:10px 0 4px}.callout{break-inside:avoid}}
+@media print{#ouvrir figure{width:65%;margin:14px auto}#incident figure{width:75%;margin:14px auto}#problemes{font-size:9.5pt;line-height:1.4}#problemes h3{margin:10px 0 4px}#installation{font-size:9.5pt;line-height:1.38}#installation h3{margin:12px 0 6px}.callout{break-inside:avoid}}
 </style>
 </head>
 <body>
@@ -85,7 +85,7 @@ figure{margin:20px 0;break-inside:avoid;border:1px solid #cad7e5;border-radius:8
 
 <section class="page" id="lancer">
 <span class="chapter">02 • Démarrage</span><h2>Lancer le logiciel</h2>
-<p>Si un raccourci vous a été fourni, utilisez-le. Sinon, l'application se lance depuis le dossier du projet :</p>
+<p>Double-cliquez sur <code>TraceAlphaViewer.exe</code>, reconnaissable à son logo « A » et convoyeur. Cette version fonctionne sans Python. Si vous utilisez le code source, lancez-le depuis le dossier du projet :</p>
 <ol><li>Ouvrez le dossier <strong>TraceAlphaViewer</strong> qui contient le fichier <code>README.md</code>.</li><li>Dans l'Explorateur Windows, cliquez dans la barre d'adresse, saisissez <code>powershell</code>, puis appuyez sur <kbd>Entrée</kbd>.</li><li>Dans la fenêtre qui s'ouvre, tapez la commande suivante et validez :</li></ol>
 <pre><code>python TraceAlphaViewer\Main.py</code></pre>
 <p>La fenêtre <strong>TraceAlpha Viewer</strong> apparaît. Laissez la fenêtre PowerShell ouverte pendant l'utilisation.</p>
@@ -271,6 +271,7 @@ figure{margin:20px 0;break-inside:avoid;border:1px solid #cad7e5;border-radius:8
 <span class="chapter">20 • Annexe</span><h2>Installation et partage du manuel</h2>
 <p>Cette annexe s'adresse à la personne qui prépare le logiciel sur le poste. Un utilisateur dont le logiciel fonctionne peut passer directement à la prise en main.</p>
 <h3>Préparer un poste Windows</h3>
+<p><strong>Version exécutable :</strong> copier <code>TraceAlphaViewer.exe</code> sur le poste Windows 64 bits et le lancer par double-clic. Choisir ensuite les traces avec les boutons d'ouverture. Les étapes suivantes concernent la version Python.</p>
 <ol><li>Installer <strong>Python 3.13 ou plus récent</strong>, avec Tkinter, fourni dans l'installation Python standard. Rendre la commande <code>python</code> accessible dans le terminal.</li><li>Récupérer le projet et ouvrir PowerShell dans sa racine, où se trouve le README.</li><li>Installer la dépendance graphique :</li></ol>
 <pre><code>python -m pip install customtkinter</code></pre>
 <p>Lancer ensuite :</p><pre><code>python TraceAlphaViewer\Main.py</code></pre>

@@ -86,14 +86,29 @@ def run(request, send):
     send('done', {'mode': mode, 'directory': str(path), 'timings': timings})
 
 
-def main() -> None:
-    with Path(sys.argv[1]).open('rb') as source:
+def main(request_path=None) -> None:
+    with Path(request_path or sys.argv[1]).open('rb') as source:
         request = pickle.load(source)
 
+    if sys.stdout is None:
+        # Le mode Windows sans console conserve le pipe natif herite du parent.
+        import ctypes
+        from ctypes import wintypes
+        import msvcrt
+        import os
+        get_handle = ctypes.windll.kernel32.GetStdHandle
+        get_handle.argtypes = [wintypes.DWORD]
+        get_handle.restype = wintypes.HANDLE
+        handle = get_handle(-11)
+        descriptor = msvcrt.open_osfhandle(handle, os.O_WRONLY | os.O_BINARY)
+        output = os.fdopen(descriptor, 'wb', buffering=0)
+    else:
+        output = sys.stdout.buffer
+
     def send(kind, payload):
-        pickle.dump((request['job_id'], kind, payload), sys.stdout.buffer,
+        pickle.dump((request['job_id'], kind, payload), output,
                     protocol=pickle.HIGHEST_PROTOCOL)
-        sys.stdout.buffer.flush()
+        output.flush()
 
     try:
         run(request, send)

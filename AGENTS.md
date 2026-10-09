@@ -68,6 +68,9 @@ Exception d'installation : cette mise a jour des instructions reste locale, sans
 
 ## Fichiers importants
 
+- La construction Windows utilise `TraceAlphaViewer.spec` et `Tools/build_exe.py` ; inclure les ressources customtkinter, le logo et le build React, jamais les traces locales.
+- En mode .exe, lancer les workers via `--loading-worker` avant les imports Tk ; recuperer le pipe Windows lorsque `sys.stdout` est absent. Les sessions restent dans `%LOCALAPPDATA%/TraceAlphaViewer/.trace_work`, hors du bundle temporaire.
+
 - `TraceAlphaViewer/Main.py` : point d'entree customtkinter.
 - `TraceAlphaViewer/Views/traceView.py` : viewer principal, navigation, player et callbacks.
 - `TraceAlphaViewer/Widgets/machine_canvas.py` : dessin machine et logique de placement/echelle.

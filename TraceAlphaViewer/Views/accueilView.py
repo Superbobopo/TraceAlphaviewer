@@ -4,6 +4,7 @@ AccueilView - ecran de demarrage avec ouverture de fichier trace (.old/.txt).
 from __future__ import annotations
 
 import os
+import sys
 import time
 from queue import Empty
 from pathlib import Path
@@ -17,7 +18,8 @@ from Models.state import MachineEvent, MachineState
 from Views.BaseView import BaseView
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = (Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False)
+                else Path(__file__).resolve().parents[1])
 TRACE_EXTENSIONS = ('.old', '.txt')
 TRACE_DIRS = (
     PROJECT_ROOT,

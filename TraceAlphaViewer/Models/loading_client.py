@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import pickle
 from queue import Queue, Full
 import shutil
@@ -16,7 +17,9 @@ from Models.frame_store import FrameStore
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-WORK_ROOT = PROJECT_ROOT / '.trace_work'
+WORK_ROOT = (Path(os.environ.get('LOCALAPPDATA', tempfile.gettempdir()))
+             / 'TraceAlphaViewer' / '.trace_work'
+             if getattr(sys, 'frozen', False) else PROJECT_ROOT / '.trace_work')
 
 
 class WorkerTask:
@@ -50,9 +53,12 @@ class WorkerTask:
             if self.cancelled.is_set():
                 return
             flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+            command = ([sys.executable, '--loading-worker', str(request_path)]
+                       if getattr(sys, 'frozen', False) else
+                       [sys.executable, '-u', '-m', 'Models.loading_worker', str(request_path)])
             self.process = subprocess.Popen(
-                [sys.executable, '-u', '-m', 'Models.loading_worker', str(request_path)],
-                cwd=PROJECT_ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                command, cwd=PROJECT_ROOT, stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 creationflags=flags,
             )
 

@@ -1,3 +1,12 @@
+from pathlib import Path
+import sys
+
+# Le worker doit demarrer avant tout import de l'interface.
+if __name__ == '__main__' and len(sys.argv) == 3 and sys.argv[1] == '--loading-worker':
+    from Models.loading_worker import main
+    main(sys.argv[2])
+    raise SystemExit(0)
+
 import customtkinter as ctk
 from Views.BaseView import BaseView
 from Views.accueilView import AccueilView
@@ -10,6 +19,7 @@ class TraceAlphaViewer(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("TraceAlpha Viewer")
+        self.iconbitmap(str(Path(__file__).resolve().parent / 'assets' / 'trace-alpha.ico'))
         self.geometry("1500x860")
         self.minsize(1300, 720)
         self.configure(fg_color='#12121f')

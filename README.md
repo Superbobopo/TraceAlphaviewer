@@ -64,6 +64,36 @@ Depuis la racine du depot :
 python TraceAlphaViewer\Main.py
 ```
 
+## Executable Windows
+
+Le fichier `dist/TraceAlphaViewer.exe` se lance par double-clic, sans installer
+Python ni ouvrir PowerShell. Il contient le logo Alpha/convoyeur, les widgets
+et le rapport web React. Les traces restent des fichiers externes : utiliser
+`Ouvrir une trace` ou `Ouvrir un dossier` pour les choisir.
+
+Les sessions temporaires du .exe sont creees dans
+`%LOCALAPPDATA%/TraceAlphaViewer/.trace_work`, puis supprimees a la fermeture.
+Le .exe peut etre copie seul sur un autre poste Windows 64 bits.
+
+Pour reconstruire sous Windows, avec le rapport React deja construit :
+
+```powershell
+python -m pip install customtkinter pillow pyinstaller
+python TraceAlphaViewer\Tools\build_exe.py
+```
+
+La recette `TraceAlphaViewer.spec` inclut uniquement les ressources necessaires,
+jamais les traces locales. Le .exe et les fichiers intermediaires restent locaux
+dans `dist/` et `build/`, ignores par Git.
+
+Le logo est cree avec l'outil integre `imagegen`. Consigne de creation :
+« Icone Windows TraceAlphaViewer : A angulaire, convoyeur avec deux boites,
+signal de trace, tuile bleu marine, symbole turquoise et bleu, point diagnostic
+ambre, sans texte, fond transparent autour de la tuile. »
+Le PNG source et l'icone multi-resolution sont dans `TraceAlphaViewer/assets/`.
+La [consigne exacte de creation](TraceAlphaViewer/assets/README.md) est conservee
+avec ces deux fichiers.
+
 ## Rapport web React
 
 Le bouton `Rapport web` utilise le build statique React/Next si celui-ci existe.
