@@ -15,6 +15,87 @@ from Models.report_bridge import ReportBridge
 
 
 class BrowserTests(unittest.TestCase):
+    def test_reference_lists_sort_paging_details_and_axis_navigation(self):
+        from playwright.sync_api import sync_playwright
+        frames=samples(90)
+        for i,frame in enumerate(frames):
+            box=frame.boxes_on_T5[0]
+            barcode='REF-MULTI' if i < 60 else f'REF-{i:03d}'
+            box.barcode=box.identified_barcode=box.bdd_reference=barcode
+            box.measured_t4_length_mm=95 if i==59 else 105 if i<60 else 106+i-60
+            box.measured_t4t_length_mm=box.measured_t4_length_mm+2
+            box.measured_t4_diff_mm=-2
+        frames[0].boxes_on_T5[0].measured_t5_line=2
+        frames[0].raw_lines.append((2,'MAJ FICTIVE largeur et hauteur'))
+        output=ROOT/'build'/'report-validation'
+        output.mkdir(parents=True,exist_ok=True)
+        incidents=build_diagnostics(frames,[])
+        report=write_diagnostic_report(incidents,output,frames,source_name='LISTES FICTIVES')
+        fallback=output/'secours-listes.html'
+        fallback.write_text(build_diagnostic_report_html(incidents,frames),encoding='utf-8')
+        bridge=ReportBridge()
+        try:
+            with sync_playwright() as playwright:
+                browser=playwright.chromium.launch(channel='msedge',headless=True)
+                page=browser.new_page(viewport={'width':1440,'height':1080})
+                for url in (bridge.register(report),fallback.as_uri()):
+                    local=url.startswith('http:')
+                    page.goto(url)
+                    page.locator('[data-measure-axis=length][data-measure-side=over]').click()
+                    panel=page.locator('.measurement-reference-list')
+                    self.assertEqual(panel.locator('tbody tr').count(),25)
+                    self.assertIn('REF-089',panel.locator('tbody tr').first.inner_text())
+                    panel.get_by_role('button',name='Suivants').click()
+                    self.assertEqual(panel.locator('tbody tr').count(),6)
+                    panel.get_by_role('button',name='REF-MULTI',exact=True).click()
+                    self.assertEqual(panel.locator('.sample').count(),25)
+                    self.assertIn('T4T (complément)',panel.locator('.sample').first.inner_text())
+                    panel.get_by_role('button',name='Suivants').click()
+                    self.assertEqual(panel.locator('.sample').count(),25)
+                    panel.get_by_role('button',name='Suivants').click()
+                    self.assertEqual(panel.locator('.sample').count(),9)
+                    if local:
+                        panel.get_by_role('button',name='Précédents').click()
+                        panel.get_by_role('button',name='Précédents').click()
+                        received=[]
+                        def navigate():
+                            target,done,result=bridge.commands.get(timeout=10)
+                            received.append(target)
+                            result.update(ok=True,line=target['line'])
+                            done.set()
+                        thread=threading.Thread(target=navigate)
+                        thread.start()
+                        page.wait_for_function("!document.querySelector('.measurement-reference-list [data-navigate]').disabled")
+                        panel.locator('[data-navigate]').first.click()
+                        page.get_by_role('status').filter(has_text='positionné').wait_for()
+                        thread.join(5)
+                        self.assertEqual(received[0]['line'],1)
+                        self.assertEqual(received[0]['axis'],'length')
+                    else:
+                        self.assertTrue(panel.locator('[data-navigate]').first.is_disabled())
+                    page.locator('[data-measure-axis=length][data-measure-side=under]').click()
+                    self.assertEqual(panel.locator('tbody tr').count(),1)
+                    self.assertIn('REF-MULTI',panel.inner_text())
+                    if not local:
+                        import pypdfium2 as pdfium
+                        with page.expect_download() as download:
+                            page.get_by_role('button',name='Exporter PDF').click()
+                        pdf_path=output/'rapport-listes.pdf'
+                        download.value.save_as(pdf_path)
+                        document=pdfium.PdfDocument(pdf_path)
+                        contents='\n'.join(p.get_textpage().get_text_range() for p in document)
+                        for expected in ('REF-089','REF-088','REF-087','REF-MULTI','T4C','T4T','diffT4'):
+                            self.assertIn(expected,contents)
+                        document[0].render(scale=1.2).to_pil().save(output/'pdf-listes-page-1.png')
+                        document.close()
+                    for width in (1920,1280,850):
+                        page.set_viewport_size({'width':width,'height':1080})
+                        self.assertTrue(page.evaluate('document.documentElement.scrollWidth <= innerWidth'))
+                    page.screenshot(path=str(output/'rapport-listes.png'),full_page=True)
+                browser.close()
+        finally:
+            bridge.close()
+
     def test_signed_ranges_counts_and_plain_explanations_visible(self):
         from playwright.sync_api import sync_playwright
         import pypdfium2 as pdfium

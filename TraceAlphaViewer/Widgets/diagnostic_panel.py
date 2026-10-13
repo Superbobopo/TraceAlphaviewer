@@ -22,7 +22,7 @@ from Models.diagnostic_report import _metric_from_summary as _structured_metric
 from Models.state import MachineState
 from Models.frame_store import FrameStore
 from Models.loading_client import LoadingSession
-from Models.measurement_analysis import analyze_measurements, summary_text
+from Models.measurement_analysis import analyze_measurements, summary_text, reference_page, AXES
 from Widgets.text_renderer import TextRenderer
 
 
@@ -168,6 +168,7 @@ class DiagnosticPanel(ctk.CTkFrame):
         on_incident_click: Optional[Callable[[DiagnosticIncident], None]] = None,
         load_session=None,
         on_report_open=None,
+        on_measurement_click=None,
         source_name='',
         **kwargs,
     ):
@@ -176,8 +177,14 @@ class DiagnosticPanel(ctk.CTkFrame):
         super().__init__(master, **kwargs)
         self._incidents = incidents
         self._frames = frames
+        self._measurement_analysis = None if isinstance(frames, FrameStore) else analyze_measurements(frames or [])
         self._measurement_summary = (frames.measurement_summary if isinstance(frames, FrameStore)
-                                     else analyze_measurements(frames)['summary'] if frames is not None else {})
+                                     else self._measurement_analysis['summary'])
+        self._on_measurement_click = on_measurement_click
+        self._measurement_task = None
+        self._measurement_job = None
+        self._measurement_request = None
+        self._measurement_bindings = {}
         self._on_report_open = on_report_open
         self._source_name = source_name
         self._on_incident_click = on_incident_click
@@ -509,6 +516,7 @@ class DiagnosticPanel(ctk.CTkFrame):
             self._list.tag_remove(f'{severity}_current', '1.0', 'end')
 
     def _show_global_summary(self) -> None:
+        self._cancel_measurement_task()
         self._showing_global = True
         self._clear_current_selection()
         self._details.configure(state='normal')
@@ -519,7 +527,8 @@ class DiagnosticPanel(ctk.CTkFrame):
                 'Diagnostic global de la trace\n\n'
                 'Aucun incident detecte sur l ensemble de la trace chargee.'
             )
-            self._details.insert('end', '\n\nBILAN DES MESURES\n' + summary_text(self._measurement_summary))
+            self._details.insert('end', '\n\nBILAN DES MESURES\n')
+            self._insert_measurement_summary(self._measurement_summary)
             self._details.configure(state='disabled')
             return
 
@@ -634,10 +643,12 @@ class DiagnosticPanel(ctk.CTkFrame):
             for line in _business_lines(str(group['summary']), code)[:2]:
                 self._details.insert('end', f'   {line}\n')
             self._details.insert('end', '------------------------------------------------------------\n')
-        self._details.insert('end', '\nBILAN DES MESURES\n' + summary_text(self._measurement_summary))
+        self._details.insert('end', '\nBILAN DES MESURES\n')
+        self._insert_measurement_summary(self._measurement_summary)
         self._details.configure(state='disabled')
 
     def _show_details(self, incident: DiagnosticIncident | None) -> None:
+        self._cancel_measurement_task()
         self._showing_global = False
         self._details.configure(state='normal')
         self._details.delete('1.0', 'end')
@@ -675,11 +686,150 @@ class DiagnosticPanel(ctk.CTkFrame):
             self._details.insert('end', text)
             if incident.measurement_stats:
                 names = {'T4_LENGTH': ('length',), 'T5_WIDTH': ('width',), 'T5_HEIGHT': ('height',)}.get(incident.code)
-                self._details.insert('end', '\n\nBILAN DES MESURES DE LA TRACE\n' +
-                                     summary_text(incident.measurement_stats, names))
+                self._details.insert('end', '\n\nBILAN DES MESURES DE LA TRACE\n')
+                self._insert_measurement_summary(incident.measurement_stats, names)
             for sample in incident.examples:
                 self._details.insert('end', f"\n\nExemple L.{sample['line']} - {sample['time_str']} - {sample['box']} {sample['barcode']}\n"
                     f"Largeur / hauteur / longueur : {sample['measured']} mm ; BdD {sample['expected']} mm ; ecarts {sample['deltas']} mm.")
+        self._details.configure(state='disabled')
+
+    def _insert_measurement_summary(self, summary, names=None):
+        cursor = self._details.index('end-1c')
+        self._details.insert('end', summary_text(summary, names))
+        for axis, values in summary.get('axes', {}).items():
+            if names is not None and axis not in names:
+                continue
+            start = self._details.search(values['label'], cursor, stopindex='end')
+            if not start:
+                continue
+            for side, label, key in (('under', 'Trop petites', 'under_count'), ('over', 'trop grandes', 'over_count')):
+                text = f"{label} : {values['all'][key]}"
+                index = self._details.search(text, start, stopindex='end')
+                tag = f'measurement-{axis}-{side}'
+                self._details.tag_configure(tag, foreground='#75bfff', underline=True)
+                self._details.tag_add(tag, index, f'{index}+{len(text)}c')
+                self._bind_measurement_tag(tag, lambda a=axis, s=side: self._open_measurement_references(a, s))
+            cursor = start
+
+    def _cancel_measurement_task(self):
+        if self._measurement_job is not None:
+            self.after_cancel(self._measurement_job)
+            self._measurement_job = None
+        if self._measurement_task is not None:
+            self._measurement_task.cancel()
+            self._measurement_task = None
+
+    def _bind_measurement_tag(self, tag, callback):
+        previous = self._measurement_bindings.get(tag)
+        if previous:
+            self._details.tag_unbind(tag, '<Button-1>', previous)
+        self._measurement_bindings[tag] = self._details.tag_bind(tag, '<Button-1>', lambda _event: callback())
+
+    def _measurement_link(self, text, callback, tag):
+        start = self._details.index('end-1c')
+        self._details.insert('end', text)
+        self._details.tag_add(tag, start, self._details.index('end-1c'))
+        self._details.tag_configure(tag, foreground='#75bfff', underline=True)
+        self._bind_measurement_tag(tag, callback)
+
+    def _open_measurement_references(self, axis, side, page=0, barcode=''):
+        self._cancel_measurement_task()
+        self._showing_global = True
+        self._measurement_request = (axis, side, page, barcode)
+        self._details.configure(state='normal')
+        self._details.delete('1.0', 'end')
+        label = next(label for name,label,_ in AXES if name == axis)
+        self._details.insert('end', f"{label} — {'Trop petites' if side == 'under' else 'Trop grandes'}\n{barcode}\nPreparation de la liste...\n")
+        self._details.configure(state='disabled')
+        if isinstance(self._frames, FrameStore):
+            self._own_session = self._own_session or (LoadingSession() if self._load_session is None else None)
+            self._load_session = self._load_session or self._own_session
+            try:
+                self._measurement_task = self._load_session.start('measurement_references', store=str(self._frames.directory),
+                    axis=axis, side=side, page=page, barcode=barcode)
+            except Exception as exc:
+                self._details.configure(state='normal')
+                self._details.insert('end', '\nListe indisponible : ' + str(exc))
+                self._details.configure(state='disabled')
+                return
+            self._measurement_job = self.after(10, self._poll_measurement_references)
+        else:
+            self._render_measurement_references(reference_page(self._measurement_analysis, axis, side, page, barcode))
+
+    def _poll_measurement_references(self):
+        self._measurement_job = None
+        deadline = time.perf_counter() + .008
+        while time.perf_counter() < deadline:
+            try:
+                kind, data = self._measurement_task.results.get_nowait()
+            except Empty:
+                break
+            if kind == 'result':
+                self._render_measurement_references(data)
+            elif kind in ('done', 'error'):
+                self._measurement_task = None
+                if kind == 'error':
+                    self._details.configure(state='normal')
+                    self._details.insert('end', '\nListe indisponible : ' + str(data))
+                    self._details.configure(state='disabled')
+                return
+        self._measurement_job = self.after(10, self._poll_measurement_references)
+
+    def _render_measurement_references(self, data):
+        axis,side,page,barcode = self._measurement_request
+        label = next(label for name,label,_ in AXES if name == axis)
+        self._details.configure(state='normal')
+        self._details.delete('1.0', 'end')
+        self._details.insert('end', f"{label} — {'Trop petites' if side == 'under' else 'Trop grandes'}\n")
+        self._details.insert('end', 'Tri : pire ecart, puis nombre de boites.\n\n')
+        self._measurement_link('Retour au bilan\n\n', self._show_global_summary, 'measurement-back')
+        if barcode:
+            self._details.insert('end', barcode + '\n\n')
+            for i,sample in enumerate(data['samples']):
+                index = next(index for name,_,index in AXES if name == axis)
+                self._details.insert('end', f"{sample['box']} — {sample['time_str']} — {sample.get('name', '')}\n"
+                    f"Attendu {sample['expected'][index]} mm ; mesure {sample['measured'][index]} mm ; ecart {sample['deltas'][index]:+.1f} mm.\n")
+                self._measurement_link('Voir dans AlphaViewer\n\n', lambda s=sample: self._navigate_measurement_sample(s,axis), f'measurement-sample-{i}')
+        else:
+            for i,row in enumerate(data['rows']):
+                self._measurement_link(f"{page*25+i+1}. {row['barcode']} — {row['name']}\n",
+                    lambda b=row['barcode']: self._open_measurement_references(axis,side,0,b), f'measurement-ref-{i}')
+                self._details.insert('end', f"   {row['count']}/{row['total']} boites ({row['percent']:.1f} %) ; "
+                    f"plage {row['min_signed']:+.1f} a {row['max_signed']:+.1f} mm ; pire {row['worst']:+.1f} mm.\n\n")
+        if not data['total']:
+            self._details.insert('end', 'Aucune boite pour ce cote.\n')
+        self._details.insert('end', f"Page {page+1}/{max(1,(data['total']+24)//25)} — {data['total']} {'boites' if barcode else 'references'}\n")
+        if page:
+            self._measurement_link('Precedents   ', lambda: self._open_measurement_references(axis,side,page-1,barcode), 'measurement-prev')
+        if (page+1)*25 < data['total']:
+            self._measurement_link('Suivants', lambda: self._open_measurement_references(axis,side,page+1,barcode), 'measurement-next')
+        self._details.configure(state='disabled')
+        self._details.yview_moveto(0)
+
+    def _navigate_measurement_sample(self, sample, axis):
+        line = sample['sources'].get(axis) or sample['line']
+        if self._on_measurement_click is not None:
+            self._on_measurement_click(line)
+        self._show_measurement_sample(sample, axis)
+
+    def _show_measurement_sample(self, sample, axis='length'):
+        self._cancel_measurement_task()
+        self._showing_global = False
+        self._details.configure(state='normal')
+        self._details.delete('1.0', 'end')
+        self._details.insert('end', f"{sample['barcode']} — {sample.get('name', '')}\n{sample['box']} — {sample['time_str']}\n")
+        if sample.get('rejected_dimensions'):
+            self._details.insert('end', f"Produit identifie puis rejete pour dimensions : {sample['current_reference']}\n")
+        for name,label,index in AXES:
+            self._details.insert('end', f"\n{label} : {sample['measured'][index]} / BdD {sample['expected'][index]} mm "
+                f"({sample['deltas'][index]:+.1f} mm) ; mesure L.{sample['sources'][name]}.\n")
+        if sample.get('t4t'):
+            diff = f" ; diffT4 : {sample['diff_t4']:+.1f} mm" if sample.get('diff_t4') is not None else ''
+            self._details.insert('end', f"\nT4T (complement) : {sample['t4t']} mm{diff}.\n")
+        self._details.insert('end', f"\nIdentification L.{sample['sources']['identity']} ; BdD L.{sample['sources']['bdd']}.\n")
+        for row in sample.get('context', []):
+            self._details.insert('end', f"L.{row['line']} {row['text']}\n")
+        self._measurement_link('\nRetour au bilan', self._show_global_summary, 'measurement-back')
         self._details.configure(state='disabled')
 
     def _open_web_report(self) -> None:
@@ -740,6 +890,7 @@ class DiagnosticPanel(ctk.CTkFrame):
             webbrowser.open(path.resolve().as_uri(), new=2)
 
     def destroy(self):
+        self._cancel_measurement_task()
         self._host.unbind('<Configure>', self._host_binding)
         for job in (self._split_job, self._mode_job):
             if job is not None:

@@ -696,7 +696,7 @@ def _sample_box_details(frame, belt, text):
                'barcode': box.barcode or box.source_ref, 'source_ref': box.source_ref}
     expected = [box.bdd_width_mm, box.bdd_height_mm, box.bdd_length_mm]
     measured = [box.measured_t5_width_mm, box.measured_t5_height_mm,
-                box.measured_t4_length_mm or box.measured_t5_length_mm]
+                box.measured_t4_length_mm if box.measured_t4_line else 0]
     if all(v > 0 for v in expected) and (all(v > 0 for v in measured) or box.measurement_status == 'c9_error'):
         details.update(expected=expected, measured=measured, deltas=[m-e for m,e in zip(measured,expected)],
                        invalid=box.measurement_status == 'c9_error')
@@ -715,6 +715,23 @@ def build_report_payload(
                 analyze_measurements(frames if frames is not None else []))
     wanted = set()
     targets = {}
+    reference_samples = {}
+    reference_lists = {}
+    for axis, sides in analysis['references'].items():
+        reference_lists[axis] = {}
+        for side, rows in sides.items():
+            reference_lists[axis][side] = []
+            for row in rows:
+                ids = []
+                for original in row['samples']:
+                    key = f"measurement:{original['cycle']}:{original['line']}"
+                    ids.append(key)
+                    if key not in reference_samples:
+                        sample = dict(original, id=key)
+                        reference_samples[key] = sample
+                        for line in set(sample['sources'].values()) - {0}:
+                            wanted.update(range(max(1, line - 2), line + 3))
+                reference_lists[axis][side].append(dict({k:v for k,v in row.items() if k != 'samples'}, sample_ids=ids))
     for group in grouped:
         group['id'] = f"{group['code']}:{group['first_line']}:{group['belt']}"
         if group['code'] in _DIMENSION_CODES:
@@ -732,6 +749,8 @@ def build_report_payload(
             if 'measured' not in sample:
                 targets.setdefault(sample['line'], []).append((group['belt'], sample))
             wanted.update(range(max(1, sample['line'] - 2), sample['line'] + 3))
+            for line in set(sample.get('sources', {}).values()) - {0}:
+                wanted.update(range(max(1, line - 2), line + 3))
     raw = {}
     if frames is not None:
         for frame in frames:
@@ -743,10 +762,18 @@ def build_report_payload(
     for group in grouped:
         for sample in group['examples']:
             sample['context'] = [{'line': n, 'text': raw[n][0]} for n in range(max(1, sample['line'] - 2), sample['line'] + 3) if n in raw]
+            present = {row['line'] for row in sample['context']}
+            sample['context'] += [{'line': n, 'text': raw[n][0]} for n in sorted(set(sample.get('sources', {}).values()) - present) if n in raw]
             if sample['line'] in raw:
                 sample['time_str'] = raw[sample['line']][1]
         group['representative_ids'] = [s['id'] for s in representative_samples(group['examples'], code=group['code'])]
         group['measurement_stats'] = analysis['summary'] if group['code'] in _DIMENSION_CODES else {}
+    for sample in reference_samples.values():
+        lines = set(sample['sources'].values()) - {0}
+        sample['context'] = [{'line': n, 'text': raw[n][0]} for n in sorted(lines) if n in raw]
+        if sample['line'] in raw:
+            sample['time_str'] = raw[sample['line']][1]
+        sample['incident_line'] = next((g['first_line'] for g in grouped if g['code'] == sample['code']), 0)
     _apply_field_severity(grouped, total_boxes)
     grouped.sort(
         key=lambda group: (
@@ -773,6 +800,8 @@ def build_report_payload(
                    'end': frames[-1].timestamp_str if frames else '',
                    'duration': _duration_label(frames[0].timestamp, frames[-1].timestamp) if frames else ''},
         "measurements": analysis['summary'],
+        "measurement_references": reference_lists,
+        "measurement_examples": list(reference_samples.values()),
         "counts": counts,
         "verdict": _verdict(counts),
         "groups": grouped,

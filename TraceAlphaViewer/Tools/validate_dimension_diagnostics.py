@@ -29,6 +29,8 @@ def _check_rules() -> None:
 
 def _status_for(measured: tuple[int, int, int], expected: tuple[int, int, int]) -> str:
     box = BoxInfo(
+        barcode='DEMO', identified_barcode='DEMO', identity_line=1, identity_source='CB2',
+        bdd_reference='DEMO', bdd_source_line=1, measured_t4_line=1,
         bdd_width_mm=expected[0],
         bdd_height_mm=expected[1],
         bdd_length_mm=expected[2],

@@ -25,6 +25,7 @@ Capteurs dessinés comme barres colorées sur les tapis (fidèle au schéma phys
 from __future__ import annotations
 
 import tkinter as tk
+from Models.measurement_identity import measurement_exclusion, EXCLUSION_LABELS
 from typing import Optional
 
 from Models.state import BoxInfo, MachineState
@@ -635,18 +636,25 @@ class MachineCanvas(tk.Canvas):
         ]
         if box.barcode:
             lines.append(box.barcode)
+        if box.identified_barcode and box.identified_barcode != box.barcode:
+            lines.append(f'Produit identifie : {box.identified_barcode}')
         if box.dim_label():
             lines.append(box.dim_label())
         lines.append(measurement_label(box.measurement_status))
+        exclusion = measurement_exclusion(box)
+        if exclusion:
+            lines.append('Comparaison exclue : ' + EXCLUSION_LABELS[exclusion])
         for label, measured, expected in (
-            ('Longueur T4/C6', box.measured_t4_length_mm or box.measured_t5_length_mm, box.bdd_length_mm),
+            ('Longueur T4/C6 (T4C)', box.measured_t4_length_mm if box.measured_t4_line else 0, box.bdd_length_mm),
             ('Largeur T5/C9', box.measured_t5_width_mm, box.bdd_width_mm),
             ('Hauteur T5/LzB', box.measured_t5_height_mm, box.bdd_height_mm),
         ):
-            if measured > 0 and expected > 0:
+            if measured > 0 and expected > 0 and not exclusion:
                 lines.append(f'{label}: {measured} / BdD {expected} mm ({measured - expected:+.1f} mm)')
             else:
                 lines.append(f'{label}: donnees insuffisantes')
+        if box.measured_t4t_length_mm:
+            lines.append(f'T4T (complement) : {box.measured_t4t_length_mm} mm ; source L.{box.measured_t4_line}')
         text = '\n'.join(lines)
         tx = min(x + 12, CANVAS_W - 380)
         ty = max(8, min(y - 44, CANVAS_H - 175))

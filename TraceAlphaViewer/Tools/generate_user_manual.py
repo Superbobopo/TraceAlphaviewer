@@ -74,6 +74,10 @@ def demonstration(directory):
         barcode = known_cip if cycle < 3 else 'ALPHA-INC-DEMO003'
         name = 'PRODUIT DEMO' if cycle < 3 else 'REFERENCE INCONNUE'
         box = BoxInfo(barcode=barcode, name=name, id_b=100 + cycle,
+            identified_barcode=barcode if cycle < 3 else '', identified_name=name if cycle < 3 else '',
+            identity_line=len(frames)+1 if cycle < 3 else 0, identity_source='CB2',
+            bdd_reference=barcode if cycle < 3 else '', bdd_source_line=len(frames)+1,
+            measured_t4_line=len(frames)+1, measured_t5_line=len(frames)+1, measured_height_line=len(frames)+1,
             length_mm=70, width_mm=40, height_mm=25,
             bdd_length_mm=70, bdd_width_mm=40, bdd_height_mm=25,
             measured_t4_length_mm=70, measured_t5_width_mm=40,

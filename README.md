@@ -135,8 +135,21 @@ les mesures restent accessibles dans les details. Les pistes T4/C6 distinguent
 decalage regulier (reglage/calibrage), ecarts variables en moins (patinage possible)
 et en trop (C6 perturbe possible), sans conclure automatiquement a une cause.
 Le rapport affiche les explications et premiers controles des fiches sans clic.
-`diffT4` reste un ecart firmware
-T4C/T4T distinct. Les preuves detaillees sont conservees dans la session locale,
+La longueur principale utilise exclusivement **T4C**, avec sa ligne source.
+T4T et `diffT4` restent des complements distincts ; une T4C absente n'est jamais
+remplacee par T4T. Les vraies UNKNOWN, les identifications non confirmees et les
+references contradictoires sont exclues du bilan et comptees separement. Un produit
+reconnu par CB2 ou identifie puis rejete en `[Dinh]` conserve sa reference produit
+pour la comparaison, avec une mention du rejet.
+
+Cliquez sur **Trop petites** ou **Trop grandes** pour retrouver les references
+responsables des ecarts, triees par pire ecart absolu puis par nombre de boites.
+Chaque reference donne son nom, son nombre de mauvaises mesures sur le total
+comparable, son pourcentage et sa plage signee. Ouvrez-la pour les boites et leurs
+lignes sources, par pages de 25, puis **Voir dans AlphaViewer** pour les retrouver.
+Ces listes fonctionnent aussi dans le rapport hors connexion ; le PDF reprend
+les trois references aux plus grands ecarts de chaque cote et pour chaque axe.
+Les preuves detaillees sont conservees dans la session locale,
 sans parcours complet de `FrameStore` dans le thread de l'interface.
 
 Les controles de navigateur et PDF necessitent `playwright`, Microsoft Edge et

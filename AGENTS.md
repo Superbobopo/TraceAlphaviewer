@@ -111,6 +111,8 @@ Exception d'installation : cette mise a jour des instructions reste locale, sans
 - `BoxInfo.id_b` est l'identite pre-T5 (`Nboite` / `idB`).
 - `BoxInfo.id_alpha` est l'identite T5/BdD utilisee par les lignes robot.
 - `BoxInfo.source_ref` conserve la reference initiale `ALPHA-INC-xxx` quand CB2 identifie ensuite le vrai produit.
+- `identified_barcode`/`identified_name` conservent le produit confirme, distinct de `barcode` (reference machine courante) et de `source_ref`. Une reference contradictoire marque le cycle ambigu pour les mesures ; ne jamais lui attacher les dimensions d'une ancienne recherche BdD d'un autre produit.
+- Les champs de provenance produit/BdD/T4C/T4T doivent suivre `clone`, les transferts et les listes T5. Le resume T4C/T4T se rattache uniquement au transfert T4->T5 en attente, par identite unique, et consomme cette attente ; ne jamais le reporter sur la prochaine boite T3/T4.
 - `CB1: ajout Hist_LectCB` concerne EA/C4 uniquement.
 - `CB2: ajout Hist_LectCB` concerne T3/C5 uniquement.
 - `CubeStop:Y` indique que la trace/machine utilise le volet CubeStop entre EA/C4 et T3.
@@ -199,6 +201,8 @@ Exception d'installation : cette mise a jour des instructions reste locale, sans
 ## Diagnostics terrain
 
 - Les bilans de dimensions se calculent dans le worker via `Models/measurement_analysis.py`, une fois par cycle avec la derniere mesure complete exploitable. Les preuves distinctes restent dans `measurements.pkl` ; seule la synthese compacte est lue par le thread UI.
+- La longueur principale, les couleurs et l'infobulle utilisent T4C avec sa ligne source ; T4T reste distinct, sans fallback. Les vraies UNKNOWN meme dimensionnees, les identifications non confirmees et les references contradictoires sont exclues explicitement. Une reconnaissance CB2 et un produit identifie puis renomme `[Dinh]` restent comparables sous le produit identifie, avec mention du rejet.
+- Les listes Trop petites/Trop grandes utilisent uniquement les mesures finales comparables, groupees par produit et triees par pire ecart absolu, nombre de boites puis reference. Le denominateur est le total comparable du produit. Le worker charge references et preuves par pages de 25 depuis `measurements.pkl` ; aucun parcours complet de `FrameStore` dans Tk. La navigation utilise les lignes sources enregistrees pour l'axe choisi.
 - L'ecart signe vaut mesure moins BdD. Orientations differentes, C9 invalide, references absentes, mesures incompletes et identites ambigues sont exclus du bilan de reglage et comptes separement. `diffT4` compare T4C/T4T et ne constitue pas une comparaison mesure/BdD.
 - Afficher les bonnes/mauvaises mesures sur le total comparable, le total des cycles T5 et les exclusions. Le bilan global compte une boite hors tolerance une seule fois, meme si plusieurs axes sont en erreur. Les plages et pires ecarts gardent leur signe ; distinguer moyenne signee et erreur moyenne absolue. Un cote sans anomalie affiche « Aucune », jamais un zero invente.
 - Pour la longueur T4/C6, distinguer decalage regulier (reglage/calibrage ou intervention mecanique sans nouveau parametrage), ecarts variables en moins (patinage possible moteur/rouleau) et en trop (C6 mal positionne ou detection parasite possible). Les hypotheses restent a confirmer ; ne pas les appliquer automatiquement a C9/LzB.

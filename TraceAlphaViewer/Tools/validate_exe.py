@@ -145,6 +145,12 @@ def main():
                 payload.pop('generated_at', None)
                 expected.pop('generated_at', None)
                 assert payload == expected, 'Rapport different du code source'
+                from Models.measurement_analysis import analyze_measurements, reference_page
+                expected_page = reference_page(analyze_measurements(expected_frames), 'length', 'over')
+                result = receive(session.start('measurement_references', store=str(frames.directory),
+                                               axis='length', side='over'))
+                assert result[-1][0] == 'done', result[-1]
+                assert next(value for kind,value in result if kind == 'result') == expected_page, 'Liste de references differente dans le .exe'
                 result = receive(session.start('folder', path=traces))
                 assert result[-1][0] == 'done' and sum(kind == 'entry' for kind, _ in result) == 1
                 result = receive(session.start('file', path=traces / 'absent.old'))

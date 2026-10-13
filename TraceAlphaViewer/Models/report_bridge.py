@@ -88,6 +88,12 @@ class ReportBridge:
                     if not isinstance(request, dict):
                         raise ValueError()
                     target = report['examples'][request['sample_id']]
+                    if request.get('axis') is not None:
+                        axis = request['axis']
+                        line = target.get('sample', {}).get('sources', {})[axis]
+                        if axis not in ('length', 'width', 'height') or not line:
+                            raise ValueError('Axe inconnu.')
+                        target = dict(target, line=line, axis=axis)
                 except (ValueError, KeyError, TypeError):
                     self.reply(400, {'error': 'Exemple inconnu.'})
                     return
@@ -127,6 +133,9 @@ class ReportBridge:
             for sample in group.get('examples', []):
                 examples[sample['id']] = {'line': sample['line'], 'code': group['code'],
                                           'first_line': group['first_line']}
+        for sample in payload.get('measurement_examples', []):
+            examples[sample['id']] = {'line': sample['line'], 'code': sample['code'],
+                                      'first_line': sample['incident_line'], 'sample': sample}
         if self.closed.is_set():
             raise RuntimeError('La vue source est fermee.')
         key = secrets.token_urlsafe(12)

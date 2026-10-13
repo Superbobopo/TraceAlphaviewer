@@ -15,17 +15,21 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'TraceAlphaViewer'))
 from Models.state import BoxInfo, MachineState
 from Models.dimension_check import MEASUREMENT_STYLES, measurement_status_from_code
-from Models.measurement_analysis import analyze_measurements, representative_samples, summary_text
+from Models.measurement_analysis import analyze_measurements, representative_samples, summary_text, reference_page
 from Models.diagnostic import build_diagnostics, DiagnosticIncident
 from Models.diagnostic_report import build_report_payload, write_diagnostic_report, build_diagnostic_report_html
 from Models.report_bridge import ReportBridge
-from Parser.trace_parser import _classify_alpha_measurement
+from Parser.trace_parser import _classify_alpha_measurement, _update
 
 
 def samples(count=35, delta=5):
     frames = []
     for i in range(count):
+        line = i * 3 + 1
         box = BoxInfo(id_alpha=100 + i, barcode=f'DEMO-{i % 2}', name='PRODUIT FICTIF',
+            identified_barcode=f'DEMO-{i % 2}', identified_name='PRODUIT FICTIF',
+            identity_line=line, identity_source='CB2', bdd_reference=f'DEMO-{i % 2}', bdd_source_line=line,
+            measured_t4_line=line, measured_t5_line=line, measured_height_line=line,
             bdd_length_mm=100, bdd_width_mm=60, bdd_height_mm=30,
             measured_t4_length_mm=100 + delta, measured_t5_width_mm=60, measured_t5_height_mm=30,
             length_mm=100, width_mm=60, height_mm=30, x_pos=942)
@@ -37,6 +41,94 @@ def samples(count=35, delta=5):
 
 
 class MeasurementTests(unittest.TestCase):
+    def test_unknown_reidentification_dinh_conflicts_and_missing_t4c(self):
+        frames = samples(6,-5)
+        boxes = [f.boxes_on_T5[0] for f in frames]
+        boxes[0].barcode = 'ALPHA-INC-UNKNOWN'
+        boxes[0].identified_barcode = ''
+        boxes[1].source_ref = 'ALPHA-INC-RELUE-CB2'
+        boxes[2].barcode = 'ALPHA-INC-REJET[DINH]'
+        boxes[3].bdd_reference = 'AUTRE-PRODUIT'
+        boxes[4].identity_line = 0
+        boxes[5].measured_t4_line = 0
+        for box in boxes:
+            _classify_alpha_measurement(box)
+        analysis = analyze_measurements(frames)
+        self.assertEqual(analysis['summary']['comparable_count'],2)
+        self.assertEqual(analysis['summary']['excluded'],{'ambiguous':0,'unknown':1,'reference_conflict':1,'identity_unconfirmed':1,'t4c_absent':1})
+        self.assertEqual(boxes[0].measurement_status,'')
+        self.assertEqual(boxes[2].measurement_status,'length')
+        self.assertEqual(analysis['finals'][1]['barcode'],'DEMO-0')
+        self.assertTrue(analysis['finals'][1]['rejected_dimensions'])
+        self.assertEqual(analysis['summary']['cycle_count'],6)
+
+    def test_parser_t4c_sources_and_dinh_keep_product_across_snapshots(self):
+        state,ctx = MachineState(C5=1),{}
+        lines = [
+            "idCB2: Identif. sur le lecteur1 Ok 'DEMO', (Nboite= 32)",
+            'Rech. infos dans la BdD pour DEMO',
+            '--> PRODUIT FICTIF 64x33x163 94,3g',
+            'transfert T3->T4 termine longueur=161 mm idB=32',
+            'la boite est rendu (physiquement) sur T5',
+            'tT4*T5: => longueur boite (BdD)=163 (T2T)=180 (T4C)=161 (T4T)=134 diffT4=27mm',
+            "BdD: Creation de la boite 'DEMO' PRODUIT FICTIF x=4360 (0x0x161) IdA:201",
+            "MAJ (APRES-MESURE-LARG) bt IdA:201 'DEMO' (nvlle lxH:64x33 [x161] X:4476)(BdD:64x33x163)",
+            'UDP @ALPHA:T5-LIST-PACK@<Dc2>201<Dc2>Y<Dc2>ALPHA-INC-001[Dinh]<Dc2>PRODUIT FICTIF[Dinh]<Dc2>64<Dc2>33<Dc2>161<Dc2>94,3<Dc2>LOT<Dc2>SN<Dc2>0<Dc2>DATE<Dc2>DAY<Dc2>4476@FP',
+        ]
+        frames = []
+        for number,text in enumerate(lines,1):
+            state.line_num=number
+            state.timestamp=number
+            state.timestamp_str=f'09:00:{number:02d}'
+            state.raw_lines=[(number,text)]
+            state.events=[]
+            _update(state,text,ctx,number)
+            frames.append(state.deep_copy())
+        box=state.boxes_on_T5[0]
+        self.assertEqual(box.identified_barcode,'DEMO')
+        self.assertEqual(box.bdd_reference,'DEMO')
+        self.assertEqual(box.identified_name,'PRODUIT FICTIF')
+        self.assertEqual((box.measured_t4_length_mm,box.measured_t4t_length_mm),(161,134))
+        self.assertEqual(box.measured_t4_line,6)
+        self.assertEqual(box.measurement_status,'ok')
+        self.assertEqual(box.clone(),box)
+        analysis=analyze_measurements(frames)
+        self.assertEqual(analysis['summary']['axes']['length']['all']['mean_signed'],-2)
+        self.assertEqual(analysis['summary']['axes']['length']['all']['outside_count'],0)
+        sample=analysis['finals'][0]
+        self.assertEqual(sample['sources'],{'length':6,'width':8,'height':8,'bdd':8,'identity':1})
+        self.assertEqual(sample['line'],8)
+        self.assertEqual(sample['t4t'],134)
+        self.assertEqual(sample['diff_t4'],27)
+        self.assertTrue(sample['rejected_dimensions'])
+
+        # Un resume consomme ne doit pas contaminer la boite suivante.
+        state.box_on_T3=BoxInfo(id_b=33,barcode='DEMO')
+        _update(state,'tT4*T5: => longueur boite (BdD)=163 (T2T)=180 (T4C)=99 (T4T)=90 diffT4=8mm',ctx,10)
+        self.assertEqual(state.boxes_on_T5[0].measured_t4_length_mm,161)
+        self.assertEqual(state.box_on_T3.measured_t4_length_mm,0)
+
+    def test_reference_order_denominators_both_sides_and_pages(self):
+        frames=samples(4,0)
+        for frame,delta in zip(frames,(-5,9,0,-8)):
+            box=frame.boxes_on_T5[0]
+            box.barcode=box.identified_barcode=box.bdd_reference='DEMO'
+            box.measured_t4_length_mm+=delta
+        analysis=analyze_measurements(frames)
+        below=analysis['references']['length']['under'][0]
+        above=analysis['references']['length']['over'][0]
+        self.assertEqual((below['count'],below['total'],below['percent'],below['worst']),(2,4,50,-8))
+        self.assertEqual((above['count'],above['total'],above['percent'],above['worst']),(1,4,25,9))
+        self.assertEqual([s['deltas'][2] for s in below['samples']],[-8,-5])
+        frames=samples(60)
+        for i,frame in enumerate(frames):
+            box=frame.boxes_on_T5[0]
+            box.barcode=box.identified_barcode=box.bdd_reference=f'DEMO-{i:03d}'
+            box.measured_t4_length_mm+=i
+        analysis=analyze_measurements(frames)
+        self.assertEqual(reference_page(analysis,'length','over',0)['rows'][0]['barcode'],'DEMO-059')
+        self.assertEqual([len(reference_page(analysis,'length','over',p)['rows']) for p in (0,1,2)],[25,25,10])
+
     def test_signed_range_counts_two_means_and_extreme_proofs(self):
         frames = samples(3)
         for frame, expected, measured in zip(frames, (20,20,30), (26,16,39)):
@@ -82,6 +174,8 @@ class MeasurementTests(unittest.TestCase):
         for frame in frames:
             frame.boxes_on_T5[0].measured_t4_length_mm = 106
             frame.boxes_on_T5[0].barcode = 'UNE-REFERENCE'
+            frame.boxes_on_T5[0].identified_barcode = 'UNE-REFERENCE'
+            frame.boxes_on_T5[0].bdd_reference = 'UNE-REFERENCE'
         biased = analyze_measurements(frames)['summary']['axes']['length']
         self.assertIn('fiche BdD',biased['bias']['advice'])
 
@@ -117,6 +211,8 @@ class MeasurementTests(unittest.TestCase):
         frames = samples(12)
         for i, frame in enumerate(frames):
             frame.boxes_on_T5[0].barcode = 'UNIQUE'
+            frame.boxes_on_T5[0].identified_barcode = 'UNIQUE'
+            frame.boxes_on_T5[0].bdd_reference = 'UNIQUE'
             frame.boxes_on_T5[0].measured_t4_length_mm = 95 if i % 2 else 105
         result = analyze_measurements(frames)['summary']['axes']['length']
         self.assertEqual(result['all']['mean_signed'], 0)
@@ -142,6 +238,8 @@ class MeasurementTests(unittest.TestCase):
         together = samples(2)
         together[0].boxes_on_T5 += together[1].boxes_on_T5
         together[0].boxes_on_T5[1].barcode = together[0].boxes_on_T5[0].barcode
+        together[0].boxes_on_T5[1].identified_barcode = together[0].boxes_on_T5[0].barcode
+        together[0].boxes_on_T5[1].bdd_reference = together[0].boxes_on_T5[0].barcode
         self.assertEqual(analyze_measurements(together[:1])['summary']['comparable_count'], 2)
 
     def test_exclusions_and_axes(self):
@@ -210,6 +308,61 @@ class MeasurementTests(unittest.TestCase):
 
 
 class ReportReuseTests(unittest.TestCase):
+    def test_reference_worker_pages_navigation_cancel_and_no_ui_frame_scan(self):
+        import customtkinter as ctk
+        from Widgets.diagnostic_panel import DiagnosticPanel
+        from Models.frame_store import FrameStore,write_frame_store
+        from Models.loading_client import LoadingSession
+        import pickle
+        session=LoadingSession()
+        frames=samples(60)
+        analysis=analyze_measurements(frames)
+        store_path=session.directory/'entry'
+        write_frame_store(frames,store_path,measurement_summary=analysis['summary'])
+        with (store_path/'measurements.pkl').open('wb') as output:
+            pickle.dump(analysis,output,pickle.HIGHEST_PROTOCOL)
+        store=FrameStore(store_path)
+        app=ctk.CTk();app.withdraw()
+        errors=[]
+        app.report_callback_exception=lambda *args:errors.append(str(args[1]))
+        try:
+            with patch.object(FrameStore,'__iter__',side_effect=AssertionError('Parcours frames dans Tk')):
+                visited=[]
+                panel=DiagnosticPanel(app,build_diagnostics(frames,[]),store,load_session=session,
+                                      on_measurement_click=visited.append)
+                self.assertTrue(panel._details.tag_ranges('measurement-length-over'))
+                before=len(panel._details._tclCommands)
+                for _ in range(12):panel._show_global_summary()
+                self.assertLessEqual(len(panel._details._tclCommands),before+2)
+                def wait():
+                    deadline=time.monotonic()+8
+                    while panel._measurement_task is not None and time.monotonic()<deadline:
+                        app.update();time.sleep(.005)
+                    self.assertIsNone(panel._measurement_task)
+                    self.assertFalse(errors,errors)
+                panel._open_measurement_references('length','over')
+                wait()
+                self.assertIn('30/30',panel._details.get('1.0','end'))
+                panel._open_measurement_references('length','over',barcode='DEMO-0')
+                wait()
+                self.assertIn('Page 1/2',panel._details.get('1.0','end'))
+                panel._open_measurement_references('length','over',1,'DEMO-0')
+                wait()
+                self.assertIn('Page 2/2',panel._details.get('1.0','end'))
+                sample=analysis['references']['length']['over'][0]['samples'][0]
+                panel._navigate_measurement_sample(sample,'length')
+                self.assertEqual(visited,[sample['sources']['length']])
+                self.assertIn('Identification L.',panel._details.get('1.0','end'))
+                panel._open_measurement_references('width','under')
+                panel._show_global_summary()
+                self.assertIsNone(panel._measurement_task)
+                app.update()
+                self.assertIn('DIAGNOSTIC GLOBAL',panel._details.get('1.0','end'))
+        finally:
+            for job in app.tk.call('after','info'):app.tk.call('after','cancel',job)
+            app.destroy();store.close();session.close()
+            self.assertTrue(session.cleaned.wait(15))
+
     def test_two_views_reopen_without_worker_and_regenerate_missing_files(self):
         import customtkinter as ctk
         from Widgets.diagnostic_panel import DiagnosticPanel

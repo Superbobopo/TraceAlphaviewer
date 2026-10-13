@@ -449,6 +449,7 @@ class TraceView(BaseView):
                 on_incident_click=self._on_incident_click,
                 load_session=self._load_session,
                 on_report_open=self._open_linked_report,
+                on_measurement_click=self._on_trace_click,
                 source_name=os.path.basename(self._filepath),
             )
             self._diagnostic_panel.pack(fill='both', expand=True, padx=0, pady=0)
@@ -504,6 +505,7 @@ class TraceView(BaseView):
             on_incident_click=self._on_incident_click,
             load_session=self._load_session,
             on_report_open=self._open_linked_report,
+            on_measurement_click=self._on_trace_click,
             source_name=os.path.basename(self._filepath),
         )
         self._diagnostic_panel.pack(fill='both', expand=True)
@@ -698,6 +700,8 @@ class TraceView(BaseView):
                                      i.first_line == target['first_line']), None)
                     if incident:
                         self._diagnostic_panel._show_details(incident)
+                    if target.get('sample'):
+                        self._diagnostic_panel._show_measurement_sample(target['sample'], target.get('axis', 'length'))
                     self.winfo_toplevel().deiconify()
                     self.winfo_toplevel().lift()
                     result.update(ok=True, line=line)

@@ -16,13 +16,24 @@ from Parser.trace_parser import parse_file
 
 def run(request, send):
     mode = request['mode']
-    if mode in ('business', 'report'):
+    if mode in ('business', 'report', 'measurement_references'):
         with FrameStore(request['store']) as frames:
             if mode == 'business':
                 from Models.event_cycles import build_business_events
                 items = build_business_events(frames, frames.read_events(), request['belt'])
                 for start in range(0, len(items), 500):
                     send('items', items[start:start + 500])
+            elif mode == 'measurement_references':
+                from Models.measurement_analysis import reference_page
+                page = reference_page(frames.read_measurements(), request['axis'], request['side'],
+                                      request.get('page', 0), request.get('barcode', ''))
+                for sample in page.get('samples', []):
+                    source_lines = set(sample['sources'].values()) - {0}
+                    sample['context'] = []
+                    for line in sorted(source_lines):
+                        frame = frames[frames.frame_index_for_line(line)]
+                        sample['context'].extend({'line': n, 'text': text} for n, text, *_ in frame.raw_lines if n == line)
+                send('result', page)
             else:
                 from Models.diagnostic_report import write_diagnostic_report
                 output_dir = Path(request['output_dir']) if request.get('output_dir') else None

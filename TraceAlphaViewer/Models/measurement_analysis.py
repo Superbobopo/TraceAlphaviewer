@@ -3,9 +3,10 @@ from collections import Counter
 from statistics import mean, median
 
 from Models.dimension_check import DIMENSION_TOLERANCE_MM, dimension_finding_code
+from Models.measurement_identity import measurement_exclusion, EXCLUSION_LABELS
 
-AXES = (('width', 'Largeur T5/C9', 0), ('height', 'Hauteur T5/LzB', 1),
-        ('length', 'Longueur T4/C6', 2))
+AXES = (('length', 'Longueur T4/C6 (T4C)', 2), ('width', 'Largeur T5/C9', 0),
+        ('height', 'Hauteur T5/LzB', 1))
 
 
 def _stats(samples, index):
@@ -126,34 +127,53 @@ def analyze_measurements(frames):
             if key is None:
                 serial += 1
                 key = serial
-                cycles[key] = {'last': None, 'signature': None, 'missing': 'incomplete', 'c9_error': False}
+                cycles[key] = {'last': None, 'signature': None, 'missing': 'incomplete', 'c9_error': False,
+                               'exclusion': ''}
             item = cycles[key]
             item.update(aliases=list(dict.fromkeys(item.get('aliases', []) + box_aliases)),
                         id_alpha=box.id_alpha or item.get('id_alpha', 0),
                         id_b=box.id_b or item.get('id_b', 0))
             used.add(key)
             current[key] = item
+            item['exclusion'] = measurement_exclusion(box)
+            if item['exclusion']:
+                if item['last'] is not None:
+                    item['last']['final'] = False
+                continue
             expected = [box.bdd_width_mm, box.bdd_height_mm, box.bdd_length_mm]
             measured = [box.measured_t5_width_mm, box.measured_t5_height_mm,
-                        box.measured_t4_length_mm or box.measured_t5_length_mm]
+                        box.measured_t4_length_mm if box.measured_t4_line else 0]
             item['c9_error'] = box.measurement_status == 'c9_error'
             if any(v <= 0 for v in expected):
                 item['missing'] = 'reference_absent'
                 continue
             if any(v <= 0 for v in measured):
-                item['missing'] = 'incomplete'
+                item['missing'] = 't4c_absent' if measured[2] <= 0 else 'incomplete'
                 continue
-            signature = (tuple(expected), tuple(measured), item['c9_error'])
+            signature = (tuple(expected), tuple(measured), item['c9_error'], box.identified_barcode,
+                         box.measured_t4t_length_mm, box.measured_t4_diff_mm, box.measured_t4_line,
+                         box.measured_t5_line, box.bdd_source_line)
             if signature == item['signature']:
-                item['last'].update(barcode=box.barcode or box.source_ref, source_ref=box.source_ref,
-                    box=f'IdA:{box.id_alpha}' if box.id_alpha else f'idB:{box.id_b}' if box.id_b else box.barcode)
+                item['last'].update(current_reference=box.barcode, source_ref=box.source_ref,
+                    name=box.identified_name or box.name, rejected_dimensions='[DINH]' in box.barcode.upper(),
+                    box=f'IdA:{box.id_alpha}' if box.id_alpha else f'idB:{box.id_b}' if box.id_b else box.barcode,
+                    final=True)
                 continue
             item['signature'] = signature
             if item['last'] is not None:
                 item['last']['final'] = False
-            observation = {'cycle': key, 'line': frame.line_num, 'time': frame.timestamp,
+            observation = {'cycle': key, 'line': max(box.measured_t5_line, box.measured_t4_line, box.measured_height_line), 'time': frame.timestamp,
                 'time_str': frame.timestamp_str, 'box': f'IdA:{box.id_alpha}' if box.id_alpha else f'idB:{box.id_b}' if box.id_b else box.barcode,
-                'barcode': box.barcode or box.source_ref, 'source_ref': box.source_ref,
+                'barcode': box.identified_barcode, 'name': box.identified_name or box.name,
+                'id_alpha': box.id_alpha, 'id_b': box.id_b,
+                'identity_source': box.identity_source,
+                'current_reference': box.barcode, 'source_ref': box.source_ref,
+                'rejected_dimensions': '[DINH]' in box.barcode.upper(),
+                't4c': box.measured_t4_length_mm, 't4t': box.measured_t4t_length_mm,
+                'diff_t4': box.measured_t4_diff_mm,
+                'sources': {'length': box.measured_t4_line, 'width': box.measured_t5_line,
+                            'height': box.measured_height_line, 'bdd': box.bdd_source_line,
+                            'identity': box.identity_line},
                 'expected': expected, 'measured': measured,
                 'deltas': [m - e for m, e in zip(measured, expected)],
                 'code': dimension_finding_code(tuple(measured), tuple(expected)),
@@ -168,7 +188,9 @@ def analyze_measurements(frames):
     finals = []
     for item in cycles.values():
         last = item['last']
-        if item['c9_error']:
+        if item['exclusion']:
+            excluded[item['exclusion']] += 1
+        elif item['c9_error']:
             excluded['invalid'] += 1
         elif last is None:
             excluded[item['missing']] += 1
@@ -180,7 +202,42 @@ def analyze_measurements(frames):
             finals.append(last)
     summary = summarize(comparable, excluded)
     summary['cycle_count'] = serial + ambiguous_count
-    return {'summary': summary, 'samples': samples, 'finals': finals}
+    return {'summary': summary, 'samples': samples, 'finals': finals,
+            'references': build_reference_lists(comparable)}
+
+
+def build_reference_lists(samples):
+    totals = Counter(s['barcode'] for s in samples)
+    result = {}
+    for name, _, index in AXES:
+        sides = {'under': {}, 'over': {}}
+        for sample in samples:
+            delta = sample['deltas'][index]
+            side = 'under' if delta < -DIMENSION_TOLERANCE_MM else 'over' if delta > DIMENSION_TOLERANCE_MM else ''
+            if side:
+                sides[side].setdefault(sample['barcode'], []).append(sample)
+        result[name] = {}
+        for side, groups in sides.items():
+            rows = []
+            for barcode, proofs in groups.items():
+                stats = _stats(proofs, index)
+                worst = stats['min_signed'] if side == 'under' else stats['max_signed']
+                proofs = sorted(proofs, key=lambda s: (-abs(s['deltas'][index]), s['line']))
+                rows.append(dict(stats, barcode=barcode, name=proofs[0].get('name', ''),
+                                 total=totals[barcode], percent=100 * len(proofs) / totals[barcode],
+                                 worst=worst, samples=proofs))
+            result[name][side] = sorted(rows, key=lambda r: (-abs(r['worst']), -r['count'], r['barcode']))
+    return result
+
+
+def reference_page(analysis, axis, side, page=0, barcode=''):
+    rows = analysis['references'][axis][side]
+    if barcode:
+        row = next(r for r in rows if r['barcode'] == barcode)
+        samples = row['samples']
+        return {'total': len(samples), 'samples': samples[page * 25:(page + 1) * 25]}
+    return {'total': len(rows), 'rows': [{k:v for k,v in row.items() if k != 'samples'}
+                                        for row in rows[page * 25:(page + 1) * 25]]}
 
 
 def representative_samples(samples, limit=3, code=None):
@@ -226,6 +283,7 @@ def summary_text(summary, names=None):
         lines.append(f"  Bonnes mesures : {all_stats['within_count']}/{all_stats['count']} ({all_stats['within_percent']:.1f} %) ; "
                      f"mauvaises mesures : {all_stats['outside_count']}/{all_stats['count']} ({all_stats['outside_percent']:.1f} %). "
                      f"{all_stats['references']} reference(s).")
+        lines.append(f"  Trop petites : {all_stats['under_count']} ; trop grandes : {all_stats['over_count']}.")
         for key, title in (('anomalies', 'Mauvaises mesures'), ('all', 'Toutes les mesures comparables')):
             stats = axis[key]
             if not stats['count']:
@@ -236,8 +294,7 @@ def summary_text(summary, names=None):
                 f"erreur moyenne (sans tenir compte du sens) {stats['mean_abs']:.1f} mm.")
             below = f"{stats['worst_under']:+.1f} mm" if stats['worst_under'] is not None else 'aucune'
             above = f"{stats['worst_over']:+.1f} mm" if stats['worst_over'] is not None else 'aucune'
-            lines.append(f"  Pire mauvaise mesure en moins : {below} ; en trop : {above}. "
-                         f"Trop petites : {stats['under_count']} ; trop grandes : {stats['over_count']}.")
+            lines.append(f"  Pire mauvaise mesure en moins : {below} ; en trop : {above}.")
             direction = {'length': ('trop court', 'trop long'), 'width': ('trop etroit', 'trop large'),
                          'height': ('trop bas', 'trop haut')}[name]
             signed = stats['mean_signed']
@@ -251,9 +308,7 @@ def summary_text(summary, names=None):
         for explanation in axis.get('interpretation', []):
             if not axis['bias']:
                 lines.append('  Piste a verifier : ' + explanation)
-    labels = {'orientation': 'orientations differentes', 'invalid': 'mesures invalides',
-              'incomplete': 'mesures incompletes', 'reference_absent': 'references absentes', 'ambiguous': 'identites ambigues'}
-    exclusions = [f'{labels[k]} : {v}' for k, v in summary.get('excluded', {}).items() if v]
+    exclusions = [f'{EXCLUSION_LABELS[k]} : {v}' for k, v in summary.get('excluded', {}).items() if v]
     if exclusions:
         lines.append('Exclus du bilan de reglage : ' + ', '.join(exclusions) + '.')
     return '\n'.join(lines)

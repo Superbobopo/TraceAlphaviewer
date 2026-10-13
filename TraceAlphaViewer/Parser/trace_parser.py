@@ -15,6 +15,7 @@ import re
 from typing import Callable, List, Optional
 
 from Models.dimension_check import dimension_finding_code, measurement_status_from_code
+from Models.measurement_identity import is_unknown_reference, record_identification, measurement_exclusion
 from Models.state import BoxInfo, MachineEvent, MachineState, box_color
 
 # ── Regex d'en-tête de ligne ─────────────────────────────────────────────────
@@ -152,7 +153,7 @@ def _add_event(
 
 
 def _is_unknown_ref(ref: str) -> bool:
-    return ref.upper().startswith('ALPHA-INC') if ref else False
+    return is_unknown_reference(ref) if ref else False
 
 
 def _apply_identity(
@@ -161,7 +162,10 @@ def _apply_identity(
     lot: str = "",
     name: str = "",
     dims: Optional[tuple[int, int, int]] = None,
+    line_num: int = 0,
+    identity_source: str = '',
 ) -> None:
+    record_identification(box, barcode, name, line_num, identity_source)
     if box.barcode and _is_unknown_ref(box.barcode) and barcode != box.barcode:
         box.source_ref = box.barcode
     elif barcode and _is_unknown_ref(barcode) and not box.source_ref:
@@ -174,34 +178,53 @@ def _apply_identity(
     if name:
         box.name = name
     if dims:
-        _set_bdd_dimensions(box, dims)
+        _set_bdd_dimensions(box, dims, barcode, line_num)
         box.width_mm, box.height_mm, box.length_mm = dims
 
 
-def _set_bdd_dimensions(box: BoxInfo, dims: tuple[int, int, int]) -> None:
+def _set_bdd_dimensions(box: BoxInfo, dims: tuple[int, int, int], reference='', line_num=0) -> None:
     width, height, length = dims
-    if width <= 0 and height <= 0 and length <= 0:
+    if any(v <= 0 for v in dims) or is_unknown_reference(reference or box.identified_barcode):
         return
     box.bdd_width_mm = width
     box.bdd_height_mm = height
     box.bdd_length_mm = length
+    box.bdd_reference = reference or box.identified_barcode
+    box.bdd_source_line = line_num
 
 
 def _classify_alpha_measurement(box: BoxInfo) -> None:
     if box.measurement_status == 'c9_error':
         return
+    if measurement_exclusion(box) or not box.measured_t4_line:
+        box.measurement_status = ''
+        return
     expected = (box.bdd_width_mm, box.bdd_height_mm, box.bdd_length_mm)
     if any(value <= 0 for value in expected):
         return
-    measured_length = box.measured_t4_length_mm or box.measured_t5_length_mm
+    measured_length = box.measured_t4_length_mm
     measured = (box.measured_t5_width_mm, box.measured_t5_height_mm, measured_length)
     if any(value <= 0 for value in measured):
+        box.measurement_status = ''
         return
     code = dimension_finding_code(measured, expected)
     box.measurement_status = measurement_status_from_code(code)
 
 
 def _copy_dimension_tracking(dst: BoxInfo, src: BoxInfo) -> None:
+    dst.source_ref = src.source_ref
+    dst.identified_barcode = src.identified_barcode
+    dst.identified_name = src.identified_name
+    dst.identity_line = src.identity_line
+    dst.identity_source = src.identity_source
+    dst.identity_conflict = src.identity_conflict
+    dst.bdd_reference = src.bdd_reference
+    dst.bdd_source_line = src.bdd_source_line
+    dst.measured_t4t_length_mm = src.measured_t4t_length_mm
+    dst.measured_t4_diff_mm = src.measured_t4_diff_mm
+    dst.measured_t4_line = src.measured_t4_line
+    dst.measured_t5_line = src.measured_t5_line
+    dst.measured_height_line = src.measured_height_line
     dst.bdd_width_mm = src.bdd_width_mm
     dst.bdd_height_mm = src.bdd_height_mm
     dst.bdd_length_mm = src.bdd_length_mm
@@ -237,13 +260,12 @@ def _find_t5_box(
 
 
 def _find_t4_measure_box(state: MachineState, ctx: dict) -> Optional[BoxInfo]:
-    id_b = int(ctx.get('last_t5_transfer_idb') or 0)
-    id_a = ctx.get('idb_to_ida', {}).get(id_b, 0) if id_b else 0
-    return (
-        _find_t5_box(state, id_alpha=id_a, id_b=id_b)
-        or state.box_on_T4
-        or state.box_on_T3
-    )
+    id_b = int(ctx.get('pending_t4_length_idb') or 0)
+    if not id_b:
+        return None
+    id_a = int(ctx.get('pending_t4_length_ida') or 0)
+    matches = [b for b in state.boxes_on_T5 if (b.id_alpha == id_a if id_a else b.id_b == id_b)]
+    return matches[0] if len(matches) == 1 else None
 
 
 def _clear_missing_active_t5(state: MachineState) -> None:
@@ -602,6 +624,7 @@ def _apply_t5_list_pack(state: MachineState, text: str, ctx: Optional[dict] = No
         )
         if previous:
             _copy_dimension_tracking(box, previous)
+            record_identification(box, bc, name=values[3])
             _classify_alpha_measurement(box)
         parsed.append(box)
 
@@ -802,7 +825,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         if box is None:
             box = BoxInfo()
             state.boxes_on_T5.append(box)
-        _apply_identity(box, bc, name=name, dims=(w, hh, lg))
+        _apply_identity(box, bc, name=name, dims=(w, hh, lg), line_num=line_num, identity_source='BdD creation')
         if not box.t5_entry_aligned:
             box.x_pos = x
             box.t5_visual_x_pos = x
@@ -812,6 +835,8 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
             box.id_b = id_b
             ctx.setdefault('idb_to_ida', {})[id_b] = id_a
             ctx.setdefault('ida_to_idb', {})[id_a] = id_b
+            if ctx.get('pending_t4_length_idb') == id_b:
+                ctx['pending_t4_length_ida'] = id_a
         _add_event(
             state, line_num, 'info', 'BOITE',
             f'T4->T5 {_box_label(box)} -> IdA={id_a}', f'{bc} {name} x={x}'
@@ -888,13 +913,14 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
                 b.id_b = id_b
             if h > 0:
                 b.measured_t5_height_mm = h
+                b.measured_height_line = line_num
                 b.height_mm = h
         else:
             # Boîte pas encore suivie (ex: arrivée non capturée) — on la crée
             state.boxes_on_T5.append(BoxInfo(
                 barcode=bc, id_alpha=id_a, x_pos=x,
                 t5_visual_x_pos=x,
-                id_b=id_b, height_mm=h, measured_t5_height_mm=h,
+                id_b=id_b, height_mm=h, measured_t5_height_mm=h, measured_height_line=line_num,
                 t5_entry_aligned=False,
                 t5_after_c9=False, color=box_color(bc)
             ))
@@ -928,9 +954,12 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
             if id_b:
                 b.id_b = id_b
             if bdd_dims:
-                _set_bdd_dimensions(b, bdd_dims)
+                record_identification(b, bc, line=line_num, source='BdD MAJ')
+                _set_bdd_dimensions(b, bdd_dims, bc, line_num)
             b.measured_t5_width_mm = width
             b.measured_t5_height_mm = height
+            b.measured_t5_line = line_num
+            b.measured_height_line = line_num
             b.measured_t5_length_mm = length
             b.width_mm = width
             b.height_mm = height
@@ -946,12 +975,16 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
                 measured_t5_width_mm=width,
                 measured_t5_height_mm=height,
                 measured_t5_length_mm=length,
+                measured_t5_line=line_num, measured_height_line=line_num,
                 t5_footprint_mm=width,
                 t5_visual_x_pos=x,
                 t5_entry_aligned=False,
                 t5_after_c9=True,
                 color=box_color(bc),
             )
+            record_identification(b, bc, line=line_num, source='BdD MAJ')
+            if bdd_dims:
+                _set_bdd_dimensions(b, bdd_dims, bc, line_num)
             _classify_alpha_measurement(b)
             state.boxes_on_T5.append(b)
         _add_event(state, line_num, 'info', 'BOITE', f'MAJ mesure T5 {bc}', f'IdA:{id_a} X:{x} {width}x{height}x{length}')
@@ -1002,7 +1035,8 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         elif state.box_in_EA and (state.box_in_EA.barcode == bc or _is_unknown_ref(bc)):
             target = state.box_in_EA
         if target:
-            _apply_identity(target, bc, name=ctx['pending_name'], dims=ctx['pending_dims'])
+            _apply_identity(target, bc, name=ctx['pending_name'], dims=ctx['pending_dims'],
+                            line_num=line_num, identity_source=ctx.get('pending_reader') or 'BdD')
 
     # ── Identification CB1 terminée ──────────────────────────────────────────
     mo = _CB_IDENTIF.search(text)
@@ -1010,20 +1044,20 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         reader = int(mo.group(1))
         bc = mo.group(2)
         lot = mo.group(3)
-        name = ctx.get('pending_name', '')
-        dims = ctx.get('pending_dims')
+        name = ctx.get('pending_name', '') if ctx.get('pending_bc') == bc else ''
+        dims = ctx.get('pending_dims') if ctx.get('pending_bc') == bc else None
         if reader == 1:
             state.idCB1_barcode = bc
             state.idCB1_state = 'IDENTIFIED'
             target = _ensure_reader_box(state, 'CB1', bc)
-            _apply_identity(target, bc, lot=lot, name=name, dims=dims)
+            _apply_identity(target, bc, lot=lot, name=name, dims=dims, line_num=line_num, identity_source='CB1')
             title = f'CB1 inconnu {bc}' if _is_unknown_ref(bc) else f'Identification CB1 {bc}'
             _add_event(state, line_num, 'info', 'IDENTIF', title, f'lot:{lot}')
         else:
             target = _ensure_reader_box(state, 'CB2', bc)
             if target:
                 previous = target.source_ref or target.barcode
-                _apply_identity(target, bc, lot=lot, name=name, dims=dims)
+                _apply_identity(target, bc, lot=lot, name=name, dims=dims, line_num=line_num, identity_source='CB2')
                 ctx['last_cb2_box'] = target
                 detail = f'{previous} -> {bc}' if previous and previous != bc else bc
                 _add_event(state, line_num, 'info', 'IDENTIF', f'CB2 identifie {detail}', f'lot:{lot}')
@@ -1060,7 +1094,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         if target is None and state.C5 == 1:
             target = _ensure_reader_box(state, 'CB2', bc)
         if target:
-            _apply_identity(target, bc)
+            _apply_identity(target, bc, line_num=line_num, identity_source='CB2')
             target.id_b = id_b
             ctx.setdefault('idb_to_box', {})[id_b] = target
             _add_event(state, line_num, 'info', 'IDENTIF', f'CB2 identifie idB={id_b} -> {bc}')
@@ -1112,6 +1146,8 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         bc = state.box_on_T4.barcode if state.box_on_T4 else ''
         id_b = state.box_on_T4.id_b if state.box_on_T4 else 0
         ctx['last_t5_transfer_idb'] = id_b
+        ctx['pending_t4_length_idb'] = id_b
+        ctx.pop('pending_t4_length_ida', None)
         if state.box_on_T4 is not None:
             b = state.box_on_T4
             # Évite le doublon si la boîte est déjà dans la liste
@@ -1136,6 +1172,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
                     t5_after_c9=False,
                     color=b.color,
                 )
+                _copy_dimension_tracking(box, b)
                 state.boxes_on_T5.append(box)
             else:
                 box.x_pos = _T5_ENTRY_X
@@ -1168,8 +1205,15 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         if measure_box:
             if bdd > 0 and not measure_box.bdd_length_mm:
                 measure_box.bdd_length_mm = bdd
-            measure_box.measured_t4_length_mm = t4t or t4c or t2t
+                measure_box.bdd_reference = measure_box.identified_barcode
+                measure_box.bdd_source_line = line_num
+            measure_box.measured_t4_length_mm = t4c
+            measure_box.measured_t4t_length_mm = t4t
+            measure_box.measured_t4_diff_mm = diff
+            measure_box.measured_t4_line = line_num
             _classify_alpha_measurement(measure_box)
+        ctx.pop('pending_t4_length_idb', None)
+        ctx.pop('pending_t4_length_ida', None)
         severity = 'warning' if abs(diff) > 10 else 'info'
         _add_event(
             state, line_num, severity, 'T4',
@@ -1229,6 +1273,9 @@ def _is_significant(prev: MachineState, curr: MachineState) -> bool:
             b.measured_t4_length_mm, b.measured_t5_width_mm,
             b.measured_t5_height_mm, b.measured_t5_length_mm,
             b.measurement_status,
+            b.identified_barcode, b.identity_conflict, b.identity_line,
+            b.bdd_reference, b.bdd_source_line, b.measured_t4t_length_mm, b.measured_t4_diff_mm,
+            b.measured_t4_line, b.measured_t5_line, b.measured_height_line,
         )
         for b in prev.boxes_on_T5
     ] != [
@@ -1238,6 +1285,9 @@ def _is_significant(prev: MachineState, curr: MachineState) -> bool:
             b.measured_t4_length_mm, b.measured_t5_width_mm,
             b.measured_t5_height_mm, b.measured_t5_length_mm,
             b.measurement_status,
+            b.identified_barcode, b.identity_conflict, b.identity_line,
+            b.bdd_reference, b.bdd_source_line, b.measured_t4t_length_mm, b.measured_t4_diff_mm,
+            b.measured_t4_line, b.measured_t5_line, b.measured_height_line,
         )
         for b in curr.boxes_on_T5
     ]:
