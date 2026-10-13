@@ -1035,13 +1035,39 @@ def _dimension_title(code: str) -> str:
     return titles.get(code, 'Dimensions - Mesures incoherentes')
 
 
-def _dimension_causes_checks(code: str) -> tuple[list[str], list[str], str]:
+def _dimension_causes_checks(code: str, measurement_summary=None) -> tuple[list[str], list[str], str]:
     if code == 'ORIENTATION':
         return (
             ["Boite presentee dans un autre sens ou sur la tranche."],
             ["Verifier l'orientation physique avant de conclure a un capteur defaillant."],
             'probable',
         )
+    if measurement_summary is not None:
+        names = {'T4_LENGTH': ('length',), 'T5_WIDTH': ('width',), 'T5_HEIGHT': ('height',)}.get(
+            code, ('length', 'width', 'height'))
+        causes, checks = [], []
+        for name in names:
+            axis = measurement_summary['axes'][name]
+            for item in axis['recurrence'].values():
+                cluster = item['cluster']
+                if cluster and cluster['similar']:
+                    cause = ('Un réglage/calibrage commun est une piste à confirmer.' if cluster['shared']
+                             else 'La fiche BdD ou la présentation du produit répété est une piste à vérifier.')
+                    if cause not in causes:
+                        causes.append(cause)
+                    if cluster['advice'] not in checks:
+                        checks.append(cluster['advice'])
+            observations = axis['product_observations']
+            if observations['dispersed_references']:
+                for explanation in axis['interpretation']:
+                    if explanation.startswith('Pour cette dispersion') and explanation not in causes:
+                        causes.append(explanation)
+            for explanation in axis['interpretation']:
+                if ('groupes opposés' in explanation or 'réglage unique' in explanation or
+                        'variantes analysées séparément' in explanation) and explanation not in checks:
+                    checks.append(explanation)
+        checks.append('Mesurer physiquement quelques boîtes identifiées et comparer leur présentation et leurs dimensions à la BdD.')
+        return (causes or ['Les écarts observés ne suffisent pas à identifier leur cause.'], checks, 'a confirmer')
     if code == 'T4_LENGTH':
         return (
             ["Decalage regulier : reglage/calibrage ou intervention mecanique sans nouveau parametrage possibles.",
@@ -1089,7 +1115,7 @@ def _build_dimension_incidents(frames, line_states, measurement_analysis=None):
     for code, findings in grouped.items():
         findings.sort(key=lambda s: s['line'])
         first, last = findings[0], findings[-1]
-        causes, checks, confidence = _dimension_causes_checks(code)
+        causes, checks, confidence = _dimension_causes_checks(code, analysis['summary'])
         context_labels = []
         examples = representative_samples(findings, code=code)
         for sample in examples:

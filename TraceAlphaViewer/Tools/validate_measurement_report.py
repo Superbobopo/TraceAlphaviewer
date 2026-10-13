@@ -49,6 +49,29 @@ def recurring_samples():
     return frames
 
 
+def product_samples(groups):
+    """Construit des cycles fictifs par produit et variante BdD."""
+    frames = samples(sum(len(group[1]) for group in groups), 0)
+    position = 0
+    for group in groups:
+        barcode, deltas = group[:2]
+        expected = group[2] if len(group) > 2 else (60, 30, 100)
+        for delta in deltas:
+            frame = frames[position]
+            box = frame.boxes_on_T5[0]
+            box.barcode = box.identified_barcode = box.bdd_reference = barcode
+            box.name = box.identified_name = f'PRODUIT FICTIF {barcode}'
+            box.bdd_width_mm, box.bdd_height_mm, box.bdd_length_mm = expected
+            box.measured_t5_width_mm, box.measured_t5_height_mm = expected[:2]
+            box.measured_t4_length_mm = expected[2] + delta
+            frame.timestamp_str = f'09:{position // 60:02d}:{position % 60:02d}'
+            frame.raw_lines = [(frame.line_num,
+                f'DONNEES FICTIVES {barcode} T4C={expected[2]+delta} BdD={expected[2]}')]
+            _classify_alpha_measurement(box)
+            position += 1
+    return frames
+
+
 class MeasurementTests(unittest.TestCase):
     def test_repeated_offsets_with_good_measures_extremes_and_worker_payload(self):
         frames = recurring_samples()
@@ -58,15 +81,19 @@ class MeasurementTests(unittest.TestCase):
         below = axis['recurrence']['under']
         self.assertEqual([(v['delta'],v['count']) for v in below['frequencies']], [(-4,12),(-5,6),(-20,2)])
         group = below['cluster']
-        self.assertEqual((group['median'],group['min_signed'],group['max_signed'],group['count']),(-4,-5,-4,18))
+        self.assertEqual((group['center'],group['min_signed'],group['max_signed'],group['count']),(-4,-5,-4,18))
+        self.assertEqual((group['bad_count'],group['good_count']),(18,0))
         self.assertEqual((group['percent_side'],group['percent_bad'],group['percent_all']),(90,90,18))
         self.assertEqual(group['references'],2)
-        self.assertTrue(group['similar'])
-        self.assertIn('paramétrage',group['advice'])
-        self.assertIn('T4/C6',group['advice'])
-        self.assertIn('2 boites',' '.join(axis['interpretation']))
+        self.assertFalse(group['similar'])
+        self.assertFalse(group['shared'])
+        self.assertEqual(group['repeated_references'],0)
+        self.assertEqual(axis['product_observations']['dispersed_references'],0)
+        self.assertNotIn('calibrage',group['advice'])
+        self.assertNotIn('patinage',' '.join(axis['interpretation']))
+        self.assertNotIn('parasite',' '.join(axis['interpretation']))
         text = summary_text(analysis['summary'])
-        for expected in ('12 boîtes à -4,0 mm','6 boîtes à -5,0 mm','18 boîtes, 2 références','90,0 %','18,0 %'):
+        for expected in ('12 boîtes à -4,0 mm','6 boîtes à -5,0 mm','90,0 %','18,0 %'):
             self.assertIn(expected,text)
         self.assertNotIn('aucun decalage regulier',text)
         payload = build_report_payload(build_diagnostics(frames,[]),frames)
@@ -80,7 +107,7 @@ class MeasurementTests(unittest.TestCase):
             panel = DiagnosticPanel(root,build_diagnostics(frames,[]),frames)
             self.assertIn('12 boîtes à -4,0 mm',panel._details.get('1.0','end'))
             panel._show_details(build_diagnostics(frames,[])[0])
-            self.assertIn('18 boîtes, 2 références',panel._details.get('1.0','end'))
+            self.assertIn('12 boîtes à -4,0 mm',panel._details.get('1.0','end'))
             panel.destroy()
         finally:
             for job in root.tk.call('after','info'):
@@ -88,30 +115,27 @@ class MeasurementTests(unittest.TestCase):
             root.destroy()
 
     def test_repeated_offsets_both_signs_one_reference_and_small_sides(self):
-        frames = samples(40,0)
-        for frame,delta in zip(frames,[-4]*12+[5]*12+[0]*16):
-            frame.boxes_on_T5[0].measured_t4_length_mm += delta
+        frames = product_samples([('EN-MOINS',[-4]*12),('EN-TROP',[5]*12),('CONFORME',[0]*16)])
         axis = analyze_measurements(frames)['summary']['axes']['length']
         self.assertIsNone(axis['bias'])
         for side,center in (('under',-4),('over',5)):
             group = axis['recurrence'][side]['cluster']
             self.assertTrue(group['similar'])
-            self.assertEqual((group['median'],group['count'],group['percent_bad'],group['percent_all']),(center,12,50,30))
+            self.assertEqual((group['center'],group['count'],group['percent_bad'],group['percent_all']),(center,12,50,30))
+            self.assertEqual(group['repeated_references'],1)
+            self.assertFalse(group['shared'])
+            self.assertIn('fiche BdD',group['advice'])
         self.assertEqual(axis['all']['mean_signed'],.3)
-        frames = recurring_samples()
-        for frame in frames:
-            box = frame.boxes_on_T5[0]
-            box.barcode = box.identified_barcode = box.bdd_reference = 'UNE-REFERENCE'
+        frames = product_samples([('UNE-REFERENCE',[-4]*12+[-5]*6+[-20]*2)])
         advice = analyze_measurements(frames)['summary']['axes']['length']['recurrence']['under']['cluster']['advice']
         self.assertIn('fiche BdD',advice)
-        for negative,near,similar in ((9,9,False),(10,8,True),(10,7,False)):
-            frames = samples(30,0)
-            for i,frame in enumerate(frames[:negative]):
-                frame.boxes_on_T5[0].measured_t4_length_mm += -4 if i < near else -10
+        for negative,near,similar in ((9,9,True),(10,8,True),(10,7,False)):
+            frames = product_samples([('UNE-REFERENCE',[-4]*near+[-10]*(negative-near))])
             axis = analyze_measurements(frames)['summary']['axes']['length']
             self.assertEqual(axis['recurrence']['under']['cluster']['similar'],similar)
             if negative < 10:
-                self.assertIn('effectif insuffisant',' '.join(axis['recurrence_lines']))
+                self.assertTrue(axis['recurrence']['under']['cluster']['limited'])
+                self.assertIn('effectif limité',' '.join(axis['recurrence_lines']).lower())
         for field,name in (('measured_t5_width_mm','width'),('measured_t5_height_mm','height')):
             frames = samples(15,0)
             for frame in frames:
@@ -119,6 +143,223 @@ class MeasurementTests(unittest.TestCase):
             axis = analyze_measurements(frames)['summary']['axes'][name]
             self.assertTrue(axis['recurrence']['over']['cluster']['similar'])
             self.assertNotIn('T4/C6',axis['recurrence']['over']['cluster']['advice'])
+
+    def test_neighbouring_good_measures_mode_tie_and_complete_distribution(self):
+        frames = product_samples([('PRODUIT-A',[-4]*6+[-5]*4+[-3]*3),
+                                  ('PRODUIT-B',[-4]*6+[-5]*4+[-3]*3),
+                                  ('AUTRE',[0]*8+[-20])])
+        axis = analyze_measurements(frames)['summary']['axes']['length']
+        group = axis['recurrence']['under']['cluster']
+        self.assertEqual((group['center'],group['count'],group['bad_count'],group['good_count']),(-4,26,20,6))
+        self.assertEqual((group['min_signed'],group['max_signed']),(-5,-3))
+        self.assertAlmostEqual(group['percent_all'],100*26/35)
+        self.assertAlmostEqual(group['percent_bad'],100*20/21)
+        self.assertTrue(group['shared'])
+        self.assertEqual(group['repeated_references'],2)
+        self.assertIn('calibrage',group['advice'])
+        self.assertEqual({row['delta']:row['count'] for row in axis['frequencies']},
+                         {-4:12,-5:8,-3:6,0:8,-20:1})
+        tie = analyze_measurements(product_samples([('EGALITE',[-4]*2+[-5]*2+[4]*2+[5]*2)]))['summary']['axes']['length']
+        self.assertEqual(tie['recurrence']['under']['cluster']['center'],-4)
+        self.assertEqual(tie['recurrence']['over']['cluster']['center'],4)
+        mode = analyze_measurements(product_samples([('MODE',[-4]*4+[-8]*3+[-9]*3)]))['summary']['axes']['length']
+        self.assertEqual(mode['recurrence']['under']['cluster']['center'],-4)
+
+    def test_good_only_product_is_accessible_in_neighbouring_group(self):
+        frames = product_samples([('DEFAUT',[-4]*3),('CONFORME-PROCHE',[-3]*3),('AUTRE',[0]*2)])
+        analysis = analyze_measurements(frames)
+        group = analysis['summary']['axes']['length']['recurrence']['under']['cluster']
+        self.assertEqual((group['count'],group['bad_count'],group['good_count']),(6,3,3))
+        self.assertEqual((group['percent_all'],group['bad_percent_all']),(75,37.5))
+        self.assertEqual((group['references'],group['bad_references']),(2,1))
+        self.assertNotIn('CONFORME-PROCHE',[row['barcode'] for row in analysis['references']['length']['under']])
+        rows = reference_page(analysis,'length','under_group')['rows']
+        nearby = next(row for row in rows if row['barcode']=='CONFORME-PROCHE')
+        self.assertEqual((nearby['count'],nearby['total']),(3,3))
+        self.assertEqual(nearby['observations'][0]['close_percent'],100)
+        page = reference_page(analysis,'length','under_group',barcode='CONFORME-PROCHE')
+        self.assertEqual(page['total'],3)
+        self.assertEqual([sample['deltas'][2] for sample in page['samples']],[-3]*3)
+        payload = build_report_payload(build_diagnostics(frames,[]),frames)
+        exported = next(row for row in payload['measurement_references']['length']['under_group']
+                        if row['barcode']=='CONFORME-PROCHE')
+        by_id = {sample['id']:sample for sample in payload['measurement_examples']}
+        self.assertEqual([by_id[key]['deltas'][2] for key in exported['sample_ids']],[-3]*3)
+
+    def test_nine_and_ten_identical_measures_keep_the_same_observation(self):
+        groups = []
+        for count in (9,10):
+            axis = analyze_measurements(samples(count,-4))['summary']['axes']['length']
+            group = axis['recurrence']['under']['cluster']
+            groups.append(group)
+            self.assertTrue(group['similar'])
+            self.assertTrue(group['shared'])
+            self.assertEqual(group['repeated_references'],2)
+            self.assertEqual(group['limited'],count<10)
+            self.assertIn('calibrage',group['advice'])
+            self.assertNotIn('patinage',' '.join(axis['interpretation']))
+        self.assertEqual(groups[0]['advice'],groups[1]['advice'])
+
+    def test_dominant_product_and_singletons_do_not_confirm_multiple_products(self):
+        frames = product_samples([('DOMINANT',[-4]*20),('ISOLE-A',[-4]),('ISOLE-B',[-4]),
+                                  ('AUTRE',[-10]*3)])
+        axis = analyze_measurements(frames)['summary']['axes']['length']
+        group = axis['recurrence']['under']['cluster']
+        self.assertTrue(group['similar'])
+        self.assertFalse(group['shared'])
+        self.assertEqual(group['repeated_references'],1)
+        self.assertEqual((group['dominant']['barcode'],group['dominant']['count']),('DOMINANT',20))
+        self.assertAlmostEqual(group['dominant']['percent'],100*20/22)
+        self.assertIn('fiche BdD',group['advice'])
+        self.assertNotIn('calibrage',group['advice'])
+        self.assertNotIn('calibrage',axis['bias']['advice'])
+        singles = product_samples([(f'ISOLE-{i}',[-4]) for i in range(12)])
+        cluster = analyze_measurements(singles)['summary']['axes']['length']['recurrence']['under']['cluster']
+        self.assertFalse(cluster['similar'])
+        self.assertFalse(cluster['shared'])
+        self.assertEqual(cluster['repeated_references'],0)
+
+    def test_product_variations_are_separate_from_cross_product_differences(self):
+        between = product_samples([('PRODUIT-A',[-4]*6),('PRODUIT-B',[-10]*6)])
+        axis = analyze_measurements(between)['summary']['axes']['length']
+        self.assertEqual(axis['product_observations']['dispersed_references'],0)
+        self.assertNotIn('patinage',' '.join(axis['interpretation']))
+        within = product_samples([('PRODUIT-A',[-4,-4,-8,-8,-12,-12]),
+                                  ('PRODUIT-B',[4,4,8,8,12,12])])
+        axis = analyze_measurements(within)['summary']['axes']['length']
+        observations = axis['product_observations']
+        self.assertEqual((observations['dispersed_references'],observations['dispersed_count']),(2,12))
+        self.assertEqual({row['barcode']:row['window_count'] for row in observations['dispersed_products']},
+                         {'PRODUIT-A':2,'PRODUIT-B':2})
+        self.assertTrue(all(row['limited'] for row in observations['dispersed_products']))
+        advice = ' '.join(axis['interpretation'])
+        self.assertIn('patinage',advice)
+        self.assertIn('C6',advice)
+        self.assertIn('parasite',advice)
+        boundary = product_samples([('PRODUIT-A',[-4]*8+[-12]*2)])
+        axis = analyze_measurements(boundary)['summary']['axes']['length']
+        self.assertEqual(axis['product_observations']['dispersed_references'],0)
+        self.assertNotIn('patinage',' '.join(axis['interpretation']))
+
+    def test_width_and_height_dispersion_keep_their_own_controls(self):
+        for name, field, control in (('width','measured_t5_width_mm','C9'),
+                                     ('height','measured_t5_height_mm','LzB')):
+            frames = product_samples([('DISPERSION',[0]*6)])
+            for frame, delta in zip(frames,[4,4,8,8,12,12]):
+                box = frame.boxes_on_T5[0]
+                setattr(box,field,getattr(box,field)+delta)
+            axis = analyze_measurements(frames)['summary']['axes'][name]
+            self.assertEqual(axis['product_observations']['dispersed_references'],1)
+            advice = ' '.join(axis['interpretation'])
+            self.assertIn(control,advice)
+            self.assertNotIn('T4',advice)
+            self.assertNotIn('C6',advice)
+            self.assertNotIn('patinage',advice)
+
+    def test_incident_and_report_controls_follow_product_evidence(self):
+        cases = [('conformes majoritaires',recurring_samples(),False,False),
+                 ('répétition commune',samples(12,-4),True,False),
+                 ('dispersion interne',product_samples([('DISPERSE',[-4,-4,-8,-8,-12,-12])]),False,True)]
+        for name, frames, calibration, slipping in cases:
+            with self.subTest(name=name):
+                incidents = build_diagnostics(frames,[])
+                incident = next(item for item in incidents if item.code=='T4_LENGTH')
+                causes = ' '.join(incident.probable_causes)
+                checks = ' '.join(incident.checks)
+                self.assertEqual('calibrage' in causes or 'calibrage' in checks,calibration)
+                self.assertEqual('patinage' in causes or 'patinage' in checks,slipping)
+                payload = build_report_payload(incidents,frames)
+                group = next(item for item in payload['groups'] if item['code']=='T4_LENGTH')
+                report_text = ' '.join(group['probable_causes']+group['checks']+
+                    [group['field_action'],group['field_impact'],group['impact']])
+                self.assertEqual('calibrage' in report_text,calibration)
+                self.assertEqual('patinage' in report_text,slipping)
+                self.assertIn('physiquement',checks)
+                self.assertIn('BdD',checks)
+                if calibration:
+                    self.assertIn('calibrage',group['field_action'])
+                if not calibration and not slipping:
+                    for hypothesis in ('moteur','rouleau','entraînement','entrainement'):
+                        self.assertNotIn(hypothesis,report_text)
+
+    def test_opposed_products_and_variants_do_not_create_false_dispersion(self):
+        cases = [('produits différents',product_samples([('NEGATIF',[-4]*4),('POSITIF',[5]*4)]),0,0),
+                 ('variantes opposées',product_samples([('VARIANT',[-4]*4,(60,30,100)),
+                                                        ('VARIANT',[5]*4,(62,31,110))]),1,1)]
+        for name, frames, variants, opposite in cases:
+            with self.subTest(name=name):
+                axis = analyze_measurements(frames)['summary']['axes']['length']
+                observations = axis['product_observations']
+                self.assertTrue(observations['opposed_groups'])
+                self.assertEqual(observations['variant_references'],variants)
+                self.assertEqual(observations['opposite_references'],opposite)
+                self.assertEqual(observations['dispersed_references'],0)
+                explanation = ' '.join(axis['interpretation'])
+                self.assertIn('réglage unique',explanation)
+                self.assertNotIn('patinage',explanation)
+                self.assertNotIn('parasite',explanation)
+                incident = next(item for item in build_diagnostics(frames,[]) if item.code=='T4_LENGTH')
+                self.assertIn('réglage unique',' '.join(incident.checks))
+                if opposite:
+                    self.assertIn('chronologie',' '.join(incident.checks))
+                payload = build_report_payload([incident],frames)
+                self.assertIn('réglage unique',' '.join(payload['groups'][0]['checks']))
+
+    def test_multiple_axes_without_product_repetition_keep_neutral_hypotheses(self):
+        frames = recurring_samples()
+        for frame in frames:
+            box = frame.boxes_on_T5[0]
+            delta = box.measured_t4_length_mm - box.bdd_length_mm
+            box.measured_t5_width_mm += delta
+            box.measured_t5_height_mm += delta
+        incidents = build_diagnostics(frames,[])
+        incident = next(item for item in incidents if item.code=='GLOBAL')
+        payload = build_report_payload(incidents,frames)
+        group = next(item for item in payload['groups'] if item['code']=='GLOBAL')
+        text = ' '.join(incident.probable_causes+incident.checks+group['probable_causes']+
+                       group['checks']+[group['impact'],group['field_impact'],group['field_action']])
+        for hypothesis in ('patinage','calibrage','suspicion','blocage','tassement','tassage','moteur','rouleau'):
+            self.assertNotIn(hypothesis,text.lower())
+
+    def test_opposite_groups_on_same_product_and_bdd_variants(self):
+        opposite = product_samples([('DEUX-COMPORTEMENTS',[-4]*5+[5]*5)])
+        analysis = analyze_measurements(opposite)
+        axis = analysis['summary']['axes']['length']
+        self.assertEqual(axis['product_observations']['opposite_references'],1)
+        self.assertFalse(axis['recurrence']['under']['cluster']['similar'])
+        self.assertFalse(axis['recurrence']['over']['cluster']['similar'])
+        lines = ' '.join(axis['interpretation'])
+        self.assertIn('présentation',lines)
+        self.assertIn('chronologie',lines)
+        frames = product_samples([('VARIANT',[-4]*4,(60,30,100)),
+                                  ('VARIANT',[-10]*4,(60,30,110)),
+                                  ('AUTRE',[-4]*4)])
+        analysis = analyze_measurements(frames)
+        axis = analysis['summary']['axes']['length']
+        observations = axis['product_observations']
+        self.assertEqual(observations['variant_references'],1)
+        self.assertEqual(observations['dispersed_references'],0)
+        self.assertEqual({tuple(v) for v in observations['variants'][0]['expected']},
+                         {(60,30,100),(60,30,110)})
+        variant = next(row for row in analysis['references']['length']['under'] if row['barcode']=='VARIANT')
+        self.assertEqual(variant['variant_count'],2)
+        self.assertEqual({(tuple(row['expected']),row['total'],row['close_count']) for row in variant['observations']},
+                         {((60,30,100),4,4),((60,30,110),4,0)})
+        self.assertTrue(all(not row['dispersed'] for row in variant['observations']))
+        page = reference_page(analysis,'length','under',barcode='VARIANT')
+        self.assertEqual(page['total'],8)
+        same_product = product_samples([('VARIANT',[-4]*3,(60,30,100)),
+                                        ('VARIANT',[-4]*3,(62,31,110))])
+        group = analyze_measurements(same_product)['summary']['axes']['length']['recurrence']['under']['cluster']
+        self.assertTrue(group['similar'])
+        self.assertEqual(group['repeated_references'],1)
+        self.assertFalse(group['shared'])
+        isolated_variants = product_samples([('VARIANT',[-4],(60,30,100)),
+                                            ('VARIANT',[-4],(62,31,110)),
+                                            ('AUTRE',[-4,-4])])
+        group = analyze_measurements(isolated_variants)['summary']['axes']['length']['recurrence']['under']['cluster']
+        self.assertEqual(group['repeated_references'],1)
+        self.assertFalse(group['shared'])
 
     def test_unknown_reidentification_dinh_conflicts_and_missing_t4c(self):
         frames = samples(6,-5)
@@ -245,11 +486,12 @@ class MeasurementTests(unittest.TestCase):
         self.assertEqual(result['axes']['length']['all']['within_count'],10)
         self.assertEqual(result['axes']['width']['all']['outside_count'],1)
         pistes = ' '.join(result['axes']['length']['interpretation'])
+        self.assertEqual(result['axes']['length']['product_observations']['dispersed_references'],2)
         self.assertIn('patinage',pistes)
-        self.assertIn('detection parasite',pistes)
+        self.assertIn('parasite',pistes)
         self.assertNotIn('patinage',' '.join(result['axes']['width']['interpretation']))
         biased = analyze_measurements(samples(12,-4))['summary']['axes']['length']
-        self.assertIn('intervention mecanique',biased['bias']['advice'])
+        self.assertIn('calibrage',biased['recurrence']['under']['cluster']['advice'])
         for frame in frames:
             frame.boxes_on_T5[0].measured_t4_length_mm = 106
             frame.boxes_on_T5[0].barcode = 'UNE-REFERENCE'

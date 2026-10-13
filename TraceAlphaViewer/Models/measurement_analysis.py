@@ -22,38 +22,109 @@ def _stats(samples, index):
             'worst_over': max((v for v in values if v > DIMENSION_TOLERANCE_MM), default=None)}
 
 
-def _repeated_offsets(samples, anomalies, index, name):
+def _frequencies(samples, index):
+    groups = {}
+    for sample in samples:
+        groups.setdefault(sample['deltas'][index], []).append(sample)
+    rows = [{'delta': delta, 'count': len(items),
+             'references': len({s['barcode'] for s in items}),
+             'percent': 100 * len(items) / len(samples)} for delta, items in groups.items()]
+    return sorted(rows, key=lambda row: (-row['count'], abs(row['delta']), row['delta']))
+
+
+def _product_groups(samples):
+    groups = {}
+    for sample in samples:
+        key = (sample['barcode'], tuple(sample['expected']))
+        groups.setdefault(key, []).append(sample)
+    return groups
+
+
+def _product_rows(groups, index):
+    rows = []
+    for (barcode, expected), samples in groups.items():
+        values = sorted(s['deltas'][index] for s in samples)
+        # La fenêtre porte sur toutes les mesures du même produit et de la même BdD.
+        best = (0, 0, 0)
+        left = 0
+        for right, value in enumerate(values):
+            while value - values[left] > 2:
+                left += 1
+            candidate = (right - left + 1, values[left], value)
+            if (-candidate[0], abs((candidate[1] + candidate[2]) / 2), candidate[1]) < \
+                    (-best[0], abs((best[1] + best[2]) / 2), best[1]):
+                best = candidate
+        total = len(values)
+        rows.append({'barcode': barcode, 'name': samples[-1].get('name', ''),
+                     'expected': list(expected), 'total': total, 'limited': total < 10,
+                     'min_signed': values[0], 'max_signed': values[-1],
+                     'window_count': best[0], 'window_percent': 100 * best[0] / total,
+                     'window_min': best[1], 'window_max': best[2],
+                     'dispersed': best[0] / total < .8 and values[-1] - values[0] > 2,
+                     'under_count': sum(v < -DIMENSION_TOLERANCE_MM for v in values),
+                     'over_count': sum(v > DIMENSION_TOLERANCE_MM for v in values),
+                     'samples': samples})
+    return sorted(rows, key=lambda row: (-row['total'], row['barcode'], row['expected']))
+
+
+def _compact_product(row):
+    return {key: value for key, value in row.items() if key != 'samples'}
+
+
+def _close_product(row, center, index):
+    close = [s for s in row['samples'] if abs(s['deltas'][index] - center) <= 1]
+    return dict(_compact_product(row), center=center, close_count=len(close),
+                close_percent=100 * len(close) / row['total'],
+                repeated=row['total'] >= 2 and len(close) / row['total'] >= .8)
+
+
+def _repetition_advice(name, repeated_references):
+    if not repeated_references:
+        return ''
+    if repeated_references == 1:
+        return 'Vérifier en premier la fiche BdD et la présentation du produit qui présente une répétition ; piste à confirmer.'
+    controls = {'length': 'de T4/C6', 'width': 'de T5/C9', 'height': 'de LzB'}[name]
+    advice = (f'Une répétition est observée sur plusieurs produits : vérifier le paramétrage et le réglage/calibrage {controls}, '
+              'mesurer physiquement quelques boîtes et contrôler leurs dimensions BdD. Piste à confirmer.')
+    if name == 'length':
+        advice += ' Vérifier aussi une éventuelle intervention mécanique sans nouveau paramétrage.'
+    return advice
+
+
+def _repeated_offsets(samples, anomalies, index, name, products):
     result = {}
     for side, sign in (('under', -1), ('over', 1)):
         selected = [s for s in anomalies if s['deltas'][index] * sign > 0]
-        groups = {}
-        for sample in selected:
-            groups.setdefault(sample['deltas'][index], []).append(sample)
-        frequencies = [{'delta': delta, 'count': len(items),
-                        'references': len({s['barcode'] for s in items})}
-                       for delta, items in groups.items()]
-        frequencies.sort(key=lambda item: (-item['count'], abs(item['delta']), item['delta']))
-        center = median(s['deltas'][index] for s in selected) if selected else None
-        close = [s for s in selected if abs(s['deltas'][index] - center) <= 1]
+        frequencies = _frequencies(selected, index)
+        center = frequencies[0]['delta'] if frequencies else None
+        close = [s for s in samples if abs(s['deltas'][index] - center) <= 1] if center is not None else []
+        bad = [s for s in close if abs(s['deltas'][index]) > DIMENSION_TOLERANCE_MM]
         cluster = None
         if close:
             references = len({s['barcode'] for s in close})
-            similar = len(selected) >= 10 and len(close) / len(selected) >= .8
-            advice = ''
-            if similar:
-                if references < 2:
-                    advice = 'Vérifier en premier la fiche BdD et la présentation de cette référence ; piste à confirmer.'
-                else:
-                    controls = {'length': 'de T4/C6', 'width': 'de T5/C9', 'height': 'de LzB'}[name]
-                    advice = ('Ces mesures présentent souvent un décalage similaire : vérifier le paramétrage '
-                              f'et le réglage/calibrage {controls}. Piste à confirmer.')
-                    if name == 'length':
-                        advice += ' Vérifier aussi une éventuelle intervention mécanique sans nouveau paramétrage.'
-            cluster = {'median': center, 'min_signed': min(s['deltas'][index] for s in close),
+            product_rows = [_close_product(row, center, index) for row in products]
+            product_rows = [row for row in product_rows if row['close_count']]
+            product_totals = Counter(s['barcode'] for s in samples)
+            confirmed = {row['barcode'] for row in product_rows if row['repeated']}
+            contributions = Counter(s['barcode'] for s in close)
+            dominant_code, dominant_count = sorted(contributions.items(), key=lambda pair: (-pair[1], pair[0]))[0]
+            dominant = next(s for s in close if s['barcode'] == dominant_code)
+            product_rows.sort(key=lambda row: (not row['repeated'], -row['close_count'], row['barcode'], row['expected']))
+            cluster = {'center': center, 'median': center, 'min_signed': min(s['deltas'][index] for s in close),
                        'max_signed': max(s['deltas'][index] for s in close), 'count': len(close),
-                       'references': references, 'similar': similar, 'advice': advice,
-                       'percent_side': 100 * len(close) / len(selected),
-                       'percent_bad': 100 * len(close) / len(anomalies),
+                       'bad_count': len(bad), 'good_count': len(close) - len(bad),
+                       'bad_references': len({s['barcode'] for s in bad}),
+                       'bad_min_signed': min(s['deltas'][index] for s in bad),
+                       'bad_max_signed': max(s['deltas'][index] for s in bad),
+                       'references': references, 'similar': bool(confirmed), 'shared': len(confirmed) >= 2,
+                       'limited': len(close) < 10, 'repeated_references': len(confirmed),
+                       'singleton_references': len({row['barcode'] for row in product_rows if product_totals[row['barcode']] == 1}),
+                       'products': product_rows[:3], 'advice': _repetition_advice(name, len(confirmed)),
+                       'dominant': {'barcode': dominant_code, 'name': dominant.get('name', ''),
+                                    'count': dominant_count, 'percent': 100 * dominant_count / len(close)},
+                       'percent_side': 100 * len(bad) / len(selected),
+                       'percent_bad': 100 * len(bad) / len(anomalies),
+                       'bad_percent_all': 100 * len(bad) / len(samples),
                        'percent_all': 100 * len(close) / len(samples)}
         result[side] = {'count': len(selected), 'frequencies': frequencies, 'cluster': cluster}
     return result
@@ -72,43 +143,68 @@ def repeated_offset_lines(axis, limit=5):
                              f"à {signed(row['delta'])} mm" for row in frequencies[:limit])
         lines.append(f'{label} — écarts les plus fréquents : {frequent}.')
         cluster = item['cluster']
-        if cluster and cluster['similar']:
-            lines.append(f"Écarts répétés similaires {label.lower()} : de {signed(cluster['min_signed'])} "
-                         f"à {signed(cluster['max_signed'])} mm, autour de {signed(cluster['median'])} mm. "
-                         f"{cluster['count']} boîtes, {cluster['references']} références ; "
-                         f"{percent(cluster['percent_side'])} % des mauvaises mesures de ce côté, "
-                         f"{percent(cluster['percent_bad'])} % de toutes les mauvaises mesures, "
-                         f"{percent(cluster['percent_all'])} % des mesures comparables.")
-            lines.append(cluster['advice'])
-        elif item['count'] < 10:
-            lines.append(f'{label} : moins de 10 mauvaises mesures ; effectif insuffisant pour qualifier la répétition.')
+        if cluster:
+            lines.append(f"Autour de {signed(cluster['center'])} mm (±1 mm) : {cluster['bad_count']} défauts "
+                         f"de {signed(cluster['bad_min_signed'])} à {signed(cluster['bad_max_signed'])} mm "
+                         f"sur {cluster['bad_references']} références ({percent(cluster['percent_bad'])} % des mauvaises mesures ; "
+                         f"{percent(cluster['bad_percent_all'])} % des comparables), "
+                         f"et {cluster['good_count']} mesures conformes voisines. "
+                         f"Ensemble : {cluster['count']} mesures de {signed(cluster['min_signed'])} "
+                         f"à {signed(cluster['max_signed'])} mm, {cluster['references']} références, "
+                         f"{percent(cluster['percent_all'])} % des comparables de la trace.")
+            repeated = cluster['repeated_references']
+            text = (f"Répétition étayée sur {repeated} produits, chacun mesuré plusieurs fois."
+                    if repeated >= 2 else 'Répétition observée sur un seul produit.' if repeated == 1
+                    else 'La concentration ne confirme pas une répétition au sein des produits.')
+            if cluster['limited']:
+                text += ' Effectif limité.'
+            dominant = cluster['dominant']
+            text += (f" Produit le plus représenté : {dominant['barcode']}, {dominant['count']}/{cluster['count']} "
+                     f"mesures du groupe ({percent(dominant['percent'])} %).")
+            lines.append(text)
+            if repeated:
+                details = '; '.join(f"{row['barcode']} : {row['close_count']}/{row['total']} "
+                                    f"({percent(row['close_percent'])} %)" for row in cluster['products'] if row['repeated'])
+                lines.append('Exemples de répétition, à dimensions BdD identiques : ' + details + '.')
+                lines.append(cluster['advice'])
     return lines
 
 
-def _interpretation(name, total, recurrence):
+def _interpretation(name, total, observations):
     if not total['count']:
         return ['Aucune mesure comparable pour proposer une piste.']
-    if not total['under_count'] and not total['over_count']:
-        return []
     lines = []
-    residual = {}
-    for side in ('under', 'over'):
-        cluster = recurrence[side]['cluster']
-        residual[side] = recurrence[side]['count'] - (cluster['count'] if cluster and cluster['similar'] else 0)
-    if name == 'length':
-        if residual['under']:
-            lines.append(f"Autres ecarts en moins ({residual['under']} boites) : verifier un possible patinage "
-                         "du moteur, du rouleau moteur et l'entrainement T4.")
-        if residual['over']:
-            lines.append(f"Autres ecarts en trop ({residual['over']} boites) : verifier le positionnement de C6 "
-                         'et une detection parasite perturbant la mesure.')
-    elif residual['under'] or residual['over']:
-        lines.append('Verifier C9 et le mouvement T5.' if name == 'width' else 'Verifier LzB et son parametrage.')
+    if observations.get('opposed_groups'):
+        lines.append('Deux groupes de sens opposés sont observés : aucun réglage unique ne peut être déduit de leur moyenne.')
+    if observations['variant_references']:
+        lines.append(f"{observations['variant_references']} référence(s) avec plusieurs dimensions BdD : "
+                     'variantes analysées séparément, à vérifier dans la BdD.')
+    if observations['opposite_references']:
+        lines.append(f"{observations['opposite_references']} produit(s) présentent des groupes opposés : "
+                     'examiner leur présentation, la chronologie et les lignes sources avant de proposer un réglage commun.')
+    if observations['dispersed_references']:
+        lines.append(f"Dispersion au sein de {observations['dispersed_references']} produit(s) à dimensions BdD identiques, "
+                     f"sur {observations['dispersed_count']} mesures : aucune fenêtre de 2 mm n'en couvre 80 %.")
+        for row in observations['dispersed_products']:
+            lines.append(f"{row['barcode']} : {row['total']} mesures, plage {row['min_signed']:+.1f} "
+                         f"à {row['max_signed']:+.1f} mm ; meilleure fenêtre : {row['window_count']}/{row['total']} "
+                         f"({row['window_percent']:.1f} %)." + (' Effectif limité.' if row['limited'] else ''))
+        if name == 'length':
+            if observations['dispersed_under_count']:
+                lines.append("Pour cette dispersion en moins : contrôler un possible patinage du moteur, "
+                             "du rouleau moteur et l'entraînement T4. Hypothèse à vérifier.")
+            if observations['dispersed_over_count']:
+                lines.append('Pour cette dispersion en trop : contrôler le positionnement de C6 et les détections parasites. Hypothèse à vérifier.')
+        elif observations['dispersed_under_count'] or observations['dispersed_over_count']:
+            lines.append('Pour cette dispersion : contrôler C9, la présentation et le mouvement T5. Hypothèse à vérifier.'
+                         if name == 'width' else 'Pour cette dispersion : contrôler LzB, la présentation et son paramétrage. Hypothèse à vérifier.')
     return lines
 
 
-def summarize(samples, excluded=None):
+def _analyze_comparable(samples, excluded=None):
     axes = {}
+    groups = _product_groups(samples)
+    products_by_axis = {}
     for name, label, index in AXES:
         anomalies = [s for s in samples if abs(s['deltas'][index]) > DIMENSION_TOLERANCE_MM]
         total = _stats(samples, index)
@@ -116,6 +212,31 @@ def summarize(samples, excluded=None):
         total['outside_percent'] = 100 * len(anomalies) / len(samples) if samples else 0
         total['within_count'] = len(samples) - len(anomalies)
         total['within_percent'] = 100 - total['outside_percent'] if samples else 0
+        products = _product_rows(groups, index)
+        products_by_axis[name] = products
+        recurrence = _repeated_offsets(samples, anomalies, index, name, products)
+        by_barcode = {}
+        for row in products:
+            by_barcode.setdefault(row['barcode'], []).append(row)
+        variants = [{'barcode': barcode, 'name': rows[0]['name'], 'expected': [r['expected'] for r in rows]}
+                    for barcode, rows in by_barcode.items() if len(rows) > 1]
+        dispersed = [row for row in products if row['dispersed']]
+        opposite = []
+        centers = [recurrence[s]['cluster']['center'] if recurrence[s]['cluster'] else None for s in ('under', 'over')]
+        if all(c is not None for c in centers):
+            opposite_codes = {barcode for barcode, rows in by_barcode.items() if all(
+                sum(abs(s['deltas'][index] - center) <= 1 for row in rows for s in row['samples']) >= 2
+                for center in centers)}
+            opposite = [row for row in products if row['barcode'] in opposite_codes]
+        observations = {'variant_references': len(variants), 'variants': variants,
+                        'opposed_groups': all(recurrence[s]['cluster'] is not None for s in ('under', 'over')),
+                        'dispersed_references': len({r['barcode'] for r in dispersed}),
+                        'dispersed_count': sum(r['total'] for r in dispersed),
+                        'dispersed_under_count': sum(r['under_count'] for r in dispersed),
+                        'dispersed_over_count': sum(r['over_count'] for r in dispersed),
+                        'dispersed_products': [_compact_product(r) for r in dispersed[:3]],
+                        'opposite_references': len({r['barcode'] for r in opposite}),
+                        'opposite_products': [_compact_product(r) for r in opposite[:3]]}
         bias = None
         if len(samples) >= 10:
             center = median(s['deltas'][index] for s in samples)
@@ -124,21 +245,18 @@ def summarize(samples, excluded=None):
                 references = len({s['barcode'] for s in cluster if s['barcode']})
                 if abs(center) <= DIMENSION_TOLERANCE_MM:
                     advice = 'Decalage regulier observe, restant dans la tolerance.'
-                elif references < 2:
-                    advice = 'Verifier en premier la fiche BdD et la presentation de cette reference.'
                 else:
-                    advice = ('Verifier le reglage/calibrage du tapis, les references BdD et une eventuelle intervention '
-                              'mecanique sans nouveau parametrage ; piste a confirmer sur le terrain.' if name == 'length'
-                              else 'Verifier le reglage/calibrage et les references BdD ; piste a confirmer sur le terrain.')
+                    confirmed = {r['barcode'] for r in products if _close_product(r, center, index)['repeated']}
+                    advice = _repetition_advice(name, len(confirmed)) or 'Concentration observée sur la trace ; répétition par produit non confirmée.'
                 bias = {'median': center, 'count': len(cluster), 'percent': 100 * len(cluster) / len(samples),
                         'references': references, 'advice': advice}
-        recurrence = _repeated_offsets(samples, anomalies, index, name)
         axes[name] = {'label': label, 'all': total, 'anomalies': _stats(anomalies, index), 'bias': bias,
-                      'recurrence': recurrence, 'recurrence_lines': [],
-                      'interpretation': _interpretation(name, total, recurrence)}
+                      'recurrence': recurrence, 'recurrence_lines': [], 'frequencies': _frequencies(samples, index),
+                      'product_observations': observations,
+                      'interpretation': _interpretation(name, total, observations)}
         axes[name]['recurrence_lines'] = repeated_offset_lines(axes[name])
     outside = sum(any(abs(v) > DIMENSION_TOLERANCE_MM for v in s['deltas']) for s in samples)
-    return {'axes': axes, 'excluded': dict(excluded or {}), 'comparable_count': len(samples),
+    summary = {'axes': axes, 'excluded': dict(excluded or {}), 'comparable_count': len(samples),
             'cycle_count': len(samples) + sum((excluded or {}).values()),
             'excluded_count': sum((excluded or {}).values()),
             'global': {'within_count': len(samples) - outside, 'outside_count': outside,
@@ -146,6 +264,11 @@ def summarize(samples, excluded=None):
                        'within_percent': 100 * (len(samples) - outside) / len(samples) if samples else 0,
                        'outside_percent': 100 * outside / len(samples) if samples else 0},
             'tolerance_mm': DIMENSION_TOLERANCE_MM}
+    return summary, products_by_axis
+
+
+def summarize(samples, excluded=None):
+    return _analyze_comparable(samples, excluded)[0]
 
 
 def analyze_measurements(frames):
@@ -266,16 +389,21 @@ def analyze_measurements(frames):
         else:
             comparable.append(last)
             finals.append(last)
-    summary = summarize(comparable, excluded)
+    summary, products = _analyze_comparable(comparable, excluded)
     summary['cycle_count'] = serial + ambiguous_count
     return {'summary': summary, 'samples': samples, 'finals': finals,
-            'references': build_reference_lists(comparable)}
+            'references': build_reference_lists(comparable, products, summary)}
 
 
-def build_reference_lists(samples):
+def build_reference_lists(samples, products=None, summary=None):
+    if products is None:
+        summary, products = _analyze_comparable(samples)
     totals = Counter(s['barcode'] for s in samples)
     result = {}
     for name, _, index in AXES:
+        by_barcode = {}
+        for product in products[name]:
+            by_barcode.setdefault(product['barcode'], []).append(product)
         sides = {'under': {}, 'over': {}}
         for sample in samples:
             delta = sample['deltas'][index]
@@ -289,10 +417,42 @@ def build_reference_lists(samples):
                 stats = _stats(proofs, index)
                 worst = stats['min_signed'] if side == 'under' else stats['max_signed']
                 proofs = sorted(proofs, key=lambda s: (-abs(s['deltas'][index]), s['line']))
+                product_rows = by_barcode[barcode]
+                center = summary['axes'][name]['recurrence'][side]['cluster']['center']
+                observations = [_close_product(row, center, index) for row in product_rows]
+                representatives = []
+                for row in product_rows:
+                    close = [s for s in row['samples'] if abs(s['deltas'][index] - center) <= 1]
+                    candidates = ([min(close, key=lambda s: abs(s['deltas'][index]) )] if close else [])
+                    candidates += representative_samples(row['samples'], code={'length':'T4_LENGTH', 'width':'T5_WIDTH', 'height':'T5_HEIGHT'}[name])
+                    representatives.extend(s for s in candidates[:3] if s not in representatives)
                 rows.append(dict(stats, barcode=barcode, name=proofs[0].get('name', ''),
                                  total=totals[barcode], percent=100 * len(proofs) / totals[barcode],
-                                 worst=worst, samples=proofs))
+                                 worst=worst, samples=proofs, observations=observations,
+                                 variant_count=len(product_rows), representatives=representatives))
             result[name][side] = sorted(rows, key=lambda r: (-abs(r['worst']), -r['count'], r['barcode']))
+        for side in ('under', 'over'):
+            cluster = summary['axes'][name]['recurrence'][side]['cluster']
+            rows = []
+            if cluster:
+                center = cluster['center']
+                for barcode, product_rows in by_barcode.items():
+                    comparable = [s for product in product_rows for s in product['samples']]
+                    close = [s for s in comparable if abs(s['deltas'][index] - center) <= 1]
+                    if not close:
+                        continue
+                    observations = [_close_product(row, center, index) for row in product_rows]
+                    stats = _stats(close, index)
+                    representatives = []
+                    for product in product_rows:
+                        representative = min(product['samples'], key=lambda s: abs(s['deltas'][index] - center))
+                        representatives.append(representative)
+                    worst = max((s['deltas'][index] for s in close), key=abs)
+                    rows.append(dict(stats, barcode=barcode, name=comparable[0].get('name', ''),
+                                     total=len(comparable), percent=100 * len(close) / len(comparable),
+                                     worst=worst, samples=sorted(comparable, key=lambda s: s['line']),
+                                     observations=observations, variant_count=len(product_rows), representatives=representatives))
+            result[name][side + '_group'] = sorted(rows, key=lambda r: (-r['count'], r['barcode']))
     return result
 
 
@@ -301,8 +461,10 @@ def reference_page(analysis, axis, side, page=0, barcode=''):
     if barcode:
         row = next(r for r in rows if r['barcode'] == barcode)
         samples = row['samples']
-        return {'total': len(samples), 'samples': samples[page * 25:(page + 1) * 25]}
-    return {'total': len(rows), 'rows': [{k:v for k,v in row.items() if k != 'samples'}
+        return {'total': len(samples), 'samples': samples[page * 25:(page + 1) * 25],
+                'observations': row.get('observations', []), 'variant_count': row.get('variant_count', 1),
+                'representatives': row.get('representatives', [])}
+    return {'total': len(rows), 'rows': [{k:v for k,v in row.items() if k not in ('samples', 'representatives')}
                                         for row in rows[page * 25:(page + 1) * 25]]}
 
 

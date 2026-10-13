@@ -450,6 +450,11 @@ def _apply_field_severity(grouped: list[dict[str, object]], total_boxes: int) ->
                 total += population.get('excluded', {}).get('orientation', 0)
             group['affected_ratio'] = _ratio(count,total)
             group['affected_label'] = _affected_label(count,total)
+            if group['code'] != 'ORIENTATION' and population and group.get('checks'):
+                impact = 'Examiner les écarts par dimension et par produit ; la comparaison seule ne prouve pas une cause.'
+                action = group['checks'][0]
+                group['impact'] = impact
+                group['action'] = action
         else:
             group['affected_ratio'] = _ratio(count,total_boxes) if str(group['code']) == 'UNKNOWN' else 0
             group['affected_label'] = str(group['metric'])
@@ -723,15 +728,22 @@ def build_report_payload(
             reference_lists[axis][side] = []
             for row in rows:
                 ids = []
-                for original in row['samples']:
+                representative_ids = []
+                proofs = [('sample', s) for s in row['samples']]
+                proofs += [('representative', s) for s in row.get('representatives', [])]
+                for role, original in proofs:
                     key = f"measurement:{original['cycle']}:{original['line']}"
-                    ids.append(key)
+                    if role == 'sample':
+                        ids.append(key)
+                    if role == 'representative' and key not in representative_ids:
+                        representative_ids.append(key)
                     if key not in reference_samples:
                         sample = dict(original, id=key)
                         reference_samples[key] = sample
                         for line in set(sample['sources'].values()) - {0}:
                             wanted.update(range(max(1, line - 2), line + 3))
-                reference_lists[axis][side].append(dict({k:v for k,v in row.items() if k != 'samples'}, sample_ids=ids))
+                reference_lists[axis][side].append(dict({k:v for k,v in row.items() if k not in ('samples', 'representatives')},
+                                                       sample_ids=list(dict.fromkeys(ids)), representative_ids=representative_ids))
     for group in grouped:
         group['id'] = f"{group['code']}:{group['first_line']}:{group['belt']}"
         if group['code'] in _DIMENSION_CODES:

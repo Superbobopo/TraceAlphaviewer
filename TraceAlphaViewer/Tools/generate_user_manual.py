@@ -255,10 +255,12 @@ def captures():
         if not (assets / 'rapport.png').exists():
             raise RuntimeError('La capture du rapport est absente')
         metadata['rapport'] = {'width': 1440, 'height': 850}
-        from Tools.validate_measurement_report import recurring_samples
+        from Tools.validate_measurement_report import product_samples
         from Models.diagnostic import build_diagnostics
         from playwright.sync_api import sync_playwright
-        recurring = recurring_samples()
+        recurring = product_samples([('FICTIF-A',[-4]*6+[-5]*4+[-3]*3),
+                                     ('FICTIF-B',[-4]*6+[-5]*4+[-3]*3),
+                                     ('FICTIF-C',[0]*9)])
         example = write_diagnostic_report(build_diagnostics(recurring,[]),
             output_dir=session.directory / 'recurrence',frames=recurring,source_name='DECALAGES FICTIFS')
         with sync_playwright() as playwright:

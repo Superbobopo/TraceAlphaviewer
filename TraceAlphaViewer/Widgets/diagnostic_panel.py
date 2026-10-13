@@ -710,6 +710,35 @@ class DiagnosticPanel(ctk.CTkFrame):
                 self._details.tag_add(tag, index, f'{index}+{len(text)}c')
                 self._bind_measurement_tag(tag, lambda a=axis, s=side: self._open_measurement_references(a, s))
             cursor = start
+        for axis, values in summary.get('axes', {}).items():
+            if names is not None and axis not in names:
+                continue
+            for side, item in values.get('recurrence', {}).items():
+                cluster = item.get('cluster')
+                if cluster:
+                    self._measurement_link(f"\nProduits autour de {cluster['center']:+.1f} mm — {values['label']}\n",
+                        lambda a=axis, s=side: self._open_measurement_references(a, s + '_group'),
+                        f'measurement-group-{axis}-{side}')
+            if values.get('frequencies'):
+                self._measurement_link(f"\nRepartition de toutes les mesures — {values['label']}\n",
+                    lambda a=axis, s=summary: self._show_measurement_distribution(s, a),
+                    f'measurement-distribution-{axis}')
+
+    def _show_measurement_distribution(self, summary, axis):
+        self._cancel_measurement_task()
+        self._showing_global = True
+        values = summary['axes'][axis]
+        self._details.configure(state='normal')
+        self._details.delete('1.0', 'end')
+        self._details.insert('end', f"BILAN DES MESURES DE LA TRACE\n{values['label']}\n\n"
+            "Repartition de toutes les mesures comparables, conformes incluses.\n"
+            "Une boite compte une fois ; ecart = mesure moins BdD.\n\n")
+        for row in values.get('frequencies', []):
+            self._details.insert('end', f"{row['delta']:+.1f} mm : {row['count']} boite(s) "
+                f"({row['percent']:.1f} % des comparables), {row['references']} reference(s).\n")
+        self._measurement_link('\nRetour au bilan', self._show_global_summary, 'measurement-back')
+        self._details.configure(state='disabled')
+        self._details.yview_moveto(0)
 
     def _cancel_measurement_task(self):
         if self._measurement_job is not None:
@@ -739,7 +768,8 @@ class DiagnosticPanel(ctk.CTkFrame):
         self._details.configure(state='normal')
         self._details.delete('1.0', 'end')
         label = next(label for name,label,_ in AXES if name == axis)
-        self._details.insert('end', f"{label} — {'Trop petites' if side == 'under' else 'Trop grandes'}\n{barcode}\nPreparation de la liste...\n")
+        kind = 'Mesures proches du centre' if side.endswith('_group') else 'Trop petites' if side == 'under' else 'Trop grandes'
+        self._details.insert('end', f"{label} — {kind}\n{barcode}\nPreparation de la liste...\n")
         self._details.configure(state='disabled')
         if isinstance(self._frames, FrameStore):
             self._own_session = self._own_session or (LoadingSession() if self._load_session is None else None)
@@ -778,13 +808,30 @@ class DiagnosticPanel(ctk.CTkFrame):
     def _render_measurement_references(self, data):
         axis,side,page,barcode = self._measurement_request
         label = next(label for name,label,_ in AXES if name == axis)
+        grouped = side.endswith('_group')
+        kind = 'Mesures proches du centre' if grouped else 'Trop petites' if side == 'under' else 'Trop grandes'
         self._details.configure(state='normal')
         self._details.delete('1.0', 'end')
-        self._details.insert('end', f"{label} — {'Trop petites' if side == 'under' else 'Trop grandes'}\n")
-        self._details.insert('end', 'Tri : pire ecart, puis nombre de boites.\n\n')
+        self._details.insert('end', f"{label} — {kind}\n")
+        self._details.insert('end', 'Conformes voisines incluses ; detail de toutes les comparables du produit.\n\n'
+            if grouped else 'Tri : pire ecart, puis nombre de boites.\n\n')
         self._measurement_link('Retour au bilan\n\n', self._show_global_summary, 'measurement-back')
         if barcode:
             self._details.insert('end', barcode + '\n\n')
+            self._insert_product_observations(data, axis)
+            if page == 0:
+                representatives = data.get('representatives', [])
+                if representatives:
+                    self._details.insert('end', 'Exemples representatifs, conformes voisins inclus :\n')
+                index = next(index for name,_,index in AXES if name == axis)
+                for i,sample in enumerate(representatives):
+                    self._details.insert('end', f"{sample['box']} — {sample['time_str']} — "
+                        f"ecart {sample['deltas'][index]:+.1f} mm\n")
+                    self._measurement_link('Voir dans AlphaViewer\n',
+                        lambda s=sample: self._navigate_measurement_sample(s,axis), f'measurement-representative-{i}')
+                self._details.insert('end', '\n')
+            self._details.insert('end', 'Toutes les mesures comparables de ce produit :\n\n'
+                if grouped else 'Boites hors tolerance de ce cote :\n\n')
             for i,sample in enumerate(data['samples']):
                 index = next(index for name,_,index in AXES if name == axis)
                 self._details.insert('end', f"{sample['box']} — {sample['time_str']} — {sample.get('name', '')}\n"
@@ -796,6 +843,8 @@ class DiagnosticPanel(ctk.CTkFrame):
                     lambda b=row['barcode']: self._open_measurement_references(axis,side,0,b), f'measurement-ref-{i}')
                 self._details.insert('end', f"   {row['count']}/{row['total']} boites ({row['percent']:.1f} %) ; "
                     f"plage {row['min_signed']:+.1f} a {row['max_signed']:+.1f} mm ; pire {row['worst']:+.1f} mm.\n\n")
+                if row.get('variant_count', 0) > 1:
+                    self._details.insert('end', '   Plusieurs variantes BdD : bilans separes dans le detail.\n\n')
         if not data['total']:
             self._details.insert('end', 'Aucune boite pour ce cote.\n')
         self._details.insert('end', f"Page {page+1}/{max(1,(data['total']+24)//25)} — {data['total']} {'boites' if barcode else 'references'}\n")
@@ -805,6 +854,32 @@ class DiagnosticPanel(ctk.CTkFrame):
             self._measurement_link('Suivants', lambda: self._open_measurement_references(axis,side,page+1,barcode), 'measurement-next')
         self._details.configure(state='disabled')
         self._details.yview_moveto(0)
+
+    def _insert_product_observations(self, data, axis):
+        observations = data.get('observations', [])
+        if not observations:
+            return
+        self._details.insert('end', 'Toutes les mesures de ce produit dans la trace :\n')
+        if data.get('variant_count', 0) > 1:
+            self._details.insert('end', 'Plusieurs dimensions BdD : variantes analysees separement.\n')
+        for row in observations:
+            expected = row['expected']
+            self._details.insert('end', f"\nBdD {expected[2]} x {expected[0]} x {expected[1]} mm "
+                '(longueur x largeur x hauteur)\n'
+                f"{row['total']} mesures ; plage {row['min_signed']:+.1f} a {row['max_signed']:+.1f} mm.\n")
+            if row.get('center') is not None:
+                self._details.insert('end', f"{row['close_count']}/{row['total']} mesures ({row['close_percent']:.1f} %) "
+                    f"a +/-1 mm autour de {row['center']:+.1f} mm.\n")
+            if row.get('repeated'):
+                self._details.insert('end', 'Ecarts proches sur ce produit.\n')
+            elif row['total'] == 1:
+                self._details.insert('end', 'Une seule mesure : repetition non confirmee.\n')
+            if row.get('dispersed'):
+                self._details.insert('end', 'Dispersion observee sur ce produit : la fenetre de 2 mm la plus fournie '
+                    f"contient {row['window_count']}/{row['total']} mesures ({row['window_percent']:.1f} %).\n")
+            if row.get('limited'):
+                self._details.insert('end', 'Effectif limite.\n')
+        self._details.insert('end', '\n')
 
     def _navigate_measurement_sample(self, sample, axis):
         line = sample['sources'].get(axis) or sample['line']

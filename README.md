@@ -131,17 +131,34 @@ Les mauvaises mesures sont presentees en premier : plage signee (mesure moins
 BdD), pire ecart en moins et en trop, decalage moyen signe et erreur moyenne
 independamment du sens. Exemple : +6, -4 et +9 mm donnent une plage -4 a +9 mm,
 un decalage moyen +3,7 mm et une erreur moyenne 6,3 mm. Les chiffres sur toutes
-les mesures restent accessibles dans les details. Les pistes T4/C6 distinguent
-decalage regulier (reglage/calibrage), ecarts variables en moins (patinage possible)
-et en trop (C6 perturbe possible), sans conclure automatiquement a une cause.
+les mesures restent accessibles dans les details. Le **Bilan des mesures de la
+trace** distingue les observations, leur repetition par produit et les controles
+a envisager, sans conclure automatiquement a une cause.
 Le rapport affiche les explications et premiers controles des fiches sans clic.
 Les ecarts les plus frequents sont visibles directement, separes en moins et en
-trop. Un groupe de mauvaises mesures proches peut orienter vers le parametrage
-ou le reglage/calibrage, meme avec des boites conformes : au moins 10 mauvaises
-mesures du cote considere, dont 80 % a +/-1 mm de leur mediane. Le bilan affiche
-la plage observee et les proportions parmi ce cote, toutes les mauvaises mesures
-et toutes les comparables. Sur une seule reference, verifier d'abord sa fiche
-BdD et sa presentation ; les causes restent des hypotheses a confirmer.
+trop. Chaque groupe est centre sur l'ecart hors tolerance le plus frequent de
+son cote (en cas d'egalite, le plus proche de zero). Il inclut les mesures a
++/-1 mm, meme conformes : le bilan distingue defauts, bonnes mesures voisines
+et part du groupe sur toutes les comparables. La repartition complete est dans
+les details ; un groupe ne represente pas automatiquement toute la machine.
+
+La repetition se verifie avec toutes les mesures de chaque produit, a dimensions
+BdD identiques : au moins deux mesures, dont 80 % proches du meme centre. Un
+produit vu une seule fois ne la confirme pas. Deux produits mesures plusieurs
+fois et montrant cette concentration etayent une repetition commune : verifier
+parametrage/calibrage, mesurer quelques boites physiquement et controler leur
+BdD. Sur un seul produit, examiner d'abord sa fiche et sa presentation. Les
+variantes BdD restent separees ; la contribution du produit dominant est visible.
+Un effectif inferieur a dix ajoute seulement une reserve sur la confiance.
+
+Une dispersion est observee seulement au sein d'un meme produit et d'une meme
+variante BdD : sa plage depasse 2 mm et aucune fenetre de 2 mm ne contient 80 %
+de ses mesures. Dans ce cas, les ecarts T4 en moins peuvent orienter vers
+l'entrainement/patinage et ceux en trop vers le positionnement ou les detections
+parasites de C6. Les controles largeur/hauteur restent adaptes a C9/LzB. Des
+ecarts differents entre produits ne prouvent pas une variation mecanique. Des
+groupes opposes sur un produit invitent a examiner sa presentation, la chronologie
+et les lignes sources. Toutes ces pistes restent a confirmer.
 La longueur principale utilise exclusivement **T4C**, avec sa ligne source.
 T4T et `diffT4` restent des complements distincts ; une T4C absente n'est jamais
 remplacee par T4T. Les vraies UNKNOWN, les identifications non confirmees et les

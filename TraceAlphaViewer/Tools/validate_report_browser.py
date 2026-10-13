@@ -8,13 +8,87 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'TraceAlphaViewer'))
-from Tools.validate_measurement_report import samples, recurring_samples
+from Tools.validate_measurement_report import samples, recurring_samples, product_samples
 from Models.diagnostic import build_diagnostics, DiagnosticIncident
 from Models.diagnostic_report import write_diagnostic_report, build_diagnostic_report_html
 from Models.report_bridge import ReportBridge
 
 
 class BrowserTests(unittest.TestCase):
+    def test_neighboring_good_measurements_and_bdd_variants_remain_visible(self):
+        from playwright.sync_api import sync_playwright
+        import pypdfium2 as pdfium
+        frames=product_samples([
+            ('PRODUIT-A',[-4,-4,-4,-4,-3,-3]),
+            ('PRODUIT-A',[4,4,5,5],(60,30,120)),
+            ('PRODUIT-B',[-4,-4,-3]),
+            ('PRODUIT-C',[-3,-3]),
+        ])
+        output=ROOT/'build'/'report-validation'
+        output.mkdir(parents=True,exist_ok=True)
+        incidents=build_diagnostics(frames,[])
+        report=write_diagnostic_report(incidents,output,frames,source_name='VARIANTES FICTIVES')
+        fallback=output/'secours-variantes.html'
+        fallback.write_text(build_diagnostic_report_html(incidents,frames),encoding='utf-8')
+        bridge=ReportBridge()
+        try:
+            with sync_playwright() as playwright:
+                browser=playwright.chromium.launch(channel='msedge',headless=True)
+                page=browser.new_page(viewport={'width':1440,'height':1080})
+                for url in (bridge.register(report),fallback.as_uri()):
+                    local=url.startswith('http:')
+                    page.goto(url)
+                    text=page.locator('[data-axis=length] .recurrence').inner_text()
+                    for expected in ('6 défauts','5 mesures conformes voisines','11 mesures','3 produits'):
+                        self.assertIn(expected,text)
+                    page.locator('[data-measure-axis=length][data-measure-side=under]').click()
+                    panel=page.locator('.measurement-reference-list')
+                    self.assertIn('Plusieurs variantes BdD',panel.inner_text())
+                    panel.get_by_role('button',name='PRODUIT-A',exact=True).click()
+                    observation=panel.locator('.product-observations')
+                    for expected in ('variantes sont analysées séparément','100 × 60 × 30','120 × 60 × 30','6/6','0/4'):
+                        self.assertIn(expected,observation.inner_text())
+                    self.assertEqual(panel.locator('.reference-proofs > .sample').count(),4)
+                    observation.locator('.comparison-examples > summary').click()
+                    example=observation.locator('.sample').filter(has_text='-3,0 mm').first
+                    self.assertTrue(example.is_visible())
+                    if local:
+                        received=[]
+                        def navigate():
+                            target,done,result=bridge.commands.get(timeout=10)
+                            received.append(target)
+                            result.update(ok=True,line=target['line'])
+                            done.set()
+                        thread=threading.Thread(target=navigate)
+                        thread.start()
+                        page.wait_for_function("!document.querySelector('.comparison-examples [data-navigate]').disabled")
+                        example.locator('[data-navigate]').click()
+                        page.get_by_role('status').filter(has_text='positionné').wait_for()
+                        thread.join(5)
+                        self.assertIn(received[0]['line'],(13,16))
+                        self.assertEqual(received[0]['axis'],'length')
+                    else:
+                        self.assertTrue(example.locator('[data-navigate]').is_disabled())
+                    with page.expect_download() as download:
+                        page.get_by_role('button',name='Exporter PDF').click()
+                    pdf_path=output/'rapport-variantes.pdf'
+                    download.value.save_as(pdf_path)
+                    document=pdfium.PdfDocument(pdf_path)
+                    contents=' '.join('\n'.join(p.get_textpage().get_text_range() for p in document).split())
+                    for expected in ('5 mesures conformes voisines','Plusieurs variantes BdD','6/6','0/4'):
+                        self.assertIn(expected,contents)
+                    document.close()
+                    page.locator('[data-measure-axis=length][data-measure-side=under_group]').click()
+                    self.assertEqual(panel.locator('tbody > tr').count(),3)
+                    panel.get_by_role('button',name='PRODUIT-C',exact=True).click()
+                    self.assertIn('Toutes les mesures comparables de ce produit',panel.inner_text())
+                    self.assertIn('2/2',panel.locator('.product-observations').inner_text())
+                    self.assertEqual(panel.locator('.reference-proofs > .sample').count(),2)
+                    self.assertIn('-3,0 mm',panel.locator('.reference-proofs').inner_text())
+                browser.close()
+        finally:
+            bridge.close()
+
     def test_repeated_offsets_visible_in_closed_cards_fallback_and_pdf(self):
         from playwright.sync_api import sync_playwright
         import pypdfium2 as pdfium
@@ -32,13 +106,20 @@ class BrowserTests(unittest.TestCase):
                 page.goto(path.as_uri())
                 axis = page.locator('[data-axis=length]')
                 text = axis.locator('.recurrence').inner_text()
-                for expected in ('12 boîtes à -4,0 mm','6 boîtes à -5,0 mm','18 boîtes, 2 références','90,0 %','18,0 %','paramétrage'):
+                for expected in ('12 boîtes à -4,0 mm','6 boîtes à -5,0 mm','18','90,0 %','18,0 %'):
                     self.assertIn(expected,text)
+                self.assertNotIn('réglage/calibrage',text)
                 self.assertFalse(axis.locator('.measure-details').evaluate('(node) => node.open'))
+                axis.locator('.measure-details > summary').click()
+                distribution = axis.locator('.measurement-distribution')
+                self.assertEqual(distribution.locator('tbody tr').count(),4)
+                self.assertIn('80',distribution.inner_text())
+                self.assertIn('0,0 mm',distribution.inner_text())
                 card = page.locator('details[data-group]').first
                 self.assertFalse(card.evaluate('(node) => node.open'))
                 self.assertTrue(card.locator('summary .recurrence').is_visible())
-                self.assertIn('18 boîtes, 2 références',card.locator(':scope > summary').inner_text())
+                self.assertIn('Bilan des mesures de la trace',card.locator(':scope > summary').inner_text())
+                self.assertIn('18',card.locator(':scope > summary .recurrence').inner_text())
                 self.assertNotIn('aucun decalage regulier',page.locator('main').inner_text())
                 with page.expect_download() as download:
                     page.get_by_role('button',name='Exporter PDF').click()
@@ -46,7 +127,7 @@ class BrowserTests(unittest.TestCase):
                 download.value.save_as(pdf_path)
                 document = pdfium.PdfDocument(pdf_path)
                 contents = ' '.join('\n'.join(p.get_textpage().get_text_range() for p in document).split())
-                for expected in ('12 boîtes à -4,0 mm','6 boîtes à -5,0 mm','18 boîtes, 2 références','90,0 %','18,0 %','paramétrage'):
+                for expected in ('Bilan des mesures de la trace','12 boîtes à -4,0 mm','6 boîtes à -5,0 mm','90,0 %','18,0 %'):
                     self.assertIn(expected,contents)
                 document[0].render(scale=1.2).to_pil().save(output/'pdf-decalages-page-1.png')
                 document.close()
@@ -86,12 +167,14 @@ class BrowserTests(unittest.TestCase):
                     panel.get_by_role('button',name='Suivants').click()
                     self.assertEqual(panel.locator('tbody tr').count(),6)
                     panel.get_by_role('button',name='REF-MULTI',exact=True).click()
-                    self.assertEqual(panel.locator('.sample').count(),25)
-                    self.assertIn('T4T (complément)',panel.locator('.sample').first.inner_text())
+                    proofs=panel.locator('.reference-proofs > .sample')
+                    self.assertEqual(proofs.count(),25)
+                    self.assertIn('T4T (complément)',proofs.first.inner_text())
+                    self.assertIn('Mesures de ce produit dans la trace',panel.locator('.product-observations').inner_text())
                     panel.get_by_role('button',name='Suivants').click()
-                    self.assertEqual(panel.locator('.sample').count(),25)
+                    self.assertEqual(proofs.count(),25)
                     panel.get_by_role('button',name='Suivants').click()
-                    self.assertEqual(panel.locator('.sample').count(),9)
+                    self.assertEqual(proofs.count(),9)
                     if local:
                         panel.get_by_role('button',name='Précédents').click()
                         panel.get_by_role('button',name='Précédents').click()
@@ -103,14 +186,14 @@ class BrowserTests(unittest.TestCase):
                             done.set()
                         thread=threading.Thread(target=navigate)
                         thread.start()
-                        page.wait_for_function("!document.querySelector('.measurement-reference-list [data-navigate]').disabled")
-                        panel.locator('[data-navigate]').first.click()
+                        page.wait_for_function("!document.querySelector('.reference-proofs [data-navigate]').disabled")
+                        proofs.locator('[data-navigate]').first.click()
                         page.get_by_role('status').filter(has_text='positionné').wait_for()
                         thread.join(5)
                         self.assertEqual(received[0]['line'],1)
                         self.assertEqual(received[0]['axis'],'length')
                     else:
-                        self.assertTrue(panel.locator('[data-navigate]').first.is_disabled())
+                        self.assertTrue(proofs.locator('[data-navigate]').first.is_disabled())
                     page.locator('[data-measure-axis=length][data-measure-side=under]').click()
                     self.assertEqual(panel.locator('tbody tr').count(),1)
                     self.assertIn('REF-MULTI',panel.inner_text())

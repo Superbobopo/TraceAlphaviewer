@@ -27,7 +27,7 @@ def run(request, send):
                 from Models.measurement_analysis import reference_page
                 page = reference_page(frames.read_measurements(), request['axis'], request['side'],
                                       request.get('page', 0), request.get('barcode', ''))
-                for sample in page.get('samples', []):
+                for sample in page.get('samples', []) + page.get('representatives', []):
                     source_lines = set(sample['sources'].values()) - {0}
                     sample['context'] = []
                     for line in sorted(source_lines):
