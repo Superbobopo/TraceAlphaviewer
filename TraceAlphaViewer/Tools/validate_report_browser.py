@@ -9,12 +9,56 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'TraceAlphaViewer'))
 from Tools.validate_measurement_report import samples
-from Models.diagnostic import build_diagnostics
+from Models.diagnostic import build_diagnostics, DiagnosticIncident
 from Models.diagnostic_report import write_diagnostic_report, build_diagnostic_report_html
 from Models.report_bridge import ReportBridge
 
 
 class BrowserTests(unittest.TestCase):
+    def test_signed_ranges_counts_and_plain_explanations_visible(self):
+        from playwright.sync_api import sync_playwright
+        import pypdfium2 as pdfium
+        output = ROOT / 'build' / 'report-validation'
+        output.mkdir(parents=True,exist_ok=True)
+        frames = samples(5,0)
+        for frame,delta in zip(frames,(6,-4,9,3,-3)):
+            frame.boxes_on_T5[0].measured_t4_length_mm += delta
+        incidents = build_diagnostics(frames,[])
+        incidents.append(DiagnosticIncident(title='T2 eT:-88 - Err: boite deja C4',code='-88',belt='T2',
+            severity='warning',count=1,first_line=1,last_line=1,event_lines=[1]))
+        report = write_diagnostic_report(incidents,output,frames,source_name='ECARTS FICTIFS')
+        fallback = output / 'secours-ecarts.html'
+        fallback.write_text(build_diagnostic_report_html(incidents,frames),encoding='utf-8')
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel='msedge',headless=True)
+            page = browser.new_page(viewport={'width':1440,'height':1080})
+            for path in (report,fallback):
+                page.goto(path.as_uri())
+                axis = page.locator('[data-open=measurements] [data-axis=length]')
+                axis.wait_for(state='visible')
+                text = axis.inner_text()
+                for expected in ('2/5','3/5','-4,0 à +9,0 mm','+3,7','6,3'):
+                    self.assertIn(expected,text)
+                self.assertFalse(axis.locator('.measure-details').evaluate('(node) => node.open'))
+                self.assertIn('Aucune mauvaise mesure',page.locator('[data-open=measurements] [data-axis=width]').inner_text())
+                card = page.locator('details[data-group]').filter(has_text='T2 eT:-88').first
+                self.assertFalse(card.evaluate('(node) => node.open'))
+                self.assertTrue(card.locator('summary .plain-explanation').is_visible())
+                self.assertIn('capteur C4',card.locator('summary .plain-explanation').inner_text())
+                self.assertIn('Points à vérifier en premier',page.locator('main').inner_text())
+                pdf_path = output / 'rapport-ecarts.pdf'
+                with page.expect_download() as download:
+                    page.get_by_role('button',name='Exporter PDF').click()
+                download.value.save_as(pdf_path)
+                document = pdfium.PdfDocument(pdf_path)
+                contents = '\n'.join(p.get_textpage().get_text_range() for p in document)
+                for expected in ('-4,0 à +9,0','+3,7','6,3','2/5','3/5','capteur C4'):
+                    self.assertIn(expected,contents)
+                document[0].render(scale=1.4).to_pil().save(output / 'pdf-ecarts-page-1.png')
+                document.close()
+            page.screenshot(path=str(output / 'rapport-ecarts.png'),full_page=True)
+            browser.close()
+
     def test_react_fallback_navigation_pagination_and_pdf(self):
         from playwright.sync_api import sync_playwright
         import pypdfium2 as pdfium

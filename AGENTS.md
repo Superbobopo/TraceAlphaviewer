@@ -175,6 +175,7 @@ Exception d'installation : cette mise a jour des instructions reste locale, sans
 - La vue globale `Diagnostic` doit rester une synthese groupee par type de probleme, pas une liste de chaque occurrence.
 - La synthese globale `Diagnostic` doit faire ressortir les priorites et les diagnostics metier importants comme `UNKNOWN` et `CAM-NO-READ`.
 - Le bouton `Rapport web` du diagnostic genere une page HTML locale interactive ; l'export PDF doit telecharger un PDF direct de la synthese globale, sans ouvrir la fenetre d'impression.
+- Pour une meme vue, reutiliser le rapport deja prepare et son URL locale sans worker ni relecture des preuves. Verifier les fichiers HTML/JSON et ressources avant reutilisation ; regenerer si necessaire. Le cache reste propre a la vue source.
 - Le rapport web/PDF doit rester lisible comme un rapport terrain : synthese visuelle, priorites visibles, groupes compacts, pas de pavés repetitifs ni de PDF texte brut.
 - Le rapport web React se reconstruit depuis `TraceAlphaViewer/report_app` avec `npm install` puis `npm run build`; si le build statique manque, le generateur Python garde un fallback HTML local.
 - Les titres de diagnostics eT doivent utiliser la table partagee `Models/et_codes.py`, identique a la table d'etats, avant de tomber sur un libelle generique.
@@ -199,6 +200,8 @@ Exception d'installation : cette mise a jour des instructions reste locale, sans
 
 - Les bilans de dimensions se calculent dans le worker via `Models/measurement_analysis.py`, une fois par cycle avec la derniere mesure complete exploitable. Les preuves distinctes restent dans `measurements.pkl` ; seule la synthese compacte est lue par le thread UI.
 - L'ecart signe vaut mesure moins BdD. Orientations differentes, C9 invalide, references absentes, mesures incompletes et identites ambigues sont exclus du bilan de reglage et comptes separement. `diffT4` compare T4C/T4T et ne constitue pas une comparaison mesure/BdD.
+- Afficher les bonnes/mauvaises mesures sur le total comparable, le total des cycles T5 et les exclusions. Le bilan global compte une boite hors tolerance une seule fois, meme si plusieurs axes sont en erreur. Les plages et pires ecarts gardent leur signe ; distinguer moyenne signee et erreur moyenne absolue. Un cote sans anomalie affiche « Aucune », jamais un zero invente.
+- Pour la longueur T4/C6, distinguer decalage regulier (reglage/calibrage ou intervention mecanique sans nouveau parametrage), ecarts variables en moins (patinage possible moteur/rouleau) et en trop (C6 mal positionne ou detection parasite possible). Les hypotheses restent a confirmer ; ne pas les appliquer automatiquement a C9/LzB.
 - Un decalage regulier exige au moins 10 boites, avec 80 % des ecarts a +/-1 mm autour d'une mediane non nulle. Au-dela de 3 mm sur au moins deux references, proposer une verification du calibrage et de la BdD ; sur une seule reference, verifier d'abord sa fiche et sa presentation. Ne pas conclure automatiquement a un mauvais reglage.
 - `Temps depuis RESET carte ALPHA` est un compteur d'uptime : une valeur elevee et croissante est normale.
 - Un reset carte Alpha est compte uniquement quand ce compteur chute vers `0..10 mn` pendant la trace ; les releves bas consecutifs apres la chute appartiennent au meme reset.

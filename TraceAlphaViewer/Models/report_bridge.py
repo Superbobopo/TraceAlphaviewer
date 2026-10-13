@@ -15,6 +15,7 @@ class ReportBridge:
         self.closed = threading.Event()
         self.token = secrets.token_urlsafe(32)
         self.reports = {}
+        self._registration_lock = threading.Lock()
         bridge = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -109,7 +110,16 @@ class ReportBridge:
         self.thread.start()
 
     def register(self, path):
+        with self._registration_lock:
+            return self._register(path)
+
+    def _register(self, path):
         path = Path(path).resolve()
+        if self.closed.is_set():
+            raise RuntimeError('La vue source est fermee.')
+        for key, report in self.reports.items():
+            if report['path'] == path:
+                return f'http://{self.address}/{self.token}/{key}/view.html'
         data_path = path.with_name(path.name.replace('diagnostic_report_', 'report_data_')).with_suffix('.json')
         payload = json.loads(data_path.read_text(encoding='utf-8'))
         examples = {}

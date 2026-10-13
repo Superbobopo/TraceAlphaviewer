@@ -13,7 +13,34 @@ def _stats(samples, index):
     errors = [abs(value) for value in values]
     return {'count': len(values), 'references': len({s['barcode'] for s in samples if s['barcode']}),
             'min_abs': min(errors) if errors else None, 'max_abs': max(errors) if errors else None,
-            'mean_abs': mean(errors) if errors else None, 'mean_signed': mean(values) if values else None}
+            'mean_abs': mean(errors) if errors else None, 'mean_signed': mean(values) if values else None,
+            'min_signed': min(values) if values else None, 'max_signed': max(values) if values else None,
+            'under_count': sum(v < -DIMENSION_TOLERANCE_MM for v in values),
+            'over_count': sum(v > DIMENSION_TOLERANCE_MM for v in values),
+            'worst_under': min((v for v in values if v < -DIMENSION_TOLERANCE_MM), default=None),
+            'worst_over': max((v for v in values if v > DIMENSION_TOLERANCE_MM), default=None)}
+
+
+def _interpretation(name, total, bias):
+    if not total['count']:
+        return ['Aucune mesure comparable pour proposer une piste.']
+    if bias:
+        return [bias['advice']]
+    if not total['under_count'] and not total['over_count']:
+        return []
+    lines = []
+    if total['count'] < 10:
+        lines.append('Moins de 10 boites comparables : echantillon insuffisant pour qualifier la tendance.')
+    elif total['under_count'] or total['over_count']:
+        lines.append('Les ecarts varient : aucun decalage regulier detecte avec le critere retenu.')
+    if name == 'length':
+        if total['under_count']:
+            lines.append('Mesures trop courtes : verifier un possible patinage du moteur, du rouleau moteur et l\'entrainement T4.')
+        if total['over_count']:
+            lines.append('Mesures trop longues : verifier le positionnement de C6 et une detection parasite perturbant la mesure.')
+    elif total['under_count'] or total['over_count']:
+        lines.append('Verifier C9 et le mouvement T5.' if name == 'width' else 'Verifier LzB et son parametrage.')
+    return lines
 
 
 def summarize(samples, excluded=None):
@@ -23,6 +50,8 @@ def summarize(samples, excluded=None):
         total = _stats(samples, index)
         total['outside_count'] = len(anomalies)
         total['outside_percent'] = 100 * len(anomalies) / len(samples) if samples else 0
+        total['within_count'] = len(samples) - len(anomalies)
+        total['within_percent'] = 100 - total['outside_percent'] if samples else 0
         bias = None
         if len(samples) >= 10:
             center = median(s['deltas'][index] for s in samples)
@@ -34,11 +63,21 @@ def summarize(samples, excluded=None):
                 elif references < 2:
                     advice = 'Verifier en premier la fiche BdD et la presentation de cette reference.'
                 else:
-                    advice = 'Verifier le reglage/calibrage et les references BdD ; piste a confirmer sur le terrain.'
+                    advice = ('Verifier le reglage/calibrage du tapis, les references BdD et une eventuelle intervention '
+                              'mecanique sans nouveau parametrage ; piste a confirmer sur le terrain.' if name == 'length'
+                              else 'Verifier le reglage/calibrage et les references BdD ; piste a confirmer sur le terrain.')
                 bias = {'median': center, 'count': len(cluster), 'percent': 100 * len(cluster) / len(samples),
                         'references': references, 'advice': advice}
-        axes[name] = {'label': label, 'all': total, 'anomalies': _stats(anomalies, index), 'bias': bias}
+        axes[name] = {'label': label, 'all': total, 'anomalies': _stats(anomalies, index), 'bias': bias,
+                      'interpretation': _interpretation(name, total, bias)}
+    outside = sum(any(abs(v) > DIMENSION_TOLERANCE_MM for v in s['deltas']) for s in samples)
     return {'axes': axes, 'excluded': dict(excluded or {}), 'comparable_count': len(samples),
+            'cycle_count': len(samples) + sum((excluded or {}).values()),
+            'excluded_count': sum((excluded or {}).values()),
+            'global': {'within_count': len(samples) - outside, 'outside_count': outside,
+                       'count': len(samples), 'references': len({s['barcode'] for s in samples if s['barcode']}),
+                       'within_percent': 100 * (len(samples) - outside) / len(samples) if samples else 0,
+                       'outside_percent': 100 * outside / len(samples) if samples else 0},
             'tolerance_mm': DIMENSION_TOLERANCE_MM}
 
 
@@ -144,13 +183,24 @@ def analyze_measurements(frames):
     return {'summary': summary, 'samples': samples, 'finals': finals}
 
 
-def representative_samples(samples, limit=3):
+def representative_samples(samples, limit=3, code=None):
     if not samples:
         return []
-    ordered = sorted(samples, key=lambda s: s['line'])
-    score = lambda s: max((abs(v) for v in s.get('deltas', [])), default=0)
+    # Les preuves finales portent les effectifs et les extremes du bilan.
+    final = [s for s in samples if s.get('final', True)]
+    ordered = sorted(final or samples, key=lambda s: s['line'])
+    indexes = {'T4_LENGTH': (2,), 'T5_WIDTH': (0,), 'T5_HEIGHT': (1,)}.get(code, (0, 1, 2))
+    values = lambda s: [s['deltas'][i] for i in indexes if i < len(s.get('deltas', []))]
+    score = lambda s: max((abs(v) for v in values(s)), default=0)
     center = median(score(s) for s in ordered)
-    candidates = [ordered[0], max(ordered, key=score), min(ordered, key=lambda s: abs(score(s) - center))]
+    below = [s for s in ordered if any(v < -DIMENSION_TOLERANCE_MM for v in values(s))]
+    above = [s for s in ordered if any(v > DIMENSION_TOLERANCE_MM for v in values(s))]
+    candidates = []
+    if below:
+        candidates.append(min(below, key=lambda s: min(values(s))))
+    if above:
+        candidates.append(max(above, key=lambda s: max(values(s))))
+    candidates += [ordered[0], min(ordered, key=lambda s: abs(score(s) - center))]
     result = []
     for item in candidates + ordered:
         if item not in result:
@@ -161,18 +211,33 @@ def representative_samples(samples, limit=3):
 
 
 def summary_text(summary, names=None):
-    lines = []
+    total = summary.get('global', {})
+    lines = [f"Cycles de boites analyses sur T5 : {summary.get('cycle_count', 0)} ; "
+             f"comparables : {summary.get('comparable_count', 0)} ; exclus : {summary.get('excluded_count', 0)}."]
+    if total:
+        lines.append(f"Toutes dimensions : {total['within_count']}/{total['count']} boites conformes "
+                     f"({total['within_percent']:.1f} %) ; {total['outside_count']}/{total['count']} "
+                     f"hors tolerance ({total['outside_percent']:.1f} %).")
     for name, axis in summary.get('axes', {}).items():
         if names is not None and name not in names:
             continue
         lines.append(axis['label'])
-        for key, title in (('anomalies', 'Anomalies'), ('all', 'Toutes les mesures comparables')):
+        all_stats = axis['all']
+        lines.append(f"  Bonnes mesures : {all_stats['within_count']}/{all_stats['count']} ({all_stats['within_percent']:.1f} %) ; "
+                     f"mauvaises mesures : {all_stats['outside_count']}/{all_stats['count']} ({all_stats['outside_percent']:.1f} %). "
+                     f"{all_stats['references']} reference(s).")
+        for key, title in (('anomalies', 'Mauvaises mesures'), ('all', 'Toutes les mesures comparables')):
             stats = axis[key]
             if not stats['count']:
-                lines.append(f'  {title} : aucune mesure comparable.')
+                lines.append(f'  {title} : aucune.')
                 continue
             lines.append(f"  {title} : {stats['count']} boite(s), {stats['references']} reference(s). "
-                f"Erreur absolue min {stats['min_abs']:.1f}, max {stats['max_abs']:.1f}, moyenne {stats['mean_abs']:.1f} mm.")
+                f"Plage {stats['min_signed']:+.1f} a {stats['max_signed']:+.1f} mm ; "
+                f"erreur moyenne (sans tenir compte du sens) {stats['mean_abs']:.1f} mm.")
+            below = f"{stats['worst_under']:+.1f} mm" if stats['worst_under'] is not None else 'aucune'
+            above = f"{stats['worst_over']:+.1f} mm" if stats['worst_over'] is not None else 'aucune'
+            lines.append(f"  Pire mauvaise mesure en moins : {below} ; en trop : {above}. "
+                         f"Trop petites : {stats['under_count']} ; trop grandes : {stats['over_count']}.")
             direction = {'length': ('trop court', 'trop long'), 'width': ('trop etroit', 'trop large'),
                          'height': ('trop bas', 'trop haut')}[name]
             signed = stats['mean_signed']
@@ -183,6 +248,9 @@ def summary_text(summary, names=None):
             bias = axis['bias']
             lines.append(f"  Decalage regulier autour de {bias['median']:+.1f} mm : {bias['percent']:.1f} %, "
                          f"{bias['count']} boites / {bias['references']} references. {bias['advice']}")
+        for explanation in axis.get('interpretation', []):
+            if not axis['bias']:
+                lines.append('  Piste a verifier : ' + explanation)
     labels = {'orientation': 'orientations differentes', 'invalid': 'mesures invalides',
               'incomplete': 'mesures incompletes', 'reference_absent': 'references absentes', 'ambiguous': 'identites ambigues'}
     exclusions = [f'{labels[k]} : {v}' for k, v in summary.get('excluded', {}).items() if v]

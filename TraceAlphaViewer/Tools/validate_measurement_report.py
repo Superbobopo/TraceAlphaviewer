@@ -8,14 +8,14 @@ import time
 import unittest
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'TraceAlphaViewer'))
 from Models.state import BoxInfo, MachineState
 from Models.dimension_check import MEASUREMENT_STYLES, measurement_status_from_code
-from Models.measurement_analysis import analyze_measurements
+from Models.measurement_analysis import analyze_measurements, representative_samples, summary_text
 from Models.diagnostic import build_diagnostics, DiagnosticIncident
 from Models.diagnostic_report import build_report_payload, write_diagnostic_report, build_diagnostic_report_html
 from Models.report_bridge import ReportBridge
@@ -37,6 +37,54 @@ def samples(count=35, delta=5):
 
 
 class MeasurementTests(unittest.TestCase):
+    def test_signed_range_counts_two_means_and_extreme_proofs(self):
+        frames = samples(3)
+        for frame, expected, measured in zip(frames, (20,20,30), (26,16,39)):
+            box = frame.boxes_on_T5[0]
+            box.bdd_length_mm, box.measured_t4_length_mm = expected, measured
+        analysis = analyze_measurements(frames)
+        result = analysis['summary']
+        bad = result['axes']['length']['anomalies']
+        self.assertEqual((bad['min_signed'],bad['max_signed']),(-4,9))
+        self.assertEqual((bad['worst_under'],bad['worst_over']),(-4,9))
+        self.assertEqual((bad['under_count'],bad['over_count']),(1,2))
+        self.assertAlmostEqual(bad['mean_signed'],11/3)
+        self.assertAlmostEqual(bad['mean_abs'],19/3)
+        self.assertEqual((result['global']['within_count'],result['global']['outside_count']),(0,3))
+        self.assertEqual(result['axes']['width']['all']['within_count'],3)
+        self.assertIn('-4.0 a +9.0 mm',summary_text(result))
+        selected = representative_samples(analysis['samples'],code='T4_LENGTH')
+        self.assertEqual({s['deltas'][2] for s in selected},{6,-4,9})
+        self.assertEqual(result['cycle_count'],3)
+        for delta in (-5,5,0):
+            axis = analyze_measurements(samples(3,delta))['summary']['axes']['length']
+            self.assertEqual(axis['anomalies']['worst_under'],-5 if delta < 0 else None)
+            self.assertEqual(axis['anomalies']['worst_over'],5 if delta > 0 else None)
+
+    def test_tolerance_boundaries_global_union_and_direction_pistes(self):
+        frames = samples(12,0)
+        for i,frame in enumerate(frames):
+            box = frame.boxes_on_T5[0]
+            box.measured_t4_length_mm += [-3,3,-4,4,0,0,0,0,0,0,0,0][i]
+            if i == 2:
+                box.measured_t5_width_mm += 5
+        result = analyze_measurements(frames)['summary']
+        self.assertEqual(result['global']['outside_count'],2)
+        self.assertEqual(result['global']['within_count'],10)
+        self.assertEqual(result['axes']['length']['all']['within_count'],10)
+        self.assertEqual(result['axes']['width']['all']['outside_count'],1)
+        pistes = ' '.join(result['axes']['length']['interpretation'])
+        self.assertIn('patinage',pistes)
+        self.assertIn('detection parasite',pistes)
+        self.assertNotIn('patinage',' '.join(result['axes']['width']['interpretation']))
+        biased = analyze_measurements(samples(12,-4))['summary']['axes']['length']
+        self.assertIn('intervention mecanique',biased['bias']['advice'])
+        for frame in frames:
+            frame.boxes_on_T5[0].measured_t4_length_mm = 106
+            frame.boxes_on_T5[0].barcode = 'UNE-REFERENCE'
+        biased = analyze_measurements(frames)['summary']['axes']['length']
+        self.assertIn('fiche BdD',biased['bias']['advice'])
+
     def test_colors_and_c9_priority(self):
         self.assertEqual(len(MEASUREMENT_STYLES), 8)
         self.assertEqual([measurement_status_from_code(c) for c in ('', 'ORIENTATION', 'T4_LENGTH', 'T5_WIDTH', 'T5_HEIGHT', 'GLOBAL')],
@@ -108,6 +156,8 @@ class MeasurementTests(unittest.TestCase):
         result = analyze_measurements(frames)['summary']
         self.assertEqual(result['comparable_count'], 0)
         self.assertEqual(result['excluded'], {'orientation':1,'invalid':1,'reference_absent':1,'incomplete':1,'ambiguous':2})
+        self.assertEqual(result['cycle_count'],result['comparable_count']+result['excluded_count'])
+        self.assertEqual(result['global']['outside_count'],0)
         for field, axis in (('measured_t5_width_mm', 'width'), ('measured_t5_height_mm', 'height')):
             frames = samples(12, 0)
             for frame in frames:
@@ -159,6 +209,69 @@ class MeasurementTests(unittest.TestCase):
         self.assertIn('CB2 camera 3',groups['CAM-NO-READ']['affected_label'])
 
 
+class ReportReuseTests(unittest.TestCase):
+    def test_two_views_reopen_without_worker_and_regenerate_missing_files(self):
+        import customtkinter as ctk
+        from Widgets.diagnostic_panel import DiagnosticPanel
+        from Models.frame_store import FrameStore
+        app = ctk.CTk()
+        app.withdraw()
+        frames = samples(3)
+        incidents = build_diagnostics(frames,[])
+        try:
+            with tempfile.TemporaryDirectory(dir=ROOT / 'TraceAlphaViewer' / '.trace_work') as temp:
+                opened = []
+                panels = [DiagnosticPanel(app,incidents,frames,on_report_open=opened.append) for _ in range(2)]
+                writer = lambda *args,**kwargs: write_diagnostic_report(*args,output_dir=Path(temp),**kwargs)
+                with patch('Widgets.diagnostic_panel.write_diagnostic_report',side_effect=writer) as generated, \
+                     patch('Widgets.diagnostic_panel.messagebox.showerror',side_effect=lambda *args: self.fail(str(args))):
+                    panels[0]._open_web_report()
+                    panels[1]._open_web_report()
+                    self.assertNotEqual(opened[0],opened[1])
+                    read_text = Path.read_text
+                    def read_manifest_only(path,*args,**kwargs):
+                        self.assertEqual(path.suffixes[-2:],['.manifest','.json'])
+                        return read_text(path,*args,**kwargs)
+                    with patch.object(Path,'read_text',autospec=True,side_effect=read_manifest_only):
+                        panels[0]._open_web_report()
+                    self.assertEqual(opened[0],opened[2])
+                    self.assertEqual(generated.call_count,2)
+                    data = opened[0].with_name(opened[0].name.replace('diagnostic_report_','report_data_')).with_suffix('.json')
+                    data.unlink()
+                    panels[0]._open_web_report()
+                    self.assertEqual(generated.call_count,3)
+                    self.assertNotEqual(opened[0],opened[-1])
+                    cached = opened[-1]
+                    assets = json.loads(cached.with_suffix('.manifest.json').read_text(encoding='utf-8'))
+                    script = next((name for name in assets if name.endswith('.js')),None)
+                    if script:
+                        (cached.parent / script).unlink()
+                        panels[0]._open_web_report()
+                        self.assertEqual(generated.call_count,4)
+                    generated_count = generated.call_count
+                    store,session = Mock(spec=FrameStore),Mock()
+                    store.directory = Path(temp)
+                    panels[0]._frames,panels[0]._load_session = store,session
+                    panels[0]._open_web_report()
+                    session.start.assert_not_called()
+                    self.assertEqual(generated.call_count,generated_count)
+                    panels[0]._report_path.unlink()
+                    panels[0]._open_web_report()
+                    session.start.assert_called_once()
+                panel = panels[1]
+                self.assertIsInstance(panel._detail_scroll,ctk.CTkScrollbar)
+                panel._details.configure(state='normal')
+                panel._details.insert('end','\n'.join(f'Ligne {i}' for i in range(100)))
+                panel._details.configure(state='disabled')
+                panel._detail_scroll.cget('command')('moveto',1)
+                self.assertGreater(panel._details.yview()[0],0)
+                self.assertIsInstance(panel._list_scroll,ctk.CTkScrollbar)
+        finally:
+            for job in app.tk.call('after','info'):
+                app.tk.call('after','cancel',job)
+            app.destroy()
+
+
 class BridgeTests(unittest.TestCase):
     def test_registered_example_origin_paths_and_shutdown(self):
         with tempfile.TemporaryDirectory(dir=ROOT / 'TraceAlphaViewer' / '.trace_work') as temp:
@@ -167,6 +280,9 @@ class BridgeTests(unittest.TestCase):
             bridge = ReportBridge()
             try:
                 url = bridge.register(report)
+                with patch('Models.report_bridge.json.loads',side_effect=AssertionError('Preuves relues')):
+                    self.assertEqual(bridge.register(report),url)
+                self.assertEqual(len(bridge.reports),1)
                 base = url.rsplit('/', 1)[0]
                 self.assertIn(b'html', urlopen(url).read()[:100].lower())
                 sample = next(iter(next(iter(bridge.reports.values()))['examples']))
@@ -242,6 +358,8 @@ class BridgeTests(unittest.TestCase):
             view.hide()
             self.assertTrue(bridge.closed.is_set())
         finally:
+            for job in app.tk.call('after','info'):
+                app.tk.call('after','cancel',job)
             app.destroy()
             session.close()
             self.assertTrue(session.cleaned.wait(15))

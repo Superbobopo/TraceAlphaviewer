@@ -17,7 +17,7 @@ import tkinter as tk
 from tkinter import messagebox
 
 from Models.diagnostic import DiagnosticIncident
-from Models.diagnostic_report import write_diagnostic_report
+from Models.diagnostic_report import write_diagnostic_report, report_files_available
 from Models.diagnostic_report import _metric_from_summary as _structured_metric
 from Models.state import MachineState
 from Models.frame_store import FrameStore
@@ -192,6 +192,7 @@ class DiagnosticPanel(ctk.CTkFrame):
         self._own_session = None
         self._report_task = None
         self._report_job = None
+        self._report_path = None
         self._highlight_line = None
         self._build()
         self._renderer = TextRenderer(self, self._list,
@@ -287,7 +288,9 @@ class DiagnosticPanel(ctk.CTkFrame):
 
         detail_body = tk.Frame(left, bg='#0f0f1c')
         detail_body.pack(fill='both', expand=True)
-        detail_scroll = tk.Scrollbar(detail_body, orient='vertical')
+        detail_scroll = ctk.CTkScrollbar(detail_body, orientation='vertical', width=12,
+            fg_color='#0f0f1c', button_color='#3c4358', button_hover_color='#65728d', corner_radius=6)
+        self._detail_scroll = detail_scroll
         detail_scroll.pack(side='right', fill='y')
         self._details = tk.Text(
             detail_body,
@@ -304,7 +307,9 @@ class DiagnosticPanel(ctk.CTkFrame):
         self._details.pack(fill='both', expand=True, padx=8, pady=8)
         detail_scroll.configure(command=self._details.yview)
 
-        vscroll = tk.Scrollbar(right, orient='vertical')
+        vscroll = ctk.CTkScrollbar(right, orientation='vertical', width=12,
+            fg_color='#12121f', button_color='#3c4358', button_hover_color='#65728d', corner_radius=6)
+        self._list_scroll = vscroll
         vscroll.pack(side='right', fill='y')
 
         self._list = tk.Text(
@@ -323,7 +328,7 @@ class DiagnosticPanel(ctk.CTkFrame):
             height=10,
         )
         self._list.pack(fill='both', expand=True)
-        vscroll.config(command=self._list.yview)
+        vscroll.configure(command=self._list.yview)
 
         self._list.tag_configure('current', background='#1a2d45')
         self._list.tag_configure('header', foreground='#778899')
@@ -678,6 +683,9 @@ class DiagnosticPanel(ctk.CTkFrame):
         self._details.configure(state='disabled')
 
     def _open_web_report(self) -> None:
+        if self._report_path is not None and report_files_available(self._report_path):
+            self._launch_report(self._report_path)
+            return
         if isinstance(self._frames, FrameStore):
             if self._report_task is not None:
                 return
@@ -697,6 +705,7 @@ class DiagnosticPanel(ctk.CTkFrame):
             return
         try:
             report_path = write_diagnostic_report(self._incidents, frames=self._frames, source_name=self._source_name)
+            self._report_path = Path(report_path)
             self._launch_report(report_path)
         except Exception as exc:
             messagebox.showerror(

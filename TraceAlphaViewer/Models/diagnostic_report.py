@@ -304,20 +304,32 @@ def _field_explanation(group: dict[str, object], total_boxes: int, c9_massive: b
         )
     if code == "GLOBAL":
         return (
-            "Les mesures Alpha ne correspondent pas aux dimensions BdD sur plusieurs axes.",
+            "Plusieurs dimensions mesurées ne correspondent pas aux dimensions attendues dans la base de données (BdD).",
             "Boite bloquee, mauvais tassage T5, mesure perturbee par une boite precedente, probleme mecanique T4/T5 ou capteur.",
             "Chercher un blocage physique et verifier C6, C9, LzB ainsi que l'entrainement T4/T5.",
+        )
+    if code == "T4_LENGTH":
+        return (
+            "La longueur mesurée sur T4, avec le capteur C6, est trop courte ou trop longue par rapport à la dimension attendue dans la base de données.",
+            "Le sens et la régularité des écarts aident à choisir les contrôles ; ils ne prouvent pas une cause à eux seuls.",
+            "Comparer les écarts en moins et en trop, puis suivre les pistes du bilan de longueur.",
+        )
+    if code == "T5_HEIGHT":
+        return (
+            "La hauteur mesurée sur T5 ne correspond pas à la hauteur attendue dans la base de données.",
+            "La mesure de hauteur ou la présentation de la boîte peut être perturbée.",
+            "Vérifier le capteur de hauteur LzB, sa fixation et son paramétrage.",
         )
     if code == "T5_WIDTH":
         action = "Traiter avec le probleme C9 massif deja detecte." if c9_massive else "Verifier C9/T5 et refaire une mesure controlee."
         return (
-            "La largeur mesuree ne colle pas a la reference BdD.",
+            "La largeur mesurée sur T5, avec le capteur C9, ne correspond pas à la largeur attendue dans la base de données.",
             "Suspicion mesure C9/T5 ou passage boite incorrect devant C9.",
             action,
         )
     if belt == "T2" and code == "-88":
         return (
-            "T2 indique qu'une boite est deja sur C4 au moment du transfert.",
+            "Le transfert signale une boîte déjà présente au niveau du capteur C4.",
             "Boite bloquee sur C4, ejecteur qui n'ejecte pas, C4 faux actif ou cubestop qui ne laisse pas passer.",
             "Verifier C4, l'ejecteur, le capteur C4 et le cubestop. Critique seulement si le defaut se repete ou bloque le flux.",
         )
@@ -346,7 +358,7 @@ def _field_explanation(group: dict[str, object], total_boxes: int, c9_massive: b
             "Verifier la zone de mesure correspondant a l'axe en erreur.",
         )
     return (
-        str(group["impact"]),
+        str(group["symptom"] or group["impact"]),
         "Controle terrain recommande avant conclusion.",
         str(group["action"]),
     )
@@ -433,7 +445,9 @@ def _apply_field_severity(grouped: list[dict[str, object]], total_boxes: int) ->
             group["affected_label"] = str(group["metric"])
         elif str(group['code']) in _DIMENSION_CODES:
             population = group.get('measurement_stats', {})
-            total = population.get('comparable_count', 0) + population.get('excluded', {}).get('orientation', 0)
+            total = population.get('comparable_count', 0)
+            if group['code'] == 'ORIENTATION':
+                total += population.get('excluded', {}).get('orientation', 0)
             group['affected_ratio'] = _ratio(count,total)
             group['affected_label'] = _affected_label(count,total)
         else:
@@ -634,15 +648,15 @@ def _verdict(counts: dict[str, int]) -> dict[str, str]:
         return {
             "level": "critical",
             "label": "Critique",
-            "title": "Intervention terrain prioritaire",
-            "text": "La trace contient des problemes terrain massifs ou bloquants. Traiter ces points avant les alertes isolees.",
+            "title": "Points à vérifier en premier",
+            "text": "Les problèmes ci-dessous sont classés en priorité selon les blocages ou anomalies observés. Les causes restent à vérifier sur la machine.",
         }
     if counts["warning"] > 0:
         return {
             "level": "warning",
             "label": "A surveiller",
-            "title": "Anomalies actionnables",
-            "text": "Aucun critique detecte, mais plusieurs controles terrain sont recommandes.",
+            "title": "Points à vérifier en premier",
+            "text": "La trace contient des alertes. Commencez par les contrôles proposés ci-dessous, puis consultez les exemples si nécessaire.",
         }
     return {
         "level": "ok",
@@ -731,7 +745,7 @@ def build_report_payload(
             sample['context'] = [{'line': n, 'text': raw[n][0]} for n in range(max(1, sample['line'] - 2), sample['line'] + 3) if n in raw]
             if sample['line'] in raw:
                 sample['time_str'] = raw[sample['line']][1]
-        group['representative_ids'] = [s['id'] for s in representative_samples(group['examples'])]
+        group['representative_ids'] = [s['id'] for s in representative_samples(group['examples'], code=group['code'])]
         group['measurement_stats'] = analysis['summary'] if group['code'] in _DIMENSION_CODES else {}
     _apply_field_severity(grouped, total_boxes)
     grouped.sort(
@@ -805,6 +819,16 @@ def _react_report_html(payload: dict[str, object]) -> str | None:
     return template.replace("</head>", f"{data_script}</head>", 1)
 
 
+def report_files_available(path: Path) -> bool:
+    """Verifier le petit manifeste sans relire les preuves HTML/JSON."""
+    path = Path(path)
+    try:
+        files = json.loads(path.with_suffix('.manifest.json').read_text(encoding='utf-8'))
+        return bool(files) and all((path.parent / name).is_file() for name in files)
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 def write_diagnostic_report(
     incidents: list[DiagnosticIncident],
     output_dir: Path | None = None,
@@ -819,13 +843,13 @@ def write_diagnostic_report(
     data_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     output_path = output_dir / f"diagnostic_report_{stamp}.html"
-    if _copy_report_app_assets(output_dir):
-        html_text = _react_report_html(payload)
-        if html_text:
-            output_path.write_text(html_text, encoding="utf-8")
-            return output_path
-
-    output_path.write_text(build_diagnostic_report_html(incidents, frames=frames, payload=payload), encoding="utf-8")
+    html_text = _react_report_html(payload) if _copy_report_app_assets(output_dir) else None
+    if not html_text:
+        html_text = build_diagnostic_report_html(incidents, frames=frames, payload=payload)
+    output_path.write_text(html_text, encoding="utf-8")
+    assets = re.findall(r'(?:src|href)=[\"\']([^\"\']*_next/[^\"\']+)[\"\']', html_text)
+    files = [output_path.name, data_path.name] + [html.unescape(a).split('?', 1)[0].removeprefix('./') for a in assets]
+    output_path.with_suffix('.manifest.json').write_text(json.dumps(list(dict.fromkeys(files))), encoding='utf-8')
     return output_path
 
 

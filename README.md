@@ -112,6 +112,9 @@ et famille, recherche, fiches de problemes et exemples pages par 25. Le PDF se
 telecharge directement. `Voir dans AlphaViewer` rejoint un exemple dans sa trace
 source encore ouverte ; cette liaison locale expire a la fermeture de la vue.
 Les fichiers enregistres restent consultables hors connexion.
+Pour une meme vue, un nouveau clic sur `Rapport web` rouvre le rapport et sa
+liaison locale sans recalculer les preuves. Une nouvelle trace ou des fichiers
+de rapport supprimes imposent une nouvelle generation.
 
 Les boites T5 disposent d'une legende permanente : bleu clair non evalue,
 vert conforme (+/-3 mm), orange orientation differente, violet longueur T4/C6,
@@ -120,11 +123,19 @@ tolerance, rose largeur invalide avec C9 actif. Le survol donne les mesures,
 references et ecarts. Le graphique garde sa taille native 920 x 540, y compris
 lorsque Windows agrandit les autres controles.
 
-Le diagnostic affiche des incidents multiligne et deux panneaux defilants.
-Les bilans distinguent anomalies et toutes les mesures comparables, une fois
-par cycle Alpha : erreur absolue minimale/maximale/moyenne et decalage signe
-(mesure moins BdD). Les exclusions sont explicites ; les pistes de decalage
-regulier restent a confirmer sur le terrain. `diffT4` reste un ecart firmware
+Le diagnostic affiche des incidents multiligne et deux panneaux defilants avec
+des barres sombres arrondies. Les bilans donnent les bonnes et mauvaises mesures
+sur le total comparable, les exclusions et le nombre de cycles analyses sur T5.
+Une boite compte une fois par cycle Alpha, meme si plusieurs axes sont en erreur.
+Les mauvaises mesures sont presentees en premier : plage signee (mesure moins
+BdD), pire ecart en moins et en trop, decalage moyen signe et erreur moyenne
+independamment du sens. Exemple : +6, -4 et +9 mm donnent une plage -4 a +9 mm,
+un decalage moyen +3,7 mm et une erreur moyenne 6,3 mm. Les chiffres sur toutes
+les mesures restent accessibles dans les details. Les pistes T4/C6 distinguent
+decalage regulier (reglage/calibrage), ecarts variables en moins (patinage possible)
+et en trop (C6 perturbe possible), sans conclure automatiquement a une cause.
+Le rapport affiche les explications et premiers controles des fiches sans clic.
+`diffT4` reste un ecart firmware
 T4C/T4T distinct. Les preuves detaillees sont conservees dans la session locale,
 sans parcours complet de `FrameStore` dans le thread de l'interface.
 

@@ -1044,8 +1044,11 @@ def _dimension_causes_checks(code: str) -> tuple[list[str], list[str], str]:
         )
     if code == 'T4_LENGTH':
         return (
-            ["Mesure C6/T4 decalee.", "Moteur ou rouleau T4 qui patine.", "Boite mal entrainee sur T4."],
-            ["Comparer T4C/T4T a la longueur BdD.", "Verifier C6, moteur et rouleau T4."],
+            ["Decalage regulier : reglage/calibrage ou intervention mecanique sans nouveau parametrage possibles.",
+             "Ecarts variables en moins : patinage du moteur ou du rouleau moteur T4 possible.",
+             "Ecarts variables en trop : mauvais positionnement de C6 ou detection parasite possible."],
+            ["Comparer la longueur mesuree a la longueur BdD de la meme boite.",
+             "Suivre les pistes du bilan selon le sens et la regularite des ecarts ; verifier aussi la fiche BdD."],
             'probable',
         )
     if code == 'T5_HEIGHT':
@@ -1088,7 +1091,7 @@ def _build_dimension_incidents(frames, line_states, measurement_analysis=None):
         first, last = findings[0], findings[-1]
         causes, checks, confidence = _dimension_causes_checks(code)
         context_labels = []
-        examples = representative_samples(findings)
+        examples = representative_samples(findings, code=code)
         for sample in examples:
             for label in _dimension_context_labels(line_states, sample['line']):
                 if label not in context_labels:
