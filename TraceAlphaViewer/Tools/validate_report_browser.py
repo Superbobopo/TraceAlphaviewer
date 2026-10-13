@@ -8,13 +8,51 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / 'TraceAlphaViewer'))
-from Tools.validate_measurement_report import samples
+from Tools.validate_measurement_report import samples, recurring_samples
 from Models.diagnostic import build_diagnostics, DiagnosticIncident
 from Models.diagnostic_report import write_diagnostic_report, build_diagnostic_report_html
 from Models.report_bridge import ReportBridge
 
 
 class BrowserTests(unittest.TestCase):
+    def test_repeated_offsets_visible_in_closed_cards_fallback_and_pdf(self):
+        from playwright.sync_api import sync_playwright
+        import pypdfium2 as pdfium
+        output = ROOT / 'build' / 'report-validation'
+        output.mkdir(parents=True,exist_ok=True)
+        frames = recurring_samples()
+        incidents = build_diagnostics(frames,[])
+        report = write_diagnostic_report(incidents,output,frames,source_name='DECALAGES FICTIFS')
+        fallback = output / 'secours-decalages.html'
+        fallback.write_text(build_diagnostic_report_html(incidents,frames),encoding='utf-8')
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel='msedge',headless=True)
+            page = browser.new_page(viewport={'width':1440,'height':1080})
+            for path in (report,fallback):
+                page.goto(path.as_uri())
+                axis = page.locator('[data-axis=length]')
+                text = axis.locator('.recurrence').inner_text()
+                for expected in ('12 boîtes à -4,0 mm','6 boîtes à -5,0 mm','18 boîtes, 2 références','90,0 %','18,0 %','paramétrage'):
+                    self.assertIn(expected,text)
+                self.assertFalse(axis.locator('.measure-details').evaluate('(node) => node.open'))
+                card = page.locator('details[data-group]').first
+                self.assertFalse(card.evaluate('(node) => node.open'))
+                self.assertTrue(card.locator('summary .recurrence').is_visible())
+                self.assertIn('18 boîtes, 2 références',card.locator(':scope > summary').inner_text())
+                self.assertNotIn('aucun decalage regulier',page.locator('main').inner_text())
+                with page.expect_download() as download:
+                    page.get_by_role('button',name='Exporter PDF').click()
+                pdf_path = output / 'rapport-decalages.pdf'
+                download.value.save_as(pdf_path)
+                document = pdfium.PdfDocument(pdf_path)
+                contents = ' '.join('\n'.join(p.get_textpage().get_text_range() for p in document).split())
+                for expected in ('12 boîtes à -4,0 mm','6 boîtes à -5,0 mm','18 boîtes, 2 références','90,0 %','18,0 %','paramétrage'):
+                    self.assertIn(expected,contents)
+                document[0].render(scale=1.2).to_pil().save(output/'pdf-decalages-page-1.png')
+                document.close()
+            page.screenshot(path=str(output/'rapport-decalages.png'),full_page=True)
+            browser.close()
+
     def test_reference_lists_sort_paging_details_and_axis_navigation(self):
         from playwright.sync_api import sync_playwright
         frames=samples(90)

@@ -135,6 +135,13 @@ les mesures restent accessibles dans les details. Les pistes T4/C6 distinguent
 decalage regulier (reglage/calibrage), ecarts variables en moins (patinage possible)
 et en trop (C6 perturbe possible), sans conclure automatiquement a une cause.
 Le rapport affiche les explications et premiers controles des fiches sans clic.
+Les ecarts les plus frequents sont visibles directement, separes en moins et en
+trop. Un groupe de mauvaises mesures proches peut orienter vers le parametrage
+ou le reglage/calibrage, meme avec des boites conformes : au moins 10 mauvaises
+mesures du cote considere, dont 80 % a +/-1 mm de leur mediane. Le bilan affiche
+la plage observee et les proportions parmi ce cote, toutes les mauvaises mesures
+et toutes les comparables. Sur une seule reference, verifier d'abord sa fiche
+BdD et sa presentation ; les causes restent des hypotheses a confirmer.
 La longueur principale utilise exclusivement **T4C**, avec sa ligne source.
 T4T et `diffT4` restent des complements distincts ; une T4C absente n'est jamais
 remplacee par T4T. Les vraies UNKNOWN, les identifications non confirmees et les

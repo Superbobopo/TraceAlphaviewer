@@ -52,7 +52,7 @@ def main():
             assert path.is_file(), f'Fichier absent : {link}'
     assert not re.search(r'@import|https?://|url\(', html), 'Dependance externe dans le guide'
     metadata = json.loads((DIRECTORY / 'assets' / 'captures.json').read_text(encoding='utf-8'))
-    assert len(metadata) == 13, 'Treize captures sont attendues'
+    assert len(metadata) == 14, 'Quatorze captures sont attendues'
     for name, size in metadata.items():
         data = (DIRECTORY / 'assets' / f'{name}.png').read_bytes()
         assert data[:8] == b'\x89PNG\r\n\x1a\n', f'PNG invalide : {name}'
@@ -65,7 +65,7 @@ def main():
     pages = len(re.findall(rb'/Type\s*/Page\b', pdf))
     assert pages == 22, f'Pagination inattendue : {pages} pages, controle visuel requis'
     assert b'/Subtype /Link' in pdf, 'Les liens du PDF sont absents'
-    print(f'Manuel utilisateur : {parser.sections} sections, 13 captures, {pages} pages PDF, liens locaux valides')
+    print(f'Manuel utilisateur : {parser.sections} sections, {len(metadata)} captures, {pages} pages PDF, liens locaux valides')
 
 
 if __name__ == '__main__':

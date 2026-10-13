@@ -22,24 +22,87 @@ def _stats(samples, index):
             'worst_over': max((v for v in values if v > DIMENSION_TOLERANCE_MM), default=None)}
 
 
-def _interpretation(name, total, bias):
+def _repeated_offsets(samples, anomalies, index, name):
+    result = {}
+    for side, sign in (('under', -1), ('over', 1)):
+        selected = [s for s in anomalies if s['deltas'][index] * sign > 0]
+        groups = {}
+        for sample in selected:
+            groups.setdefault(sample['deltas'][index], []).append(sample)
+        frequencies = [{'delta': delta, 'count': len(items),
+                        'references': len({s['barcode'] for s in items})}
+                       for delta, items in groups.items()]
+        frequencies.sort(key=lambda item: (-item['count'], abs(item['delta']), item['delta']))
+        center = median(s['deltas'][index] for s in selected) if selected else None
+        close = [s for s in selected if abs(s['deltas'][index] - center) <= 1]
+        cluster = None
+        if close:
+            references = len({s['barcode'] for s in close})
+            similar = len(selected) >= 10 and len(close) / len(selected) >= .8
+            advice = ''
+            if similar:
+                if references < 2:
+                    advice = 'Vérifier en premier la fiche BdD et la présentation de cette référence ; piste à confirmer.'
+                else:
+                    controls = {'length': 'de T4/C6', 'width': 'de T5/C9', 'height': 'de LzB'}[name]
+                    advice = ('Ces mesures présentent souvent un décalage similaire : vérifier le paramétrage '
+                              f'et le réglage/calibrage {controls}. Piste à confirmer.')
+                    if name == 'length':
+                        advice += ' Vérifier aussi une éventuelle intervention mécanique sans nouveau paramétrage.'
+            cluster = {'median': center, 'min_signed': min(s['deltas'][index] for s in close),
+                       'max_signed': max(s['deltas'][index] for s in close), 'count': len(close),
+                       'references': references, 'similar': similar, 'advice': advice,
+                       'percent_side': 100 * len(close) / len(selected),
+                       'percent_bad': 100 * len(close) / len(anomalies),
+                       'percent_all': 100 * len(close) / len(samples)}
+        result[side] = {'count': len(selected), 'frequencies': frequencies, 'cluster': cluster}
+    return result
+
+
+def repeated_offset_lines(axis, limit=5):
+    lines = []
+    signed = lambda value: f'{value:+.1f}'.replace('.', ',')
+    percent = lambda value: f'{value:.1f}'.replace('.', ',')
+    for side, label in (('under', 'En moins'), ('over', 'En trop')):
+        item = axis.get('recurrence', {}).get(side, {})
+        frequencies = item.get('frequencies', [])
+        if not frequencies:
+            continue
+        frequent = '; '.join(f"{row['count']} {'boîte' if row['count'] == 1 else 'boîtes'} "
+                             f"à {signed(row['delta'])} mm" for row in frequencies[:limit])
+        lines.append(f'{label} — écarts les plus fréquents : {frequent}.')
+        cluster = item['cluster']
+        if cluster and cluster['similar']:
+            lines.append(f"Écarts répétés similaires {label.lower()} : de {signed(cluster['min_signed'])} "
+                         f"à {signed(cluster['max_signed'])} mm, autour de {signed(cluster['median'])} mm. "
+                         f"{cluster['count']} boîtes, {cluster['references']} références ; "
+                         f"{percent(cluster['percent_side'])} % des mauvaises mesures de ce côté, "
+                         f"{percent(cluster['percent_bad'])} % de toutes les mauvaises mesures, "
+                         f"{percent(cluster['percent_all'])} % des mesures comparables.")
+            lines.append(cluster['advice'])
+        elif item['count'] < 10:
+            lines.append(f'{label} : moins de 10 mauvaises mesures ; effectif insuffisant pour qualifier la répétition.')
+    return lines
+
+
+def _interpretation(name, total, recurrence):
     if not total['count']:
         return ['Aucune mesure comparable pour proposer une piste.']
-    if bias:
-        return [bias['advice']]
     if not total['under_count'] and not total['over_count']:
         return []
     lines = []
-    if total['count'] < 10:
-        lines.append('Moins de 10 boites comparables : echantillon insuffisant pour qualifier la tendance.')
-    elif total['under_count'] or total['over_count']:
-        lines.append('Les ecarts varient : aucun decalage regulier detecte avec le critere retenu.')
+    residual = {}
+    for side in ('under', 'over'):
+        cluster = recurrence[side]['cluster']
+        residual[side] = recurrence[side]['count'] - (cluster['count'] if cluster and cluster['similar'] else 0)
     if name == 'length':
-        if total['under_count']:
-            lines.append('Mesures trop courtes : verifier un possible patinage du moteur, du rouleau moteur et l\'entrainement T4.')
-        if total['over_count']:
-            lines.append('Mesures trop longues : verifier le positionnement de C6 et une detection parasite perturbant la mesure.')
-    elif total['under_count'] or total['over_count']:
+        if residual['under']:
+            lines.append(f"Autres ecarts en moins ({residual['under']} boites) : verifier un possible patinage "
+                         "du moteur, du rouleau moteur et l'entrainement T4.")
+        if residual['over']:
+            lines.append(f"Autres ecarts en trop ({residual['over']} boites) : verifier le positionnement de C6 "
+                         'et une detection parasite perturbant la mesure.')
+    elif residual['under'] or residual['over']:
         lines.append('Verifier C9 et le mouvement T5.' if name == 'width' else 'Verifier LzB et son parametrage.')
     return lines
 
@@ -69,8 +132,11 @@ def summarize(samples, excluded=None):
                               else 'Verifier le reglage/calibrage et les references BdD ; piste a confirmer sur le terrain.')
                 bias = {'median': center, 'count': len(cluster), 'percent': 100 * len(cluster) / len(samples),
                         'references': references, 'advice': advice}
+        recurrence = _repeated_offsets(samples, anomalies, index, name)
         axes[name] = {'label': label, 'all': total, 'anomalies': _stats(anomalies, index), 'bias': bias,
-                      'interpretation': _interpretation(name, total, bias)}
+                      'recurrence': recurrence, 'recurrence_lines': [],
+                      'interpretation': _interpretation(name, total, recurrence)}
+        axes[name]['recurrence_lines'] = repeated_offset_lines(axes[name])
     outside = sum(any(abs(v) > DIMENSION_TOLERANCE_MM for v in s['deltas']) for s in samples)
     return {'axes': axes, 'excluded': dict(excluded or {}), 'comparable_count': len(samples),
             'cycle_count': len(samples) + sum((excluded or {}).values()),
@@ -284,6 +350,7 @@ def summary_text(summary, names=None):
                      f"mauvaises mesures : {all_stats['outside_count']}/{all_stats['count']} ({all_stats['outside_percent']:.1f} %). "
                      f"{all_stats['references']} reference(s).")
         lines.append(f"  Trop petites : {all_stats['under_count']} ; trop grandes : {all_stats['over_count']}.")
+        lines.extend('  ' + text for text in axis.get('recurrence_lines', []))
         for key, title in (('anomalies', 'Mauvaises mesures'), ('all', 'Toutes les mesures comparables')):
             stats = axis[key]
             if not stats['count']:
@@ -301,13 +368,13 @@ def summary_text(summary, names=None):
             lines.append(f"  Decalage moyen : {signed:+.1f} mm" +
                          (f" ({abs(signed):.1f} mm {direction[signed > 0]})" if signed else ' (sans biais moyen)'))
         lines.append(f"  Hors tolerance : {axis['all']['outside_count']} ({axis['all']['outside_percent']:.1f} %).")
-        if axis['bias']:
+        similar = any(item.get('cluster') and item['cluster']['similar'] for item in axis.get('recurrence', {}).values())
+        if axis['bias'] and not similar:
             bias = axis['bias']
             lines.append(f"  Decalage regulier autour de {bias['median']:+.1f} mm : {bias['percent']:.1f} %, "
                          f"{bias['count']} boites / {bias['references']} references. {bias['advice']}")
         for explanation in axis.get('interpretation', []):
-            if not axis['bias']:
-                lines.append('  Piste a verifier : ' + explanation)
+            lines.append('  Piste a verifier : ' + explanation)
     exclusions = [f'{EXCLUSION_LABELS[k]} : {v}' for k, v in summary.get('excluded', {}).items() if v]
     if exclusions:
         lines.append('Exclus du bilan de reglage : ' + ', '.join(exclusions) + '.')

@@ -40,7 +40,86 @@ def samples(count=35, delta=5):
     return frames
 
 
+def recurring_samples():
+    frames = samples(100, 0)
+    for i, (frame, delta) in enumerate(zip(frames, [-4] * 12 + [-5] * 6 + [-20] * 2 + [0] * 80)):
+        frame.boxes_on_T5[0].measured_t4_length_mm += delta
+        frame.timestamp_str = f'09:{i // 60:02d}:{i % 60:02d}'
+        frame.raw_lines = [(frame.line_num,f'DONNEES FICTIVES boite {i} T4C={100+delta} mm BdD=100 mm')]
+    return frames
+
+
 class MeasurementTests(unittest.TestCase):
+    def test_repeated_offsets_with_good_measures_extremes_and_worker_payload(self):
+        frames = recurring_samples()
+        analysis = analyze_measurements(frames)
+        axis = analysis['summary']['axes']['length']
+        self.assertIsNone(axis['bias'])
+        below = axis['recurrence']['under']
+        self.assertEqual([(v['delta'],v['count']) for v in below['frequencies']], [(-4,12),(-5,6),(-20,2)])
+        group = below['cluster']
+        self.assertEqual((group['median'],group['min_signed'],group['max_signed'],group['count']),(-4,-5,-4,18))
+        self.assertEqual((group['percent_side'],group['percent_bad'],group['percent_all']),(90,90,18))
+        self.assertEqual(group['references'],2)
+        self.assertTrue(group['similar'])
+        self.assertIn('paramétrage',group['advice'])
+        self.assertIn('T4/C6',group['advice'])
+        self.assertIn('2 boites',' '.join(axis['interpretation']))
+        text = summary_text(analysis['summary'])
+        for expected in ('12 boîtes à -4,0 mm','6 boîtes à -5,0 mm','18 boîtes, 2 références','90,0 %','18,0 %'):
+            self.assertIn(expected,text)
+        self.assertNotIn('aucun decalage regulier',text)
+        payload = build_report_payload(build_diagnostics(frames,[]),frames)
+        self.assertEqual(payload['measurements'],analysis['summary'])
+        self.assertEqual(payload['groups'][0]['measurement_stats'],analysis['summary'])
+        import customtkinter as ctk
+        from Widgets.diagnostic_panel import DiagnosticPanel
+        root = ctk.CTk()
+        root.withdraw()
+        try:
+            panel = DiagnosticPanel(root,build_diagnostics(frames,[]),frames)
+            self.assertIn('12 boîtes à -4,0 mm',panel._details.get('1.0','end'))
+            panel._show_details(build_diagnostics(frames,[])[0])
+            self.assertIn('18 boîtes, 2 références',panel._details.get('1.0','end'))
+            panel.destroy()
+        finally:
+            for job in root.tk.call('after','info'):
+                root.tk.call('after','cancel',job)
+            root.destroy()
+
+    def test_repeated_offsets_both_signs_one_reference_and_small_sides(self):
+        frames = samples(40,0)
+        for frame,delta in zip(frames,[-4]*12+[5]*12+[0]*16):
+            frame.boxes_on_T5[0].measured_t4_length_mm += delta
+        axis = analyze_measurements(frames)['summary']['axes']['length']
+        self.assertIsNone(axis['bias'])
+        for side,center in (('under',-4),('over',5)):
+            group = axis['recurrence'][side]['cluster']
+            self.assertTrue(group['similar'])
+            self.assertEqual((group['median'],group['count'],group['percent_bad'],group['percent_all']),(center,12,50,30))
+        self.assertEqual(axis['all']['mean_signed'],.3)
+        frames = recurring_samples()
+        for frame in frames:
+            box = frame.boxes_on_T5[0]
+            box.barcode = box.identified_barcode = box.bdd_reference = 'UNE-REFERENCE'
+        advice = analyze_measurements(frames)['summary']['axes']['length']['recurrence']['under']['cluster']['advice']
+        self.assertIn('fiche BdD',advice)
+        for negative,near,similar in ((9,9,False),(10,8,True),(10,7,False)):
+            frames = samples(30,0)
+            for i,frame in enumerate(frames[:negative]):
+                frame.boxes_on_T5[0].measured_t4_length_mm += -4 if i < near else -10
+            axis = analyze_measurements(frames)['summary']['axes']['length']
+            self.assertEqual(axis['recurrence']['under']['cluster']['similar'],similar)
+            if negative < 10:
+                self.assertIn('effectif insuffisant',' '.join(axis['recurrence_lines']))
+        for field,name in (('measured_t5_width_mm','width'),('measured_t5_height_mm','height')):
+            frames = samples(15,0)
+            for frame in frames:
+                setattr(frame.boxes_on_T5[0],field,getattr(frame.boxes_on_T5[0],field)+5)
+            axis = analyze_measurements(frames)['summary']['axes'][name]
+            self.assertTrue(axis['recurrence']['over']['cluster']['similar'])
+            self.assertNotIn('T4/C6',axis['recurrence']['over']['cluster']['advice'])
+
     def test_unknown_reidentification_dinh_conflicts_and_missing_t4c(self):
         frames = samples(6,-5)
         boxes = [f.boxes_on_T5[0] for f in frames]

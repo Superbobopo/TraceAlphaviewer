@@ -255,6 +255,21 @@ def captures():
         if not (assets / 'rapport.png').exists():
             raise RuntimeError('La capture du rapport est absente')
         metadata['rapport'] = {'width': 1440, 'height': 850}
+        from Tools.validate_measurement_report import recurring_samples
+        from Models.diagnostic import build_diagnostics
+        from playwright.sync_api import sync_playwright
+        recurring = recurring_samples()
+        example = write_diagnostic_report(build_diagnostics(recurring,[]),
+            output_dir=session.directory / 'recurrence',frames=recurring,source_name='DECALAGES FICTIFS')
+        with sync_playwright() as playwright:
+            preview = playwright.chromium.launch(channel='msedge',headless=True)
+            page = preview.new_page(viewport={'width':1440,'height':1080})
+            page.goto(example.as_uri())
+            page.locator('details[data-group] > summary .group-recurrence').first.screenshot(path=str(assets/'decalages.png'))
+            preview.close()
+        from PIL import Image
+        with Image.open(assets/'decalages.png') as picture:
+            metadata['decalages'] = {'width':picture.width,'height':picture.height}
         other_path = session.directory / 'Demonstration - autre jour.old'
         other_path.write_text(path.read_text(encoding='latin-1'), encoding='latin-1')
         entries = [TraceReportEntry(str(path), path.name, frames=frames, events=events,
