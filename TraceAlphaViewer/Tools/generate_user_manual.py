@@ -76,6 +76,7 @@ def demonstration(directory):
         box = BoxInfo(barcode=barcode, name=name, id_b=100 + cycle,
             identified_barcode=barcode if cycle < 3 else '', identified_name=name if cycle < 3 else '',
             identity_line=len(frames)+1 if cycle < 3 else 0, identity_source='CB2',
+            camera_identity_line=len(frames)+1 if cycle < 3 else 0, camera_identity_source='CB2',
             bdd_reference=barcode if cycle < 3 else '', bdd_source_line=len(frames)+1,
             measured_t4_line=len(frames)+1, measured_t5_line=len(frames)+1, measured_height_line=len(frames)+1,
             length_mm=70, width_mm=40, height_mm=25,
@@ -258,7 +259,7 @@ def captures():
         from Tools.validate_measurement_report import product_samples
         from Models.diagnostic import build_diagnostics
         from playwright.sync_api import sync_playwright
-        recurring = product_samples([('FICTIF-A',[-4]*6+[-5]*4+[-3]*3),
+        recurring = product_samples([('FICTIF-A',[-4]*6+[-5]*4+[-3]*3+[-8,10]),
                                      ('FICTIF-B',[-4]*6+[-5]*4+[-3]*3),
                                      ('FICTIF-C',[0]*9)])
         example = write_diagnostic_report(build_diagnostics(recurring,[]),
@@ -266,12 +267,28 @@ def captures():
         with sync_playwright() as playwright:
             preview = playwright.chromium.launch(channel='msedge',headless=True)
             page = preview.new_page(viewport={'width':1440,'height':1080})
+            page.goto(report.as_uri())
+            page.locator('.priority-grid').screenshot(path=str(assets/'priorites.png'))
             page.goto(example.as_uri())
-            page.locator('details[data-group] > summary .group-recurrence').first.screenshot(path=str(assets/'decalages.png'))
+            page.locator('.axis-grid').screenshot(path=str(assets/'decalages.png'))
             preview.close()
         from PIL import Image
+        with Image.open(assets/'priorites.png') as picture:
+            metadata['priorites'] = {'width':picture.width,'height':picture.height}
         with Image.open(assets/'decalages.png') as picture:
             metadata['decalages'] = {'width':picture.width,'height':picture.height}
+        from Tools.validate_measurement_report import orientation_samples
+        rotated = orientation_samples()
+        orientation_report = write_diagnostic_report(build_diagnostics(rotated,[]),
+            output_dir=session.directory/'orientations',frames=rotated,source_name='ORIENTATIONS FICTIVES')
+        with sync_playwright() as playwright:
+            preview = playwright.chromium.launch(channel='msedge',headless=True)
+            page = preview.new_page(viewport={'width':1440,'height':1080})
+            page.goto(orientation_report.as_uri())
+            page.locator('.orientations').screenshot(path=str(assets/'orientations.png'))
+            preview.close()
+        with Image.open(assets/'orientations.png') as picture:
+            metadata['orientations'] = {'width':picture.width,'height':picture.height}
         other_path = session.directory / 'Demonstration - autre jour.old'
         other_path.write_text(path.read_text(encoding='latin-1'), encoding='latin-1')
         entries = [TraceReportEntry(str(path), path.name, frames=frames, events=events,

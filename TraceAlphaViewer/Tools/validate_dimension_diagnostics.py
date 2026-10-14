@@ -19,17 +19,22 @@ def _check(condition: bool, message: str) -> None:
 def _check_rules() -> None:
     expected = (76, 62, 110)
     _check(_dimension_finding_code((76, 62, 110), expected) == "", "cas nominal refuse")
-    _check(_dimension_finding_code((79, 65, 113), expected) == "", "tolerance 3 mm refusee")
+    _check(_dimension_finding_code((78, 64, 112), expected) == "", "ecart 2 mm refuse")
+    _check(_dimension_finding_code((79, 64, 113), expected) == "", "longueur/largeur 3 mm non conformes")
+    _check(_dimension_finding_code((76, 65, 110), expected) == "T5_HEIGHT", "alerte hauteur +3 mm absente")
+    _check(_dimension_finding_code((76, 59, 110), expected) == "T5_HEIGHT", "alerte hauteur -3 mm absente")
     _check(_dimension_finding_code((110, 76, 62), expected) == "ORIENTATION", "orientation non detectee")
     _check(_dimension_finding_code((76, 62, 115), expected) == "T4_LENGTH", "defaut T4 non detecte")
     _check(_dimension_finding_code((76, 66, 110), expected) == "T5_HEIGHT", "defaut hauteur non detecte")
     _check(_dimension_finding_code((82, 62, 110), expected) == "T5_WIDTH", "defaut largeur non detecte")
-    _check(_dimension_finding_code((133, 62, 78), expected) == "GLOBAL", "incoherence globale non detectee")
+    _check(_dimension_finding_code((82, 62, 115), expected) == "GLOBAL", "incoherence globale non detectee")
+    _check(_dimension_finding_code((133, 62, 78), expected) == "ORIENTATION", "orientation probable non exclue")
 
 
 def _status_for(measured: tuple[int, int, int], expected: tuple[int, int, int]) -> str:
     box = BoxInfo(
         barcode='DEMO', identified_barcode='DEMO', identity_line=1, identity_source='CB2',
+        camera_identity_line=1, camera_identity_source='CB2',
         bdd_reference='DEMO', bdd_source_line=1, measured_t4_line=1,
         bdd_width_mm=expected[0],
         bdd_height_mm=expected[1],
@@ -46,7 +51,7 @@ def _check_statuses() -> None:
     expected = (76, 62, 110)
     _check(_status_for((76, 62, 110), expected) == "ok", "statut ok absent")
     _check(_status_for((110, 76, 62), expected) == "orientation", "statut orientation absent")
-    _check(_status_for((133, 62, 78), expected) == "multiple", "statut multiple absent")
+    _check(_status_for((82, 62, 115), expected) == "multiple", "statut multiple absent")
 
 
 def _check_routes_trace() -> None:

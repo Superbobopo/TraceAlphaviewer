@@ -7,6 +7,7 @@ import mimetypes
 import secrets
 import threading
 from urllib.parse import urlsplit, unquote
+from Models.measurement_navigation import measurement_display_target
 
 
 class ReportBridge:
@@ -90,11 +91,16 @@ class ReportBridge:
                     target = report['examples'][request['sample_id']]
                     if request.get('axis') is not None:
                         axis = request['axis']
-                        line = target.get('sample', {}).get('sources', {})[axis]
-                        if axis not in ('length', 'width', 'height') or not line:
+                        if axis not in ('length', 'width', 'height') or not target.get('sample'):
                             raise ValueError('Axe inconnu.')
-                        target = dict(target, line=line, axis=axis)
-                except (ValueError, KeyError, TypeError):
+                        target = dict(target, axis=axis)
+                    if target.get('sample'):
+                        index, line = measurement_display_target(target['sample'])
+                        target = dict(target, frame_index=index, line=line)
+                except ValueError as exc:
+                    self.reply(400, {'error': str(exc) or 'Exemple inconnu.'})
+                    return
+                except (KeyError, TypeError):
                     self.reply(400, {'error': 'Exemple inconnu.'})
                     return
                 complete = threading.Event()
@@ -133,6 +139,8 @@ class ReportBridge:
             for sample in group.get('examples', []):
                 examples[sample['id']] = {'line': sample['line'], 'code': group['code'],
                                           'first_line': group['first_line']}
+                if group['code'] in ('T4_LENGTH', 'T5_WIDTH', 'T5_HEIGHT', 'GLOBAL', 'ORIENTATION'):
+                    examples[sample['id']]['sample'] = sample
         for sample in payload.get('measurement_examples', []):
             examples[sample['id']] = {'line': sample['line'], 'code': sample['code'],
                                       'first_line': sample['incident_line'], 'sample': sample}

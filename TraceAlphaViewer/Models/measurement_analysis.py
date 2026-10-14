@@ -2,7 +2,8 @@
 from collections import Counter
 from statistics import mean, median
 
-from Models.dimension_check import DIMENSION_TOLERANCE_MM, dimension_finding_code
+from Models.dimension_check import (DIMENSION_TOLERANCE_MM, DIMENSION_TOLERANCES_MM,
+    dimension_tolerance, dimension_finding_code, measurement_orientation, best_orientation_dimensions)
 from Models.measurement_identity import measurement_exclusion, EXCLUSION_LABELS
 
 AXES = (('length', 'Longueur T4/C6 (T4C)', 2), ('width', 'Largeur T5/C9', 0),
@@ -16,10 +17,10 @@ def _stats(samples, index):
             'min_abs': min(errors) if errors else None, 'max_abs': max(errors) if errors else None,
             'mean_abs': mean(errors) if errors else None, 'mean_signed': mean(values) if values else None,
             'min_signed': min(values) if values else None, 'max_signed': max(values) if values else None,
-            'under_count': sum(v < -DIMENSION_TOLERANCE_MM for v in values),
-            'over_count': sum(v > DIMENSION_TOLERANCE_MM for v in values),
-            'worst_under': min((v for v in values if v < -DIMENSION_TOLERANCE_MM), default=None),
-            'worst_over': max((v for v in values if v > DIMENSION_TOLERANCE_MM), default=None)}
+            'under_count': sum(v < -dimension_tolerance(index) for v in values),
+            'over_count': sum(v > dimension_tolerance(index) for v in values),
+            'worst_under': min((v for v in values if v < -dimension_tolerance(index)), default=None),
+            'worst_over': max((v for v in values if v > dimension_tolerance(index)), default=None)}
 
 
 def _frequencies(samples, index):
@@ -61,8 +62,8 @@ def _product_rows(groups, index):
                      'window_count': best[0], 'window_percent': 100 * best[0] / total,
                      'window_min': best[1], 'window_max': best[2],
                      'dispersed': best[0] / total < .8 and values[-1] - values[0] > 2,
-                     'under_count': sum(v < -DIMENSION_TOLERANCE_MM for v in values),
-                     'over_count': sum(v > DIMENSION_TOLERANCE_MM for v in values),
+                     'under_count': sum(v < -dimension_tolerance(index) for v in values),
+                     'over_count': sum(v > dimension_tolerance(index) for v in values),
                      'samples': samples})
     return sorted(rows, key=lambda row: (-row['total'], row['barcode'], row['expected']))
 
@@ -98,7 +99,7 @@ def _repeated_offsets(samples, anomalies, index, name, products):
         frequencies = _frequencies(selected, index)
         center = frequencies[0]['delta'] if frequencies else None
         close = [s for s in samples if abs(s['deltas'][index] - center) <= 1] if center is not None else []
-        bad = [s for s in close if abs(s['deltas'][index]) > DIMENSION_TOLERANCE_MM]
+        bad = [s for s in close if abs(s['deltas'][index]) > dimension_tolerance(index)]
         cluster = None
         if close:
             references = len({s['barcode'] for s in close})
@@ -206,7 +207,7 @@ def _analyze_comparable(samples, excluded=None):
     groups = _product_groups(samples)
     products_by_axis = {}
     for name, label, index in AXES:
-        anomalies = [s for s in samples if abs(s['deltas'][index]) > DIMENSION_TOLERANCE_MM]
+        anomalies = [s for s in samples if abs(s['deltas'][index]) > dimension_tolerance(index)]
         total = _stats(samples, index)
         total['outside_count'] = len(anomalies)
         total['outside_percent'] = 100 * len(anomalies) / len(samples) if samples else 0
@@ -243,19 +244,20 @@ def _analyze_comparable(samples, excluded=None):
             cluster = [s for s in samples if abs(s['deltas'][index] - center) <= 1]
             if center and len(cluster) / len(samples) >= .8:
                 references = len({s['barcode'] for s in cluster if s['barcode']})
-                if abs(center) <= DIMENSION_TOLERANCE_MM:
+                if abs(center) <= dimension_tolerance(index):
                     advice = 'Decalage regulier observe, restant dans la tolerance.'
                 else:
                     confirmed = {r['barcode'] for r in products if _close_product(r, center, index)['repeated']}
                     advice = _repetition_advice(name, len(confirmed)) or 'Concentration observée sur la trace ; répétition par produit non confirmée.'
                 bias = {'median': center, 'count': len(cluster), 'percent': 100 * len(cluster) / len(samples),
                         'references': references, 'advice': advice}
-        axes[name] = {'label': label, 'all': total, 'anomalies': _stats(anomalies, index), 'bias': bias,
+        axes[name] = {'label': label, 'tolerance_mm': dimension_tolerance(name),
+                      'all': total, 'anomalies': _stats(anomalies, index), 'bias': bias,
                       'recurrence': recurrence, 'recurrence_lines': [], 'frequencies': _frequencies(samples, index),
                       'product_observations': observations,
                       'interpretation': _interpretation(name, total, observations)}
         axes[name]['recurrence_lines'] = repeated_offset_lines(axes[name])
-    outside = sum(any(abs(v) > DIMENSION_TOLERANCE_MM for v in s['deltas']) for s in samples)
+    outside = sum(any(abs(v) > dimension_tolerance(i) for i, v in enumerate(s['deltas'])) for s in samples)
     summary = {'axes': axes, 'excluded': dict(excluded or {}), 'comparable_count': len(samples),
             'cycle_count': len(samples) + sum((excluded or {}).values()),
             'excluded_count': sum((excluded or {}).values()),
@@ -263,7 +265,7 @@ def _analyze_comparable(samples, excluded=None):
                        'count': len(samples), 'references': len({s['barcode'] for s in samples if s['barcode']}),
                        'within_percent': 100 * (len(samples) - outside) / len(samples) if samples else 0,
                        'outside_percent': 100 * outside / len(samples) if samples else 0},
-            'tolerance_mm': DIMENSION_TOLERANCE_MM}
+            'tolerance_mm': DIMENSION_TOLERANCE_MM, 'tolerances_mm': dict(DIMENSION_TOLERANCES_MM)}
     return summary, products_by_axis
 
 
@@ -279,7 +281,7 @@ def analyze_measurements(frames):
     serial = 0
     ambiguous_previous = Counter()
     ambiguous_count = 0
-    for frame in frames:
+    for frame_index, frame in enumerate(frames):
         boxes = frame.boxes_on_T5
         barcode_counts = Counter(b.barcode or b.source_ref for b in boxes)
         counts = Counter(('A', b.id_alpha) if b.id_alpha else ('B', b.id_b) if b.id_b
@@ -341,7 +343,8 @@ def analyze_measurements(frames):
                 continue
             signature = (tuple(expected), tuple(measured), item['c9_error'], box.identified_barcode,
                          box.measured_t4t_length_mm, box.measured_t4_diff_mm, box.measured_t4_line,
-                         box.measured_t5_line, box.bdd_source_line)
+                         box.measured_t5_line, box.measured_height_line, box.bdd_source_line,
+                         box.camera_identity_line, box.camera_identity_source)
             if signature == item['signature']:
                 item['last'].update(current_reference=box.barcode, source_ref=box.source_ref,
                     name=box.identified_name or box.name, rejected_dimensions='[DINH]' in box.barcode.upper(),
@@ -352,20 +355,24 @@ def analyze_measurements(frames):
             if item['last'] is not None:
                 item['last']['final'] = False
             observation = {'cycle': key, 'line': max(box.measured_t5_line, box.measured_t4_line, box.measured_height_line), 'time': frame.timestamp,
+                'display_frame_index': frame_index, 'display_line': frame.line_num,
+                'display_time_str': frame.timestamp_str,
                 'time_str': frame.timestamp_str, 'box': f'IdA:{box.id_alpha}' if box.id_alpha else f'idB:{box.id_b}' if box.id_b else box.barcode,
                 'barcode': box.identified_barcode, 'name': box.identified_name or box.name,
                 'id_alpha': box.id_alpha, 'id_b': box.id_b,
                 'identity_source': box.identity_source,
+                'camera_identity_source': box.camera_identity_source,
                 'current_reference': box.barcode, 'source_ref': box.source_ref,
                 'rejected_dimensions': '[DINH]' in box.barcode.upper(),
                 't4c': box.measured_t4_length_mm, 't4t': box.measured_t4t_length_mm,
                 'diff_t4': box.measured_t4_diff_mm,
                 'sources': {'length': box.measured_t4_line, 'width': box.measured_t5_line,
                             'height': box.measured_height_line, 'bdd': box.bdd_source_line,
-                            'identity': box.identity_line},
-                'expected': expected, 'measured': measured,
+                            'identity': box.camera_identity_line},
+                'expected': expected, 'measured': measured, 'tolerances_mm': dict(DIMENSION_TOLERANCES_MM),
                 'deltas': [m - e for m, e in zip(measured, expected)],
                 'code': dimension_finding_code(tuple(measured), tuple(expected)),
+                'orientation_state': measurement_orientation(tuple(measured), tuple(expected)),
                 'invalid': item['c9_error'], 'final': True}
             item['last'] = observation
             samples.append(observation)
@@ -384,7 +391,7 @@ def analyze_measurements(frames):
         elif last is None:
             excluded[item['missing']] += 1
         elif last['code'] == 'ORIENTATION':
-            excluded['orientation'] += 1
+            excluded[last['orientation_state']] += 1
             finals.append(last)
         else:
             comparable.append(last)
@@ -392,7 +399,34 @@ def analyze_measurements(frames):
     summary, products = _analyze_comparable(comparable, excluded)
     summary['cycle_count'] = serial + ambiguous_count
     return {'summary': summary, 'samples': samples, 'finals': finals,
-            'references': build_reference_lists(comparable, products, summary)}
+            'references': build_reference_lists(comparable, products, summary),
+            'orientation_references': build_orientation_lists(finals)}
+
+
+def build_orientation_lists(finals):
+    """Denominateurs par produit avant exclusion des orientations, une mesure par cycle."""
+    eligible = [sample for sample in finals if sample.get('final', True) and not sample.get('invalid')
+                and all(sample.get('sources', {}).get(axis, 0) > 0 for axis, _, _ in AXES)]
+    totals = Counter(sample['barcode'] for sample in eligible)
+    variants = {}
+    for sample in eligible:
+        variants.setdefault(sample['barcode'], set()).add(tuple(sample['expected']))
+    result = {}
+    for kind, state in (('probable', 'orientation'), ('uncertain', 'orientation_uncertain')):
+        groups = {}
+        for sample in eligible:
+            if sample.get('orientation_state') == state:
+                proof = dict(sample, orientation_matches=best_orientation_dimensions(sample['measured'], sample['expected']))
+                groups.setdefault(sample['barcode'], []).append(proof)
+        rows = []
+        for barcode, proofs in groups.items():
+            proofs.sort(key=lambda sample: (sample['display_frame_index'], sample['display_line'], sample['cycle']))
+            count, total = len(proofs), totals[barcode]
+            rows.append({'barcode': barcode, 'name': proofs[0].get('name', ''), 'count': count,
+                         'total': total, 'percent': 100 * count / total, 'samples': proofs,
+                         'variant_count': len(variants[barcode])})
+        result[kind] = sorted(rows, key=lambda row: (-row['count'], -row['percent'], row['barcode']))
+    return result
 
 
 def build_reference_lists(samples, products=None, summary=None):
@@ -407,7 +441,7 @@ def build_reference_lists(samples, products=None, summary=None):
         sides = {'under': {}, 'over': {}}
         for sample in samples:
             delta = sample['deltas'][index]
-            side = 'under' if delta < -DIMENSION_TOLERANCE_MM else 'over' if delta > DIMENSION_TOLERANCE_MM else ''
+            side = 'under' if delta < -dimension_tolerance(index) else 'over' if delta > dimension_tolerance(index) else ''
             if side:
                 sides[side].setdefault(sample['barcode'], []).append(sample)
         result[name] = {}
@@ -416,7 +450,8 @@ def build_reference_lists(samples, products=None, summary=None):
             for barcode, proofs in groups.items():
                 stats = _stats(proofs, index)
                 worst = stats['min_signed'] if side == 'under' else stats['max_signed']
-                proofs = sorted(proofs, key=lambda s: (-abs(s['deltas'][index]), s['line']))
+                proofs = sorted(proofs, key=lambda s: (-abs(s['deltas'][index]),
+                                s['sources'].get(name) or float('inf'), s['cycle']))
                 product_rows = by_barcode[barcode]
                 center = summary['axes'][name]['recurrence'][side]['cluster']['center']
                 observations = [_close_product(row, center, index) for row in product_rows]
@@ -478,8 +513,8 @@ def representative_samples(samples, limit=3, code=None):
     values = lambda s: [s['deltas'][i] for i in indexes if i < len(s.get('deltas', []))]
     score = lambda s: max((abs(v) for v in values(s)), default=0)
     center = median(score(s) for s in ordered)
-    below = [s for s in ordered if any(v < -DIMENSION_TOLERANCE_MM for v in values(s))]
-    above = [s for s in ordered if any(v > DIMENSION_TOLERANCE_MM for v in values(s))]
+    below = [s for s in ordered if any(s['deltas'][i] < -dimension_tolerance(i) for i in indexes if i < len(s.get('deltas', [])))]
+    above = [s for s in ordered if any(s['deltas'][i] > dimension_tolerance(i) for i in indexes if i < len(s.get('deltas', [])))]
     candidates = []
     if below:
         candidates.append(min(below, key=lambda s: min(values(s))))
@@ -506,7 +541,7 @@ def summary_text(summary, names=None):
     for name, axis in summary.get('axes', {}).items():
         if names is not None and name not in names:
             continue
-        lines.append(axis['label'])
+        lines.append(axis['label'] + f" — A verifier : ecart absolu > {axis.get('tolerance_mm', summary.get('tolerance_mm', 3))} mm.")
         all_stats = axis['all']
         lines.append(f"  Bonnes mesures : {all_stats['within_count']}/{all_stats['count']} ({all_stats['within_percent']:.1f} %) ; "
                      f"mauvaises mesures : {all_stats['outside_count']}/{all_stats['count']} ({all_stats['outside_percent']:.1f} %). "

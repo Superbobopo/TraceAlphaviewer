@@ -33,6 +33,7 @@ from Models.diagnostic import DiagnosticIncident, build_diagnostics
 from Models.reference_index import ReferenceRecord, build_reference_records
 from Models.state import MachineEvent, MachineState
 from Models.frame_store import FrameStore
+from Models.measurement_navigation import measurement_display_target, measurement_box_in_frame
 from Views.BaseView import BaseView
 from Widgets.diagnostic_panel import DiagnosticPanel
 from Widgets.event_panel import EventPanel
@@ -450,6 +451,7 @@ class TraceView(BaseView):
                 load_session=self._load_session,
                 on_report_open=self._open_linked_report,
                 on_measurement_click=self._on_trace_click,
+                on_measurement_sample=self._on_measurement_sample,
                 source_name=os.path.basename(self._filepath),
             )
             self._diagnostic_panel.pack(fill='both', expand=True, padx=0, pady=0)
@@ -506,6 +508,7 @@ class TraceView(BaseView):
             load_session=self._load_session,
             on_report_open=self._open_linked_report,
             on_measurement_click=self._on_trace_click,
+            on_measurement_sample=self._on_measurement_sample,
             source_name=os.path.basename(self._filepath),
         )
         self._diagnostic_panel.pack(fill='both', expand=True)
@@ -640,6 +643,15 @@ class TraceView(BaseView):
         self._reset_error_reference()
         self._go_to(idx)
 
+    def _on_measurement_sample(self, sample, axis='length'):
+        index, _ = measurement_display_target(sample)
+        if not 0 <= index < len(self._frames):
+            raise ValueError('L\'etat complet de cette mesure est indisponible.')
+        measurement_box_in_frame(self._frames[index], sample)
+        self._stop_playback()
+        self._reset_error_reference()
+        self._go_to(index)
+
     def _on_event_click(self, event: MachineEvent) -> None:
         """Callback clic sur un événement → navigation vers le frame correspondant."""
         idx = self._frame_for_file_line(event.line_num)
@@ -690,7 +702,10 @@ class TraceView(BaseView):
                     line = target['line']
                     if not self._frames or not 1 <= line <= self._frames[-1].line_num:
                         raise RuntimeError('La ligne de cet exemple est indisponible.')
-                    self._on_trace_click(line)
+                    if target.get('sample'):
+                        self._on_measurement_sample(target['sample'], target.get('axis', 'length'))
+                    else:
+                        self._on_trace_click(line)
                     self._trace_panel.highlight_lines(line, line)
                     if hasattr(self, '_analysis_tabs'):
                         self._analysis_tabs.set('Diagnostic')

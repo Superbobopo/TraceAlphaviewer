@@ -117,7 +117,8 @@ liaison locale sans recalculer les preuves. Une nouvelle trace ou des fichiers
 de rapport supprimes imposent une nouvelle generation.
 
 Les boites T5 disposent d'une legende permanente : bleu clair non evalue,
-vert conforme (+/-3 mm), orange orientation differente, violet longueur T4/C6,
+vert conforme (hauteur jusqu'a 2 mm, longueur/largeur jusqu'a 3 mm inclus), orange orientation probable
+ou indecidable, violet longueur T4/C6,
 turquoise largeur T5/C9, jaune hauteur T5/LzB, rouge plusieurs dimensions hors
 tolerance, rose largeur invalide avec C9 actif. Le survol donne les mesures,
 references et ecarts. Le graphique garde sa taille native 920 x 540, y compris
@@ -134,9 +135,54 @@ un decalage moyen +3,7 mm et une erreur moyenne 6,3 mm. Les chiffres sur toutes
 les mesures restent accessibles dans les details. Le **Bilan des mesures de la
 trace** distingue les observations, leur repetition par produit et les controles
 a envisager, sans conclure automatiquement a une cause.
-Le rapport affiche les explications et premiers controles des fiches sans clic.
-Les ecarts les plus frequents sont visibles directement, separes en moins et en
-trop. Chaque groupe est centre sur l'ecart hors tolerance le plus frequent de
+Une anomalie depasse 2 mm en hauteur et 3 mm en longueur/largeur, en valeur
+absolue. Les limites exactes restent conformes. Ces seuils partages s'appliquent
+aux couleurs, aux diagnostics et au PDF. Regenerer le rapport pour utiliser le
+nouveau seuil hauteur ; les anciens rapports gardent leurs seuils historiques. Les references sont des produits
+distincts : 28 references anormales sur 119 comparables signifie 28 produits avec
+au moins une mauvaise mesure sur cet axe, pas 28 boites. Les ecarts de signes
+opposes se compensent dans le decalage moyen ; l'erreur moyenne mesure leur
+amplitude sans signe. Une moyenne seule ne permet pas de choisir un reglage.
+
+Le bilan exige une preuve explicite de reconnaissance CB1 ou CB2 et la BdD du
+meme produit. Une recherche BdD seule, une identite contradictoire ou une mesure
+incomplete est exclue. Une UNKNOWN correctement relue reste eligible, comme
+un produit reconnu puis rejete `[Dinh]`. La rubrique **Boites dans le mauvais sens** liste toutes les references avec une
+orientation probable, sans filtre de 10 %, et separe les orientations indecidables.
+Les proportions portent sur les cycles exploitables du produit avant exclusion
+pour orientation. Un clic rejoint sa premiere boite concernee apres les trois
+mesures ; chaque boite conserve sa navigation. Les permutations les plus proches
+restent une deduction, pas une certification du sens physique.
+Le sens est estime en comparant la somme
+des ecarts absolus pour chaque permutation distincte des dimensions BdD : une
+autre presentation meilleure, ou a egalite, exclut le cycle. Les orientations
+probables et indecidables sont comptees separement ; cette estimation ne certifie
+pas le sens physique de la boite.
+
+Dans **Trop petites / Trop grandes**, cliquer sur une reference ouvre son detail
+et rejoint l'etat complet de la boite au pire ecart, apres les trois mesures.
+L'axe choisit le detail ; l'instant conserve les valeurs du rapport. A egalite,
+la premiere ligne source puis le cycle departagent les boites. Les autres boites
+restent accessibles individuellement. Sans ligne source ou sans viewer lie, la
+navigation est indisponible et le detail web reste consultable. L'identite et les
+trois valeurs sont verifiees dans cette seule frame. Un ancien rapport sans cible
+complete doit etre regenere depuis la trace.
+Le rapport commence par trois priorites maximum, avec un constat et un premier
+controle. Les diagnostics de dimensions sont critiques des 10 % des comparables
+et au moins 10 boites ; leur priorite tient compte de la proportion concernee,
+pour chaque trace et chaque axe, sans modifier les compteurs des groupes. Trois cartes Longueur/Largeur/Hauteur donnent les boites et produits
+concernes, les boutons Trop courtes/longues, etroites/larges, basses/hautes et les
+ecarts marquants des produits ayant au moins 10 % de defauts du cote choisi.
+Les autres produits restent dans Cas rares (< 10 %), avec detail et navigation ;
+toutes leurs mesures restent incluses dans les totaux et distributions.
+La repartition affiche les cinq ecarts les plus frequents sous les observations ;
+Afficher toute la repartition deroule toutes les lignes et Reduire la liste
+revient a la synthese. Les calculs et le PDF incluent toujours toutes les mesures. Moyennes et variantes
+restent dans Statistiques et explications, avec Comment les repetitions sont calculees. Chaque
+boite presente un tableau BdD/Mesure Alpha/Ecart ; les lignes brutes sont dans
+Sources et contexte technique. Le PDF reprend cette hierarchie avec des tableaux.
+Les observations courtes sont visibles directement, separees en moins et en
+trop ; Comment les repetitions sont calculees conserve les frequences et calculs complets. Chaque groupe est centre sur l'ecart hors tolerance le plus frequent de
 son cote (en cas d'egalite, le plus proche de zero). Il inclut les mesures a
 +/-1 mm, meme conformes : le bilan distingue defauts, bonnes mesures voisines
 et part du groupe sur toutes les comparables. La repartition complete est dans

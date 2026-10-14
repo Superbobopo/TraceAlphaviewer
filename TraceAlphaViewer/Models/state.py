@@ -41,6 +41,8 @@ class BoxInfo:
     identified_name: str = ""
     identity_line: int = 0
     identity_source: str = ""
+    camera_identity_line: int = 0
+    camera_identity_source: str = ""
     identity_conflict: bool = False
     bdd_reference: str = ""
     bdd_source_line: int = 0
@@ -95,6 +97,8 @@ class BoxInfo:
         box.identified_name = self.identified_name
         box.identity_line = self.identity_line
         box.identity_source = self.identity_source
+        box.camera_identity_line = self.camera_identity_line
+        box.camera_identity_source = self.camera_identity_source
         box.identity_conflict = self.identity_conflict
         box.bdd_reference = self.bdd_reference
         box.bdd_source_line = self.bdd_source_line

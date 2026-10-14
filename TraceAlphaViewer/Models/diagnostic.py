@@ -1026,7 +1026,7 @@ def _dimension_finding_code(
 
 def _dimension_title(code: str) -> str:
     titles = {
-        'ORIENTATION': 'Dimensions - Boite dans une orientation differente',
+        'ORIENTATION': 'Dimensions - Orientation probable ou indecidable',
         'T4_LENGTH': 'Dimensions - Longueur T4/C6 incoherente',
         'T5_HEIGHT': 'Dimensions - Hauteur T5/LzB incoherente',
         'T5_WIDTH': 'Dimensions - Largeur T5/C9 incoherente',
@@ -1038,7 +1038,7 @@ def _dimension_title(code: str) -> str:
 def _dimension_causes_checks(code: str, measurement_summary=None) -> tuple[list[str], list[str], str]:
     if code == 'ORIENTATION':
         return (
-            ["Boite presentee dans un autre sens ou sur la tranche."],
+            ["Une autre presentation explique mieux les dimensions, ou le sens reste indecidable."],
             ["Verifier l'orientation physique avant de conclure a un capteur defaillant."],
             'probable',
         )
@@ -1122,10 +1122,15 @@ def _build_dimension_incidents(frames, line_states, measurement_analysis=None):
             for label in _dimension_context_labels(line_states, sample['line']):
                 if label not in context_labels:
                     context_labels.append(label)
+        thresholds = analysis['summary'].get('tolerances_mm', {})
+        axes = {'T4_LENGTH': ('length',), 'T5_WIDTH': ('width',), 'T5_HEIGHT': ('height',)}.get(code, ('length', 'width', 'height'))
+        labels = {'length': 'longueur', 'width': 'largeur', 'height': 'hauteur'}
+        limits = '; '.join(f"{labels[axis]} > {thresholds.get(axis, 3)} mm" for axis in axes)
         summary = (f"{len(findings)} boite(s), derniere mesure complete par cycle, "
-                   f"hors tolerance (>{_DIMENSION_TOLERANCE_MM} mm).")
+                   f"a verifier ({limits}, ecart absolu).")
         if code == 'ORIENTATION':
-            summary = f"{len(findings)} boite(s) avec dimensions compatibles dans une autre orientation."
+            summary = (f"{len(findings)} boite(s) exclue(s) du bilan de mesure : orientation probable "
+                       "ou indecidable d'apres les dimensions, sens physique a verifier.")
         if context_labels:
             summary += " Contexte proche: " + ', '.join(context_labels) + '.'
         incidents.append(DiagnosticIncident(

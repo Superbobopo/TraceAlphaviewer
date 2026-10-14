@@ -156,7 +156,7 @@ def _impact_label(code: str, belt: str) -> str:
     if code == "CAM-NO-READ":
         return "Une camera attendue ne contribue pas ; les non lectures risquent d'augmenter."
     if code == "ORIENTATION":
-        return "Les dimensions existent mais ne sont pas dans le bon sens ; ce n'est pas d'abord un defaut capteur."
+        return "Les dimensions suggerent une autre orientation ou un sens indecidable ; verifier la presentation physique."
     if code == "GLOBAL":
         return "Plusieurs dimensions ne collent pas a la BdD ; suspicion blocage, mauvais tassement ou capteur perturbe."
     if code == "T5_WIDTH":
@@ -190,7 +190,7 @@ def _business_lines(summary: str, code: str) -> list[str]:
     if code == "T5_STALE_UNMEASURED_BOX":
         return ["Boite T5 non mesuree reste en base et provoque des manques de place."]
     if code == "ORIENTATION":
-        return ["Dimensions compatibles mais permutees: verifier le sens de presentation de la boite."]
+        return ["Orientation probable ou indecidable d'apres les dimensions : boite exclue du bilan, presentation a verifier."]
     return [_shorten(summary, 220)]
 
 
@@ -347,8 +347,8 @@ def _field_explanation(group: dict[str, object], total_boxes: int, c9_massive: b
         )
     if code == "ORIENTATION":
         return (
-            "Les dimensions existent mais sont permutees.",
-            "Boite dans le mauvais sens ou sur la tranche, pas un defaut capteur en premier diagnostic.",
+            "Une autre orientation explique mieux les mesures, ou le sens reste indecidable.",
+            "La presentation physique reste a verifier avant d'interpreter ces ecarts comme un defaut de mesure.",
             "Verifier la presentation physique de la reference.",
         )
     if ratio >= 0.10 and code in _DIMENSION_CODES:
@@ -379,10 +379,9 @@ def _field_severity_for(group: dict[str, object], total_boxes: int, c9_massive: 
         return "error"
     if code == "CUBESTOP_C4_BLOCKED":
         return "error" if count >= 2 or str(group["severity"]) == "error" else "warning"
-    if code == "GLOBAL":
-        return "error" if count >= 8 or ratio >= 0.15 else "warning"
-    if code == "T5_WIDTH":
-        return "error" if c9_massive else "warning"
+    if code in _DIMENSION_CODES and code != "ORIENTATION":
+        comparable = int(group.get("measurement_stats", {}).get("comparable_count", 0))
+        return "error" if count >= 10 and comparable > 0 and count * 10 >= comparable else "warning"
     if belt == "T2" and code == "-88":
         return "error" if count >= 3 else "warning"
     if belt == "T3" and code == "-43":
@@ -421,7 +420,10 @@ def _field_priority_score(group: dict[str, object]) -> int:
         code_bonus = 70
     elif belt == "T3" and code == "-48":
         code_bonus = 20
-    return severity_score + code_bonus + min(int(group["occurrence_count"]), 60)
+    count = int(group["occurrence_count"])
+    measurement_bonus = (round(1000 * float(group.get("affected_ratio", 0)))
+                         if code in _DIMENSION_CODES and code != "ORIENTATION" and count >= 10 else 0)
+    return severity_score + code_bonus + min(count, 60) + measurement_bonus
 
 
 def _apply_field_severity(grouped: list[dict[str, object]], total_boxes: int) -> None:
@@ -447,7 +449,8 @@ def _apply_field_severity(grouped: list[dict[str, object]], total_boxes: int) ->
             population = group.get('measurement_stats', {})
             total = population.get('comparable_count', 0)
             if group['code'] == 'ORIENTATION':
-                total += population.get('excluded', {}).get('orientation', 0)
+                total += sum(population.get('excluded', {}).get(key, 0)
+                             for key in ('orientation', 'orientation_uncertain'))
             group['affected_ratio'] = _ratio(count,total)
             group['affected_label'] = _affected_label(count,total)
             if group['code'] != 'ORIENTATION' and population and group.get('checks'):
@@ -743,7 +746,22 @@ def build_report_payload(
                         for line in set(sample['sources'].values()) - {0}:
                             wanted.update(range(max(1, line - 2), line + 3))
                 reference_lists[axis][side].append(dict({k:v for k,v in row.items() if k not in ('samples', 'representatives')},
-                                                       sample_ids=list(dict.fromkeys(ids)), representative_ids=representative_ids))
+                                                       sample_ids=list(dict.fromkeys(ids)), representative_ids=representative_ids,
+                                                       navigation_sample_id=ids[0] if ids and side in ('under', 'over') else '',
+                                                       display_primary=row['count'] * 10 >= row['total'] if side in ('under', 'over') else True))
+    orientation_lists = {}
+    for kind, rows in analysis.get('orientation_references', {}).items():
+        orientation_lists[kind] = []
+        for row in rows:
+            ids = []
+            for original in row['samples']:
+                key = f"orientation:{original['cycle']}:{original['display_frame_index']}"
+                ids.append(key)
+                reference_samples[key] = dict(original, id=key)
+                for line in set(original['sources'].values()) - {0}:
+                    wanted.update(range(max(1, line - 2), line + 3))
+            orientation_lists[kind].append(dict({key: value for key, value in row.items() if key != 'samples'},
+                sample_ids=ids, navigation_sample_id=ids[0]))
     for group in grouped:
         group['id'] = f"{group['code']}:{group['first_line']}:{group['belt']}"
         if group['code'] in _DIMENSION_CODES:
@@ -813,11 +831,12 @@ def build_report_payload(
                    'duration': _duration_label(frames[0].timestamp, frames[-1].timestamp) if frames else ''},
         "measurements": analysis['summary'],
         "measurement_references": reference_lists,
+        "orientation_references": orientation_lists,
         "measurement_examples": list(reference_samples.values()),
         "counts": counts,
         "verdict": _verdict(counts),
         "groups": grouped,
-        "priority": _priority_groups(grouped),
+        "priority": _priority_groups([group for group in grouped if group['code'] != 'ORIENTATION']),
         "zones": _zone_summary(grouped),
         "camera": camera_stats,
         "families": [

@@ -164,8 +164,9 @@ def _apply_identity(
     dims: Optional[tuple[int, int, int]] = None,
     line_num: int = 0,
     identity_source: str = '',
+    camera_confirmed: bool = False,
 ) -> None:
-    record_identification(box, barcode, name, line_num, identity_source)
+    record_identification(box, barcode, name, line_num, identity_source, camera_confirmed)
     if box.barcode and _is_unknown_ref(box.barcode) and barcode != box.barcode:
         box.source_ref = box.barcode
     elif barcode and _is_unknown_ref(barcode) and not box.source_ref:
@@ -217,6 +218,8 @@ def _copy_dimension_tracking(dst: BoxInfo, src: BoxInfo) -> None:
     dst.identified_name = src.identified_name
     dst.identity_line = src.identity_line
     dst.identity_source = src.identity_source
+    dst.camera_identity_line = src.camera_identity_line
+    dst.camera_identity_source = src.camera_identity_source
     dst.identity_conflict = src.identity_conflict
     dst.bdd_reference = src.bdd_reference
     dst.bdd_source_line = src.bdd_source_line
@@ -1050,14 +1053,16 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
             state.idCB1_barcode = bc
             state.idCB1_state = 'IDENTIFIED'
             target = _ensure_reader_box(state, 'CB1', bc)
-            _apply_identity(target, bc, lot=lot, name=name, dims=dims, line_num=line_num, identity_source='CB1')
+            _apply_identity(target, bc, lot=lot, name=name, dims=dims, line_num=line_num,
+                            identity_source='CB1', camera_confirmed=True)
             title = f'CB1 inconnu {bc}' if _is_unknown_ref(bc) else f'Identification CB1 {bc}'
             _add_event(state, line_num, 'info', 'IDENTIF', title, f'lot:{lot}')
         else:
             target = _ensure_reader_box(state, 'CB2', bc)
             if target:
                 previous = target.source_ref or target.barcode
-                _apply_identity(target, bc, lot=lot, name=name, dims=dims, line_num=line_num, identity_source='CB2')
+                _apply_identity(target, bc, lot=lot, name=name, dims=dims, line_num=line_num,
+                                identity_source='CB2', camera_confirmed=True)
                 ctx['last_cb2_box'] = target
                 detail = f'{previous} -> {bc}' if previous and previous != bc else bc
                 _add_event(state, line_num, 'info', 'IDENTIF', f'CB2 identifie {detail}', f'lot:{lot}')
@@ -1094,7 +1099,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         if target is None and state.C5 == 1:
             target = _ensure_reader_box(state, 'CB2', bc)
         if target:
-            _apply_identity(target, bc, line_num=line_num, identity_source='CB2')
+            _apply_identity(target, bc, line_num=line_num, identity_source='CB2', camera_confirmed=True)
             target.id_b = id_b
             ctx.setdefault('idb_to_box', {})[id_b] = target
             _add_event(state, line_num, 'info', 'IDENTIF', f'CB2 identifie idB={id_b} -> {bc}')

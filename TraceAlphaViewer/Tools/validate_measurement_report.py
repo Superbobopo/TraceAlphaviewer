@@ -29,13 +29,14 @@ def samples(count=35, delta=5):
         box = BoxInfo(id_alpha=100 + i, barcode=f'DEMO-{i % 2}', name='PRODUIT FICTIF',
             identified_barcode=f'DEMO-{i % 2}', identified_name='PRODUIT FICTIF',
             identity_line=line, identity_source='CB2', bdd_reference=f'DEMO-{i % 2}', bdd_source_line=line,
+            camera_identity_line=line, camera_identity_source='CB2',
             measured_t4_line=line, measured_t5_line=line, measured_height_line=line,
             bdd_length_mm=100, bdd_width_mm=60, bdd_height_mm=30,
             measured_t4_length_mm=100 + delta, measured_t5_width_mm=60, measured_t5_height_mm=30,
             length_mm=100, width_mm=60, height_mm=30, x_pos=942)
         _classify_alpha_measurement(box)
         line = i * 3 + 1
-        frames.append(MachineState(line_num=line, timestamp=i, timestamp_str=f'09:00:{i:02d}',
+        frames.append(MachineState(line_num=line, timestamp=i, timestamp_str=f'09:{i // 60:02d}:{i % 60:02d}',
             boxes_on_T5=[box], raw_lines=[(line, f'DONNEES FICTIVES boite {i} longueur {100+delta} BdD 100')]))
     return frames
 
@@ -72,7 +73,324 @@ def product_samples(groups):
     return frames
 
 
+def phased_samples():
+    """Arrivee T5, hauteur, C9, correction, puis disparition du meme cycle."""
+    initial=samples(1,0)[0]
+    box=initial.boxes_on_T5[0]
+    box.id_alpha,box.id_b=1499186,465
+    box.bdd_length_mm,box.measured_t4_length_mm=102,93
+    box.measured_t5_width_mm=box.measured_t5_height_mm=0
+    box.measured_t5_line=box.measured_height_line=0
+    box.measurement_status=''
+    frames=[initial]
+    for line in (2,3,4):
+        frame=frames[-1].deep_copy()
+        frame.line_num=line
+        frame.timestamp_str=f'09:00:{line:02d}'
+        frame.raw_lines=[(line,'ETAPE FICTIVE DE MESURE')]
+        box=frame.boxes_on_T5[0]
+        if line==2:box.measured_t5_height_mm,box.measured_height_line=30,2
+        if line==3:box.measured_t5_width_mm,box.measured_t5_line=60,3
+        if line==4:box.measured_t5_width_mm,box.measured_t5_line=64,4
+        _classify_alpha_measurement(box)
+        frames.append(frame)
+    frames.append(MachineState(line_num=5,timestamp_str='09:00:05',raw_lines=[(5,'PRISE ROBOT FICTIVE')]))
+    return frames
+
+
+def orientation_samples():
+    """Produits fictifs : rotations, egalite, correction et variante cubique."""
+    frames=samples(7,0)
+    values=((50,40,100),(100,40,50),(100,40,55),(40,100,50),(75,40,75),(100,40,50),(50,50,50))
+    for frame,measured in zip(frames,values):
+        box=frame.boxes_on_T5[0]
+        box.barcode=box.identified_barcode=box.bdd_reference='ORIENTATION-FICTIVE'
+        box.name=box.identified_name='CARTON FICTIF'
+        box.bdd_width_mm,box.bdd_height_mm,box.bdd_length_mm=(50,50,50) if box.id_alpha==106 else (50,40,100)
+        box.measured_t5_width_mm,box.measured_t5_height_mm,box.measured_t4_length_mm=measured
+        _classify_alpha_measurement(box)
+    corrected=frames[5].deep_copy()
+    corrected.line_num+=1
+    corrected.timestamp_str='09:00:05'
+    box=corrected.boxes_on_T5[0]
+    box.measured_t5_width_mm,box.measured_t5_height_mm,box.measured_t4_length_mm=50,40,100
+    box.measured_t4_line=box.measured_t5_line=box.measured_height_line=corrected.line_num
+    _classify_alpha_measurement(box)
+    frames.insert(6,corrected)
+    return frames
+
+
 class MeasurementTests(unittest.TestCase):
+    def test_orientation_products_sort_by_count_ratio_then_reference(self):
+        frames=product_samples([('D',[0]*20),('C',[0]*20),('B',[0]*10),('A',[0]*20)])
+        seen={}
+        for frame in frames:
+            box=frame.boxes_on_T5[0]
+            seen[box.barcode]=seen.get(box.barcode,0)+1
+            if seen[box.barcode] <= (3 if box.barcode=='A' else 2):
+                box.measured_t5_width_mm,box.measured_t4_length_mm=100,60
+        rows=analyze_measurements(frames)['orientation_references']['probable']
+        self.assertEqual([row['barcode'] for row in rows],['A','B','C','D'])
+        self.assertEqual([row['total'] for row in rows],[20,10,20,20])
+
+    def test_orientation_products_final_cycles_variants_and_permutations(self):
+        frames=orientation_samples()
+        result=analyze_measurements(frames)
+        rows=result['orientation_references']
+        self.assertEqual(result['summary']['comparable_count'],3)
+        self.assertEqual(result['summary']['excluded'],{'ambiguous':0,'orientation':3,'orientation_uncertain':1})
+        probable,uncertain=rows['probable'][0],rows['uncertain'][0]
+        self.assertEqual((probable['count'],probable['total'],probable['variant_count']),(3,7,2))
+        self.assertEqual((uncertain['count'],uncertain['total']),(1,7))
+        self.assertEqual([sample['id_alpha'] for sample in probable['samples']],[101,102,103])
+        self.assertEqual(probable['samples'][0]['orientation_matches'],[{'dimensions':[100,40,50],'error_mm':0}])
+        self.assertEqual(probable['samples'][1]['orientation_matches'],[{'dimensions':[100,40,50],'error_mm':5}])
+        self.assertEqual(probable['samples'][2]['orientation_matches'],[{'dimensions':[40,100,50],'error_mm':0}])
+        self.assertEqual({tuple(match['dimensions']) for match in uncertain['samples'][0]['orientation_matches']},
+                         {(50,40,100),(100,40,50)})
+        payload=build_report_payload(build_diagnostics(frames,[]),frames)
+        row=payload['orientation_references']['probable'][0]
+        sample=next(sample for sample in payload['measurement_examples'] if sample['id']==row['navigation_sample_id'])
+        self.assertEqual(sample['id_alpha'],101)
+        self.assertEqual(sample['display_frame_index'],1)
+        self.assertNotIn('ORIENTATION',[group['code'] for group in payload['priority']])
+        self.assertEqual(payload['measurements'],result['summary'])
+        for field,value in (('camera_identity_line',0),('measurement_status','c9_error'),
+                            ('identity_conflict',True),('measured_t5_height_mm',0)):
+            changed=orientation_samples()
+            setattr(changed[1].boxes_on_T5[0],field,value)
+            restricted=analyze_measurements(changed)['orientation_references']['probable'][0]
+            self.assertEqual((restricted['count'],restricted['total']),(2,6))
+
+    def test_orientation_lists_are_saved_by_worker_without_ui_frame_scan(self):
+        import pickle
+        from Models.frame_store import FrameStore,write_frame_store
+        frames=orientation_samples()
+        analysis=analyze_measurements(frames)
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'frames'
+            write_frame_store(frames,path,measurement_summary=analysis['summary'])
+            with (path/'measurements.pkl').open('wb') as output:pickle.dump(analysis,output)
+            store=FrameStore(path)
+            try:
+                self.assertEqual(store.read_measurements()['orientation_references'],analysis['orientation_references'])
+            finally:store.close()
+
+    def test_complete_frame_anchor_retains_corrected_values_and_cycle(self):
+        from Models.measurement_navigation import measurement_display_target,measurement_box_in_frame
+        frames=phased_samples()
+        result=analyze_measurements(frames)
+        self.assertEqual(len(result['samples']),2)
+        self.assertEqual([sample['final'] for sample in result['samples']],[False,True])
+        sample=result['finals'][0]
+        self.assertEqual(measurement_display_target(sample),(3,4))
+        self.assertEqual(sample['sources']['length'],1)
+        self.assertEqual(sample['sources']['height'],2)
+        self.assertEqual(sample['sources']['width'],4)
+        self.assertEqual(sample['display_time_str'],'09:00:04')
+        self.assertEqual(sample['measured'],[64,30,93])
+        self.assertEqual(measurement_box_in_frame(frames[3],sample).id_alpha,1499186)
+        with self.assertRaises(ValueError):measurement_box_in_frame(frames[0],sample)
+        with self.assertRaises(ValueError):measurement_box_in_frame(frames[4],sample)
+        missing=deepcopy(sample)
+        missing.pop('display_frame_index')
+        with self.assertRaisesRegex(ValueError,'regenerer'):measurement_display_target(missing)
+        changed=frames[3].deep_copy()
+        changed.boxes_on_T5[0].measured_t4_length_mm=99
+        with self.assertRaisesRegex(ValueError,'trois mesures'):measurement_box_in_frame(changed,sample)
+        other=frames[3].boxes_on_T5[0].clone()
+        other.id_alpha=2000
+        other.measured_t4_length_mm=100
+        frames[3].boxes_on_T5.append(other)
+        self.assertEqual(measurement_box_in_frame(frames[3],sample).id_alpha,1499186)
+    def test_strict_thresholds_on_all_axes_and_global_union(self):
+        for field,axis,status,index in (('measured_t4_length_mm','length','length',2),
+                                       ('measured_t5_width_mm','width','width',0),
+                                       ('measured_t5_height_mm','height','height',1)):
+            with self.subTest(axis=axis):
+                frames=samples(8,0)
+                tolerance=2 if axis=='height' else 3
+                for frame,delta in zip(frames,(-1,1,-2,2,-3,3,-4,4)):
+                    box=frame.boxes_on_T5[0]
+                    setattr(box,field,getattr(box,field)+delta)
+                    _classify_alpha_measurement(box)
+                    self.assertEqual(box.measurement_status,status if abs(delta)>tolerance else 'ok')
+                analysis=analyze_measurements(frames)
+                values=analysis['summary']['axes'][axis]
+                self.assertEqual((values['all']['within_count'],values['all']['outside_count']),(4,4) if axis=='height' else (6,2))
+                self.assertEqual((values['anomalies']['under_count'],values['anomalies']['over_count']),(2,2) if axis=='height' else (1,1))
+                self.assertEqual((values['anomalies']['mean_signed'],values['anomalies']['mean_abs']),(0,3.5) if axis=='height' else (0,4))
+                for side,delta in (('under',-4),('over',4)):
+                    self.assertEqual(analysis['references'][axis][side][0]['samples'][0]['deltas'][index],delta)
+        frames=samples(1,4)
+        frames[0].boxes_on_T5[0].measured_t5_width_mm+=4
+        frames[0].boxes_on_T5[0].measured_t5_height_mm-=4
+        _classify_alpha_measurement(frames[0].boxes_on_T5[0])
+        self.assertEqual(frames[0].boxes_on_T5[0].measurement_status,'multiple')
+        self.assertEqual(analyze_measurements(frames)['summary']['global']['outside_count'],1)
+
+    def test_display_filter_keeps_all_measurements_and_exact_product_ratios(self):
+        for axis,field in (('length','measured_t4_length_mm'),('width','measured_t5_width_mm'),('height','measured_t5_height_mm')):
+            for side,sign in (('under',-1),('over',1)):
+                with self.subTest(axis=axis,side=side):
+                    cases=[('RARE',253,2),('JUSTE-SOUS',253,25),('RETENU',253,26),('LIMITE',100,10),('UNIQUE',1,1)]
+                    frames=samples(sum(total for _,total,_ in cases),0)
+                    offset=0
+                    for barcode,total,bad in cases:
+                        for i in range(total):
+                            box=frames[offset+i].boxes_on_T5[0]
+                            box.barcode=box.identified_barcode=box.bdd_reference=barcode
+                            if i<bad:setattr(box,field,getattr(box,field)+sign*4)
+                        offset+=total
+                    analysis=analyze_measurements(frames)
+                    payload=build_report_payload(build_diagnostics(frames,[]),frames)
+                    self.assertEqual(payload['measurements'],analysis['summary'])
+                    rows={row['barcode']:row for row in payload['measurement_references'][axis][side]}
+                    self.assertEqual({key:row['display_primary'] for key,row in rows.items()},
+                                     {'RARE':False,'JUSTE-SOUS':False,'RETENU':True,'LIMITE':True,'UNIQUE':True})
+                    self.assertEqual(sum(len(row['sample_ids']) for row in rows.values()),64)
+                    self.assertTrue(all(row['navigation_sample_id'] in row['sample_ids'] for row in rows.values()))
+
+    def test_dimension_criticality_boundaries_and_priority_over_isolated_reset(self):
+        for field,code in (('measured_t4_length_mm','T4_LENGTH'),('measured_t5_width_mm','T5_WIDTH'),
+                           ('measured_t5_height_mm','T5_HEIGHT')):
+            for total,bad,expected in ((90,9,'warning'),(101,10,'warning'),(100,10,'error'),(1112,434,'error')):
+                with self.subTest(code=code,total=total,bad=bad):
+                    frames=samples(total,0)
+                    for frame in frames[:bad]:
+                        box=frame.boxes_on_T5[0]
+                        setattr(box,field,getattr(box,field)+4)
+                    incidents=build_diagnostics(frames,[])
+                    incidents.append(DiagnosticIncident(title='Reset fictif',code='ALPHA_CARD_RESET',belt='ALPHA',
+                        severity='error',count=1,first_line=1,last_line=1,metrics={'trace_duration':'1h'}))
+                    payload=build_report_payload(incidents,frames)
+                    dimension=next(group for group in payload['groups'] if group['code']==code)
+                    self.assertEqual(dimension['field_severity'],expected)
+                    self.assertEqual(dimension['occurrence_count'],bad)
+                    self.assertAlmostEqual(dimension['affected_ratio'],bad/total)
+                    first=code if expected=='error' else 'ALPHA_CARD_RESET'
+                    self.assertEqual(payload['groups'][0]['code'],first)
+                    self.assertEqual(payload['priority'][0]['code'],first)
+                    if (total,bad)==(100,10):
+                        incidents[-1].count=100
+                        frequent_reset=build_report_payload(incidents,frames)
+                        self.assertEqual(frequent_reset['groups'][0]['code'],'ALPHA_CARD_RESET')
+                        self.assertEqual(frequent_reset['priority'][0]['code'],'ALPHA_CARD_RESET')
+
+    def test_height_threshold_and_global_union(self):
+        frames=samples(5,0)
+        for frame,delta in zip(frames,(-3,3,-4,4,0)):
+            frame.boxes_on_T5[0].measured_t5_height_mm+=delta
+            _classify_alpha_measurement(frame.boxes_on_T5[0])
+        box=frames[-1].boxes_on_T5[0]
+        box.measured_t4_length_mm+=4
+        box.measured_t5_width_mm+=4
+        _classify_alpha_measurement(box)
+        analysis=analyze_measurements(frames)
+        summary=analysis['summary']
+        self.assertEqual(summary['tolerances_mm'],{'length':3,'width':3,'height':2})
+        self.assertEqual(summary['global']['outside_count'],5)
+        self.assertEqual(summary['axes']['height']['tolerance_mm'],2)
+        self.assertEqual(summary['axes']['height']['anomalies']['count'],4)
+        self.assertEqual(len(build_diagnostics(frames,[])),2)
+        height=next(i for i in build_diagnostics(frames,[]) if i.code=='T5_HEIGHT')
+        self.assertIn('hauteur > 2 mm',height.summary)
+        payload=build_report_payload(build_diagnostics(frames,[]),frames)
+        self.assertEqual(payload['measurements']['axes']['height']['tolerance_mm'],2)
+        for sample in payload['measurement_examples']:
+            self.assertEqual(sample['tolerances_mm'],summary['tolerances_mm'])
+
+    def test_probable_and_indecidable_orientations_never_enter_reference_lists(self):
+        frames=samples(5,0)
+        for frame,values in zip(frames,((100,40,50),(100,40,55),(75,40,75),(50,40,104),(50,44,100))):
+            box=frame.boxes_on_T5[0]
+            box.bdd_width_mm,box.bdd_height_mm,box.bdd_length_mm=50,40,100
+            box.measured_t5_width_mm,box.measured_t5_height_mm,box.measured_t4_length_mm=values
+            _classify_alpha_measurement(box)
+        result=analyze_measurements(frames)
+        self.assertEqual(result['summary']['comparable_count'],2)
+        self.assertEqual(result['summary']['excluded'],{'ambiguous':0,'orientation':2,'orientation_uncertain':1})
+        self.assertEqual([f.boxes_on_T5[0].measurement_status for f in frames],
+                         ['orientation','orientation','orientation','length','height'])
+        ids={sample['cycle'] for sides in result['references'].values() for side in ('under','over')
+             for row in sides[side] for sample in row['samples']}
+        self.assertEqual(ids,{4,5})
+        equal=samples(1,0)
+        box=equal[0].boxes_on_T5[0]
+        box.bdd_width_mm=box.bdd_height_mm=box.bdd_length_mm=50
+        box.measured_t5_width_mm=box.measured_t5_height_mm=50
+        box.measured_t4_length_mm=53
+        self.assertEqual(analyze_measurements(equal)['summary']['comparable_count'],1)
+
+    def test_camera_confirmation_after_bdd_lookup_is_explicit_and_preserved(self):
+        for reader in ('CB1','CB2'):
+            with self.subTest(reader=reader):
+                state=MachineState(C5=1)
+                ctx={}
+                box=BoxInfo(barcode='DEMO')
+                if reader=='CB1':state.box_in_EA=box
+                else:state.box_on_T3=box
+                ctx['last_reader']=reader
+                _update(state,'Rech. infos dans la BdD pour DEMO',ctx,1)
+                _update(state,'--> PRODUIT FICTIF 50x40x100 10g',ctx,2)
+                self.assertEqual(box.identified_barcode,'DEMO')
+                self.assertEqual(box.camera_identity_line,0)
+                box.id_alpha=100
+                box.measured_t4_length_mm,box.measured_t5_width_mm,box.measured_t5_height_mm=104,50,40
+                box.measured_t4_line=box.measured_t5_line=box.measured_height_line=3
+                state.boxes_on_T5=[box]
+                frames=[state.deep_copy()]
+                self.assertEqual(analyze_measurements(frames)['summary']['excluded']['camera_unconfirmed'],1)
+                _update(state,f'id{reader}: --> Ref:DEMO lot:LOT',ctx,4)
+                self.assertEqual((box.camera_identity_line,box.camera_identity_source),(4,reader))
+                self.assertEqual(box.clone(),box)
+                frames.append(state.deep_copy())
+                result=analyze_measurements(frames)
+                self.assertEqual(result['summary']['comparable_count'],1)
+                self.assertEqual(result['finals'][0]['sources']['identity'],4)
+                self.assertEqual(result['summary']['axes']['length']['anomalies']['count'],1)
+                _update(state,f'id{reader}: --> Ref:AUTRE lot:LOT',ctx,5)
+                self.assertTrue(box.identity_conflict)
+                frames.append(state.deep_copy())
+                result=analyze_measurements(frames)
+                self.assertEqual(result['summary']['comparable_count'],0)
+                self.assertEqual(result['summary']['excluded']['reference_conflict'],1)
+
+    def test_worst_measurement_ties_use_axis_source_then_cycle(self):
+        frames=samples(3,5)
+        for frame,line in zip(frames,(30,10,10)):
+            box=frame.boxes_on_T5[0]
+            box.barcode=box.identified_barcode=box.bdd_reference='MEME-PRODUIT'
+            box.measured_t4_line=line
+            box.measured_t5_line=40
+        analysis=analyze_measurements(frames)
+        row=analysis['references']['length']['over'][0]
+        self.assertEqual([s['cycle'] for s in row['samples']],[2,3,1])
+        payload=build_report_payload(build_diagnostics(frames,[]),frames)
+        exported=payload['measurement_references']['length']['over'][0]
+        sample=next(s for s in payload['measurement_examples'] if s['id']==exported['navigation_sample_id'])
+        self.assertEqual((sample['cycle'],sample['sources']['length']),(2,10))
+
+    def test_unknown_camera_result_then_successful_cb2_reidentification(self):
+        state,ctx=MachineState(C5=1),{}
+        _update(state,'idCB1: --> Ref:ALPHA-INC-001 lot:LOT',ctx,1)
+        self.assertEqual(state.box_in_EA.camera_identity_line,0)
+        _update(state,'le transfert (EA->T3) est termine',ctx,2)
+        _update(state,"idCB2: Identif. sur le lecteur1 Ok 'DEMO', (Nboite= 32)",ctx,3)
+        box=state.box_on_T3
+        self.assertEqual((box.camera_identity_line,box.camera_identity_source),(3,'CB2'))
+        self.assertEqual(box.source_ref,'ALPHA-INC-001')
+        _update(state,'Rech. infos dans la BdD pour DEMO',ctx,4)
+        _update(state,'--> PRODUIT FICTIF 50x40x100 10g',ctx,5)
+        box.id_alpha=201
+        box.measured_t4_length_mm,box.measured_t5_width_mm,box.measured_t5_height_mm=104,50,40
+        box.measured_t4_line=box.measured_t5_line=box.measured_height_line=6
+        state.boxes_on_T5=[box]
+        result=analyze_measurements([state.deep_copy()])
+        self.assertEqual(result['summary']['comparable_count'],1)
+        self.assertEqual(result['finals'][0]['barcode'],'DEMO')
+        self.assertEqual(result['finals'][0]['sources']['identity'],3)
+
     def test_repeated_offsets_with_good_measures_extremes_and_worker_payload(self):
         frames = recurring_samples()
         analysis = analyze_measurements(frames)
@@ -408,6 +726,7 @@ class MeasurementTests(unittest.TestCase):
         self.assertEqual(box.identified_barcode,'DEMO')
         self.assertEqual(box.bdd_reference,'DEMO')
         self.assertEqual(box.identified_name,'PRODUIT FICTIF')
+        self.assertEqual((box.camera_identity_line,box.camera_identity_source),(1,'CB2'))
         self.assertEqual((box.measured_t4_length_mm,box.measured_t4t_length_mm),(161,134))
         self.assertEqual(box.measured_t4_line,6)
         self.assertEqual(box.measurement_status,'ok')
@@ -672,7 +991,7 @@ class ReportReuseTests(unittest.TestCase):
                 self.assertIn('Page 2/2',panel._details.get('1.0','end'))
                 sample=analysis['references']['length']['over'][0]['samples'][0]
                 panel._navigate_measurement_sample(sample,'length')
-                self.assertEqual(visited,[sample['sources']['length']])
+                self.assertEqual(visited,[sample['display_line']])
                 self.assertIn('Identification L.',panel._details.get('1.0','end'))
                 panel._open_measurement_references('width','under')
                 panel._show_global_summary()
@@ -747,6 +1066,67 @@ class ReportReuseTests(unittest.TestCase):
 
 
 class BridgeTests(unittest.TestCase):
+    def test_all_measurement_links_display_complete_frame_and_tooltip(self):
+        from Main import TraceAlphaViewer
+        from Views.traceView import TraceView
+        from Models.loading_client import LoadingSession
+        from Models.frame_store import write_frame_store,FrameStore
+        frames=phased_samples()
+        analysis=analyze_measurements(frames)
+        sample=analysis['finals'][0]
+        session=LoadingSession()
+        path=session.directory/'mesures-fictives.old'
+        path.write_text('\n'.join(f.raw_lines[0][1] for f in frames),encoding='utf-8')
+        app=TraceAlphaViewer()
+        app.withdraw()
+        view=TraceView(app,str(path),frames,events=[],diagnostics=[])
+        store=None
+        try:
+            app.switch_view(view)
+            write_frame_store(frames,session.directory/'frames')
+            store=FrameStore(session.directory/'frames')
+            view._frames=store
+            view._report_bridge=ReportBridge()
+            for axis in ('length','width','height'):
+                view._go_to(0)
+                result,done={},threading.Event()
+                target={'line':sample['display_line'],'sample':sample,'axis':axis,'code':sample['code'],'first_line':1}
+                view._report_bridge.commands.put((target,done,result))
+                with patch.object(app,'deiconify'),patch.object(app,'lift'), \
+                     patch.object(store,'frame_index_for_line',side_effect=AssertionError('Retour aux lignes capteur')), \
+                     patch.object(FrameStore,'__iter__',side_effect=AssertionError('Parcours complet dans Tk')):
+                    view._poll_report_bridge()
+                self.assertTrue(result.get('ok'),result)
+                self.assertEqual(view._idx,3)
+                self.assertFalse(view._playing)
+                canvas=view._machine_canvas
+                canvas._show_t5_tooltip(500,400,store[view._idx].boxes_on_T5[0])
+                text=' '.join(canvas.itemcget(item,'text') for item in canvas.find_withtag('t5_tooltip')
+                              if canvas.type(item)=='text')
+                for value in ('93 / BdD 102','64 / BdD 60','30 / BdD 30'):
+                    self.assertIn(value,text)
+                self.assertNotIn('donnees insuffisantes',text)
+                canvas._hide_tooltip()
+            view._go_to(0)
+            direct=deepcopy(sample)
+            direct['time_str']='HEURE DE SOURCE ANTERIEURE'
+            view._diagnostic_panel._navigate_measurement_sample(direct,'length')
+            self.assertEqual(view._idx,3)
+            detail=view._diagnostic_panel._details.get('1.0','end')
+            self.assertIn('09:00:04',detail)
+            self.assertNotIn('HEURE DE SOURCE ANTERIEURE',detail)
+            current=view._idx
+            wrong=deepcopy(sample)
+            wrong['display_frame_index']=4
+            with self.assertRaises(ValueError):view._on_measurement_sample(wrong)
+            self.assertEqual(view._idx,current)
+        finally:
+            for job in app.tk.call('after','info'):app.tk.call('after','cancel',job)
+            app.destroy()
+            if store:store.close()
+            session.close()
+            self.assertTrue(session.cleaned.wait(15))
+
     def test_registered_example_origin_paths_and_shutdown(self):
         with tempfile.TemporaryDirectory(dir=ROOT / 'TraceAlphaViewer' / '.trace_work') as temp:
             frames = samples(2)
@@ -784,6 +1164,22 @@ class BridgeTests(unittest.TestCase):
                         urlopen(Request(base+'/navigate',data=body,
                             headers={'Origin':'http://'+bridge.address,'Content-Type':'application/json'}))
                     self.assertEqual(error.exception.code,400)
+                measurement=next(key for key,target in next(iter(bridge.reports.values()))['examples'].items()
+                                 if target.get('sample'))
+                target=next(iter(bridge.reports.values()))['examples'][measurement]
+                target['sample']['sources']['width']=0
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(Request(base+'/navigate',data=json.dumps({'sample_id':measurement,'axis':'width'}).encode(),
+                        headers={'Origin':'http://'+bridge.address,'Content-Type':'application/json'}))
+                self.assertEqual(error.exception.code,400)
+                self.assertTrue(bridge.commands.empty())
+                target['sample']['sources']['width']=target['sample']['display_line']
+                target['sample'].pop('display_frame_index')
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(Request(base+'/navigate',data=json.dumps({'sample_id':measurement,'axis':'length'}).encode(),
+                        headers={'Origin':'http://'+bridge.address,'Content-Type':'application/json'}))
+                self.assertIn('regenerer',json.load(error.exception)['error'])
+                self.assertTrue(bridge.commands.empty())
                 other = ReportBridge()
                 try:
                     other_url = other.register(report)

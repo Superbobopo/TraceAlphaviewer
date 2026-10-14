@@ -170,6 +170,7 @@ class DiagnosticPanel(ctk.CTkFrame):
         on_report_open=None,
         on_measurement_click=None,
         source_name='',
+        on_measurement_sample=None,
         **kwargs,
     ):
         kwargs.setdefault('fg_color', '#12121f')
@@ -181,6 +182,7 @@ class DiagnosticPanel(ctk.CTkFrame):
         self._measurement_summary = (frames.measurement_summary if isinstance(frames, FrameStore)
                                      else self._measurement_analysis['summary'])
         self._on_measurement_click = on_measurement_click
+        self._on_measurement_sample = on_measurement_sample
         self._measurement_task = None
         self._measurement_job = None
         self._measurement_request = None
@@ -882,9 +884,16 @@ class DiagnosticPanel(ctk.CTkFrame):
         self._details.insert('end', '\n')
 
     def _navigate_measurement_sample(self, sample, axis):
-        line = sample['sources'].get(axis) or sample['line']
-        if self._on_measurement_click is not None:
-            self._on_measurement_click(line)
+        from Models.measurement_navigation import measurement_display_target
+        try:
+            _, line = measurement_display_target(sample)
+            if self._on_measurement_sample is not None:
+                self._on_measurement_sample(sample, axis)
+            elif self._on_measurement_click is not None:
+                self._on_measurement_click(line)
+        except ValueError as exc:
+            messagebox.showerror('Mesure', str(exc))
+            return
         self._show_measurement_sample(sample, axis)
 
     def _show_measurement_sample(self, sample, axis='length'):
@@ -892,7 +901,8 @@ class DiagnosticPanel(ctk.CTkFrame):
         self._showing_global = False
         self._details.configure(state='normal')
         self._details.delete('1.0', 'end')
-        self._details.insert('end', f"{sample['barcode']} — {sample.get('name', '')}\n{sample['box']} — {sample['time_str']}\n")
+        self._details.insert('end', f"{sample['barcode']} — {sample.get('name', '')}\n"
+                             f"{sample['box']} — {sample.get('display_time_str', sample['time_str'])}\n")
         if sample.get('rejected_dimensions'):
             self._details.insert('end', f"Produit identifie puis rejete pour dimensions : {sample['current_reference']}\n")
         for name,label,index in AXES:
