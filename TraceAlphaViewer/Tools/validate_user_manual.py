@@ -52,7 +52,7 @@ def main():
             assert path.is_file(), f'Fichier absent : {link}'
     assert not re.search(r'@import|https?://|url\(', html), 'Dependance externe dans le guide'
     metadata = json.loads((DIRECTORY / 'assets' / 'captures.json').read_text(encoding='utf-8'))
-    assert len(metadata) == 18, 'Dix-huit captures sont attendues'
+    assert len(metadata) == 19, 'Dix-neuf captures sont attendues'
     for name, size in metadata.items():
         data = (DIRECTORY / 'assets' / f'{name}.png').read_bytes()
         assert data[:8] == b'\x89PNG\r\n\x1a\n', f'PNG invalide : {name}'
@@ -63,7 +63,7 @@ def main():
     pdf = (DIRECTORY / 'Bien-demarrer-avec-TraceAlphaViewer.pdf').read_bytes()
     assert pdf.startswith(b'%PDF-') and pdf.rstrip().endswith(b'%%EOF'), 'PDF incomplet'
     pages = len(re.findall(rb'/Type\s*/Page\b', pdf))
-    assert pages == 24, f'Pagination inattendue : {pages} pages, controle visuel requis'
+    assert pages == 25, f'Pagination inattendue : {pages} pages, controle visuel requis'
     assert b'/Subtype /Link' in pdf, 'Les liens du PDF sont absents'
     print(f'Manuel utilisateur : {parser.sections} sections, {len(metadata)} captures, {pages} pages PDF, liens locaux valides')
 

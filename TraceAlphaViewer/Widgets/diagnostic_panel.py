@@ -17,6 +17,7 @@ import tkinter as tk
 from tkinter import messagebox
 
 from Models.diagnostic import DiagnosticIncident
+from Models.robot_drain import t5_priority_score
 from Models.diagnostic_report import write_diagnostic_report, report_files_available
 from Models.diagnostic_report import _metric_from_summary as _structured_metric
 from Models.state import MachineState
@@ -584,14 +585,26 @@ class DiagnosticPanel(ctk.CTkFrame):
             'DIAGNOSTIC GLOBAL\n\n'
             f'Critiques : {errors} | Alertes : {warnings} | Infos : {infos} | '
             f'Types : {len(grouped)}\n\n'
-            'A TRAITER EN PRIORITE\n'
         )
+        for incident in self._incidents:
+            if incident.code == 'DemVidageComplet':
+                self._details.insert('end',
+                    f'VIDAGE COMPLET T5 DEMANDE PAR LE ROBOT — {_SEVERITY_LABELS[incident.severity]}\n'
+                    f'{incident.summary}\n')
+                self._measurement_link('Voir les demandes et les controles',
+                                       lambda item=incident: self._show_details(item), 'robot-drain-details')
+                self._details.insert('end', '\n\n')
+        self._details.insert('end', 'A TRAITER EN PRIORITE\n')
 
         priority_groups = sorted(
             grouped,
             key=lambda group: (
                 _SEVERITY_ORDER.get(str(group['severity']), 9),
-                -int(group['occurrence_count']),
+                -(t5_priority_score(str(group['code']), str(group['severity']),
+                                    int(group['occurrence_count']), group.get('metrics'))
+                  if group['code'] in {'DemVidageComplet', 'T5_STALE_UNMEASURED_BOX'}
+                  else {'error': 500, 'warning': 190, 'info': 80}.get(str(group['severity']), 0)
+                  + int(group['occurrence_count'])),
                 int(group['first_line']),
             ),
         )[:5]
@@ -686,6 +699,19 @@ class DiagnosticPanel(ctk.CTkFrame):
                 f'Lignes utiles a ouvrir:\n{lines or "-"}'
             )
             self._details.insert('end', text)
+            if incident.code == 'DemVidageComplet':
+                for name, label in (('hour', '1 h'), ('day', '24 h')):
+                    period = incident.metrics.get(name)
+                    if period:
+                        self._details.insert('end', f"\nPic sur {label} : {period['count']} — "
+                                             f"{period['start']} -> {period['end']}")
+                self._details.insert('end', f'\n\n{min(10, incident.count)} premieres demandes sur {incident.count} :\n')
+                for line in incident.event_lines[:10]:
+                    if self._on_measurement_click:
+                        self._measurement_link(f'L.{line}\n',
+                            lambda target=line: self._on_measurement_click(target), f'robot-drain-line-{line}')
+                    else:
+                        self._details.insert('end', f'L.{line}\n')
             if incident.measurement_stats:
                 names = {'T4_LENGTH': ('length',), 'T5_WIDTH': ('width',), 'T5_HEIGHT': ('height',)}.get(incident.code)
                 self._details.insert('end', '\n\nBILAN DES MESURES DE LA TRACE\n')

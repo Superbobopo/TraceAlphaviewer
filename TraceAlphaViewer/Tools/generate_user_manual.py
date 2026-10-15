@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import struct
 import sys
 import tempfile
 import time
@@ -329,6 +330,32 @@ def captures():
             raise RuntimeError(f'Nettoyage incomplet : {session.cleanup_error}')
 
 
+def robot_capture():
+    from Models.state import MachineState
+    from Models.diagnostic import build_diagnostics
+    from Models.diagnostic_report import write_diagnostic_report
+    from playwright.sync_api import sync_playwright
+    assets = MANUAL / 'assets'
+    (ROOT / 'build').mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=ROOT / 'build', prefix='manual-robot-') as directory:
+        frames = [MachineState(line_num=i + 1, timestamp=i * 600,
+                  timestamp_str=f'01|09:{i * 10:02d}:00',
+                  raw_lines=[(i + 1, 'OMEGA:T5-DemVidageComplet')]) for i in range(5)]
+        report = write_diagnostic_report(build_diagnostics(frames, []), Path(directory), frames,
+                                         source_name='DEMONSTRATION ROBOT - DONNEES FICTIVES')
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel='msedge', headless=True)
+            page = browser.new_page(viewport={'width':1200, 'height':900})
+            page.goto(report.as_uri())
+            alert = page.locator('.robot-drain-alert')
+            alert.screenshot(path=str(assets / 'vidage-robot.png'))
+            browser.close()
+        metadata = json.loads((assets / 'captures.json').read_text(encoding='utf-8'))
+        width, height = struct.unpack('>II', (assets / 'vidage-robot.png').read_bytes()[16:24])
+        metadata['vidage-robot'] = {'width':width, 'height':height}
+        (assets / 'captures.json').write_text(json.dumps(metadata, indent=2), encoding='utf-8')
+
+
 def pdf():
     browser = browser_path()
     if not browser:
@@ -345,11 +372,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--captures', action='store_true', help='Reproduire les captures et verifier les parcours')
     parser.add_argument('--pdf', action='store_true', help='Generer le PDF depuis le HTML')
+    parser.add_argument('--robot-capture', action='store_true', help='Actualiser uniquement la capture fictive de l alerte robot')
     args = parser.parse_args()
-    if not args.captures and not args.pdf:
-        parser.error('Choisir --captures et/ou --pdf')
+    if not args.captures and not args.pdf and not args.robot_capture:
+        parser.error('Choisir --captures, --robot-capture et/ou --pdf')
     if args.captures:
         captures()
+    if args.captures or args.robot_capture:
+        robot_capture()
     if args.pdf:
         pdf()
 

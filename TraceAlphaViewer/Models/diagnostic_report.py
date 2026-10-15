@@ -14,6 +14,7 @@ from pathlib import Path
 from Models.diagnostic import DiagnosticIncident, camera_report_stats
 from Models.state import MachineState
 from Models.measurement_analysis import analyze_measurements, representative_samples
+from Models.robot_drain import t5_priority_score, drain_metric_text
 
 
 _SEVERITY_LABELS = {
@@ -71,6 +72,8 @@ def _duration_label(start: float, end: float) -> str:
 
 def _metric_from_summary(summary: str, code: str, occurrence_count: int, metrics=None) -> str:
     metrics = metrics or {}
+    if code == 'DemVidageComplet' and metrics.get('hour'):
+        return drain_metric_text(metrics)
     if code == 'ALPHA_CARD_RESET' and 'trace_duration' in metrics:
         return f"{occurrence_count} reset(s) sur {metrics['trace_duration']} de trace"
     if code == 'UNKNOWN' and metrics.get('total_boxes'):
@@ -103,6 +106,8 @@ def _metric_from_summary(summary: str, code: str, occurrence_count: int, metrics
 
 def _family_for(belt: str, code: str, title: str) -> str:
     text = f"{belt} {code} {title}".upper()
+    if code == 'DemVidageComplet':
+        return 'robot'
     if code == "ALPHA_CARD_RESET":
         return "system"
     if code in _DIMENSION_CODES:
@@ -187,6 +192,8 @@ def _business_lines(summary: str, code: str) -> list[str]:
         return ["Largeur T5 <2 mm avec C9 actif: suspicion forte C9/T5."]
     if code == "CUBESTOP_C4_BLOCKED":
         return ["CubeStop commande HAUT, transfert EA->T3 demande, mais C4 reste actif et C5 ne voit pas la boite."]
+    if code == 'DemVidageComplet':
+        return [summary]
     if code == "T5_STALE_UNMEASURED_BOX":
         return ["Boite T5 non mesuree reste en base et provoque des manques de place."]
     if code == "ORIENTATION":
@@ -267,6 +274,10 @@ def _field_zone_label(group: dict[str, object]) -> str:
 
 def _field_explanation(group: dict[str, object], total_boxes: int, c9_massive: bool) -> tuple[str, str, str]:
     code = str(group["code"])
+    if code == 'DemVidageComplet':
+        return (str(group['summary']),
+                "Le robot demande de vider tout T5 apres un incident de prise ; la cause reste a confirmer.",
+                "Comparer deplacement commande/reel T5, presentation des boites et position physique de l'Alpha.")
     belt = str(group["belt"])
     count = int(group["occurrence_count"])
     ratio = _ratio(count, total_boxes)
@@ -400,6 +411,10 @@ def _field_severity_for(group: dict[str, object], total_boxes: int, c9_massive: 
 
 
 def _field_priority_score(group: dict[str, object]) -> int:
+    shared = t5_priority_score(str(group['code']), str(group['field_severity']),
+                               int(group['occurrence_count']), group.get('metrics'))
+    if shared is not None:
+        return shared
     severity_score = {"error": 500, "warning": 190, "info": 80}.get(str(group["field_severity"]), 0)
     code = str(group["code"])
     belt = str(group["belt"])
@@ -468,6 +483,10 @@ def _apply_field_severity(grouped: list[dict[str, object]], total_boxes: int) ->
 
 
 def _priority_score(group: dict[str, object]) -> int:
+    shared = t5_priority_score(str(group['code']), str(group['severity']),
+                               int(group['occurrence_count']), group.get('metrics'))
+    if shared is not None:
+        return shared
     severity_score = {"error": 500, "warning": 190, "info": 80}.get(str(group["severity"]), 0)
     code = str(group["code"])
     code_bonus = {
@@ -786,7 +805,8 @@ def build_report_payload(
                 group['series'].append({key: incident[key] for key in (
                     'first_line', 'last_line', 'start_time_str', 'end_time_str', 'duration', 'summary', 'count')})
                 group['series'][-1].update(example_start=start, example_count=len(examples) - start,
-                                          evidence_count=len(lines))
+                                          evidence_count=len(lines),
+                                          distinct_events=group['code'] == 'DemVidageComplet')
                 # Le total reste complet ; seules les preuves exportees sont bornees.
                 incident['event_lines'] = lines[:10]
                 incident['examples'] = incident['examples'][:10]

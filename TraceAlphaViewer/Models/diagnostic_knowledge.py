@@ -162,15 +162,18 @@ DIAGNOSTIC_KNOWLEDGE: dict[str, dict[str, object]] = {
         'confidence': 'probable',
     },
     't5_dem_vidage_complet': {
-        'symptom': "Le robot demande plusieurs vidages complets de T5.",
+        'symptom': "Le robot demande de vider tout T5 apres un incident de prise, pas seulement la boite concernee.",
         'causes': [
-            "Le robot tape une boite lors de la prise sur T5.",
-            "Apprentissage Alpha incorrect ou decalage informatique.",
-            "Probleme mecanique T5 sur moteur ou rouleau moteur.",
+            "Deplacement reel T5 different de la consigne : entrainement, patinage, moteur ou rouleau.",
+            "Boite retournee ou destabilisee pendant le tassage sur T5.",
+            "Alpha deplace apres intervention, sans retour exact a sa position par rapport au robot.",
         ],
         'checks': [
             "Compter les occurrences OMEGA:T5-DemVidageComplet.",
-            "Verifier la position des boites T5 et le comportement robot autour des occurrences.",
+            "Comparer le deplacement commande et le deplacement reel du tapis ; controler entrainement et rouleaux T5.",
+            "Examiner presentation, stabilite et tassage des boites avant la prise robot.",
+            "Verifier position physique de l'Alpha, reperes et apprentissage robot apres intervention.",
+            "La commande confirme le vidage demande ; elle ne determine pas a elle seule la cause du choc.",
         ],
         'confidence': 'probable',
     },

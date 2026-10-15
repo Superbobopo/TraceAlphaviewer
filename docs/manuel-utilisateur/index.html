@@ -232,6 +232,17 @@ figure{margin:20px 0;break-inside:avoid;border:1px solid #cad7e5;border-radius:8
 <p>Le bouton <strong>Voir la boîte mesurée dans AlphaViewer</strong> conserve un autre usage : afficher la boîte après ses trois mesures. Un clic sur sa ligne T4C peut donc rejoindre un instant antérieur. Si la trace source est fermée ou remplacée, les preuves restent lisibles mais leur navigation est désactivée.</p>
 <p>La première génération prépare seulement les contextes utiles. Un nouveau clic sur <strong>Rapport web</strong> dans la même vue réutilise le rapport déjà prêt.</p>
 </div>
+<div class="report-evidence-guide">
+<span class="chapter">14 • Vidage T5 robot</span><h2>Repérer les incidents de prise robot</h2>
+<p>Une commande <code>OMEGA:T5-DemVidageComplet</code> indique que le robot demande de <strong>vider tout T5</strong> après un incident de prise, et pas seulement la boîte concernée. Une alerte dédiée apparaît dès la première demande dans la vue globale du diagnostic, le rapport web et son PDF.</p>
+<figure><img class="report-capture" src="assets/vidage-robot.png" alt="Alerte critique de vidage T5 robot, avec total et pics de fréquence fictifs"><figcaption>Données fictives : cinq demandes en quarante minutes. Cliquez sur l'alerte pour consulter les contrôles et les preuves.</figcaption></figure>
+<h3>La fréquence détermine l'urgence</h3>
+<p>Le diagnostic devient <strong>critique dès deux demandes sur une heure ou cinq sur 24 heures</strong>. Les fenêtres sont glissantes et peuvent traverser minuit. À partir de <strong>quinze demandes sur 24 heures</strong>, sa priorité est renforcée. Un total élevé réparti sur plusieurs jours ne suffit pas à lui seul.</p>
+<p>Un vidage robot critique peut entrer dans les trois premiers points à vérifier. Cinq ou six demandes sur 24 heures passent devant trois occurrences de boîte T5 non mesurée bloquante. L'alerte dédiée reste visible quel que soit le classement.</p>
+<h3>Trois pistes à vérifier sur la machine</h3>
+<ul><li><strong>Déplacement réel T5 :</strong> comparer la consigne au déplacement physique ; vérifier entraînement, patinage et rouleaux.</li><li><strong>Présentation de la boîte :</strong> rechercher un retournement ou une instabilité pendant le tassage avant la prise.</li><li><strong>Position de l'Alpha :</strong> après intervention, vérifier son emplacement par rapport au robot et les repères d'apprentissage.</li></ul>
+<p>La commande confirme la demande de vidage ; elle ne prouve pas à elle seule la cause du choc. Le détail indique les périodes des pics et les dix premières demandes distinctes maximum, avec leurs lignes sources navigables. Le total reste complet.</p>
+</div>
 <div class="orientation-guide">
 <span class="chapter">14 • Présentation des boîtes</span><h2>Repérer les boîtes dans le mauvais sens</h2>
 <p>Dans le rapport web, la rubrique <strong>Boîtes dans le mauvais sens</strong> présente les <strong>orientations probables d'après les dimensions</strong>. Une autre permutation des dimensions BdD explique mieux les trois mesures. Cela reste une déduction : vérifiez la présentation physique.</p>

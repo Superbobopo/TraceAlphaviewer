@@ -70,5 +70,9 @@
   "dossier": {
     "width": 1780,
     "height": 1000
+  },
+  "vidage-robot": {
+    "width": 1090,
+    "height": 133
   }
 }

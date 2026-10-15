@@ -14,6 +14,7 @@ from Models.dimension_check import (
 from Models.et_codes import et_description
 from Models.diagnostic_knowledge import knowledge
 from Models.state import MachineEvent, MachineState
+from Models.robot_drain import drain_metrics, drain_metric_text
 
 
 @dataclass
@@ -807,18 +808,8 @@ def _build_t4_init_loop_incidents(
 def _build_text_pattern_incidents(
     line_states: list[tuple[int, str, MachineState]],
 ) -> list[DiagnosticIncident]:
-    incidents: list[DiagnosticIncident] = []
+    incidents: list[DiagnosticIncident] = _build_robot_drain_incidents(line_states)
     patterns = [
-        (
-            'T5 - Vidage complet demande par le robot',
-            'T5',
-            'DemVidageComplet',
-            _TRACE_T5_DEM_VIDAGE,
-            't5_dem_vidage_complet',
-            'warning',
-            "Le robot demande plusieurs vidages complets de T5 apres perturbation de prise.",
-            2,
-        ),
         (
             'C4 - Boite coincee apres ejects',
             'EA',
@@ -882,6 +873,34 @@ def _build_text_pattern_incidents(
             event_lines=[line_num for line_num, _, _ in matched],
         ))
     return incidents
+
+
+def _build_robot_drain_incidents(line_states):
+    matched = []
+    seen = set()
+    for line, text, state in line_states:
+        if line in seen or not _TRACE_T5_DEM_VIDAGE.search(text):
+            continue
+        seen.add(line)
+        date = re.search(r'(\d+\|\d{2}:\d{2}:\d{2}(?:\.\d+)?)', text)
+        matched.append((line, state.timestamp, date[1] if date else state.timestamp_str))
+    if not matched:
+        return []
+    metrics = drain_metrics(matched)
+    rule = knowledge('t5_dem_vidage_complet')
+    first, last = matched[0], matched[-1]
+    reason = ('Priorite renforcee : au moins 15 demandes sur 24 h.' if metrics['reinforced'] else
+              'Critique : au moins 2 demandes sur 1 h ou 5 sur 24 h.' if metrics['critical'] else
+              'Alerte : aucune concentration critique observee.')
+    return [DiagnosticIncident(
+        severity='error' if metrics['critical'] else 'warning',
+        title='T5 - Vidage complet demande par le robot', belt='T5', code='DemVidageComplet',
+        first_line=first[0], last_line=last[0], start_time=first[1], end_time=last[1],
+        start_time_str=first[2], end_time_str=last[2], count=len(matched),
+        summary=drain_metric_text(metrics) + '. ' + reason,
+        symptom=str(rule['symptom']), probable_causes=list(rule['causes']),
+        checks=list(rule['checks']), confidence=str(rule['confidence']),
+        event_lines=[item[0] for item in matched], metrics=metrics)]
 
 
 def _duration_text(seconds: float) -> str:
