@@ -682,6 +682,8 @@ def _empty_camera_stats() -> dict[str, object]:
         "reader_stats": [],
         "alerts": [],
         "note": "Donnees cameras indisponibles pour ce rapport.",
+        "unknown": {'count': 0, 'total': 0, 'ratio': None, 'alert': False,
+                    'buckets': {}, 'checks': [], 'causes': [], 'examples': []},
     }
 
 
@@ -716,7 +718,11 @@ def build_report_payload(
     frames: list[MachineState] | None = None,
     source_name: str = '',
 ) -> dict[str, object]:
-    camera_stats = camera_report_stats(frames) if frames is not None else _empty_camera_stats()
+    camera_stats = (frames.read_camera_report() if hasattr(frames, 'read_camera_report') else
+                    camera_report_stats(frames) if frames is not None else _empty_camera_stats())
+    unknown = dict(camera_stats.get('unknown', {}))
+    unknown['examples'] = [dict(sample, id=f'unknown:{sample["line"]}', incident_line=0)
+                           for sample in unknown.get('examples', [])]
     total_boxes = int(camera_stats.get("total_boxes") or 0)
     grouped = _group_incidents(incidents)
     analysis = (frames.read_measurements() if hasattr(frames, 'read_measurements') else
@@ -768,11 +774,22 @@ def build_report_payload(
             examples = [dict(sample) for sample in analysis['samples'] if sample['code'] == group['code']]
         else:
             examples = []
-            for incident in group['incidents']:
-                for line in dict.fromkeys(incident['event_lines'] or [incident['first_line']]):
+            group['series'] = []
+            for incident in sorted(group['incidents'], key=lambda item: item['first_line']):
+                lines = list(dict.fromkeys(incident['event_lines'] or [incident['first_line']]))
+                lines.sort()
+                start = len(examples)
+                for line in lines[:10]:
                     examples.append({'line': line, 'time_str': incident['start_time_str'],
                                      'box': '', 'barcode': '', 'detail': incident['summary'],
                                      'incident_line': incident['first_line']})
+                group['series'].append({key: incident[key] for key in (
+                    'first_line', 'last_line', 'start_time_str', 'end_time_str', 'duration', 'summary', 'count')})
+                group['series'][-1].update(example_start=start, example_count=len(examples) - start,
+                                          evidence_count=len(lines))
+                # Le total reste complet ; seules les preuves exportees sont bornees.
+                incident['event_lines'] = lines[:10]
+                incident['examples'] = incident['examples'][:10]
         group['examples'] = examples
         for index, sample in enumerate(examples):
             sample.update(id=f"{group['id']}:{index}", group_id=group['id'])
@@ -781,9 +798,12 @@ def build_report_payload(
             wanted.update(range(max(1, sample['line'] - 2), sample['line'] + 3))
             for line in set(sample.get('sources', {}).values()) - {0}:
                 wanted.update(range(max(1, line - 2), line + 3))
+    for sample in unknown['examples']:
+        wanted.update(range(max(1, sample['line'] - 2), sample['line'] + 3))
     raw = {}
     if frames is not None:
-        for frame in frames:
+        selected_frames = frames.frames_for_lines(wanted) if hasattr(frames, 'frames_for_lines') else frames
+        for frame in selected_frames:
             for line, text, *_ in frame.raw_lines:
                 if line in wanted:
                     raw[line] = (text, frame.timestamp_str)
@@ -804,6 +824,17 @@ def build_report_payload(
         if sample['line'] in raw:
             sample['time_str'] = raw[sample['line']][1]
         sample['incident_line'] = next((g['first_line'] for g in grouped if g['code'] == sample['code']), 0)
+    unknown_incident = next((g['first_line'] for g in grouped if g['code'] == 'UNKNOWN'), 0)
+    for sample in unknown['examples']:
+        sample['incident_line'] = unknown_incident
+        sample['context'] = [{'line': n, 'text': raw[n][0]} for n in
+                             range(max(1, sample['line'] - 2), sample['line'] + 3) if n in raw]
+    all_samples = [sample for group in grouped for sample in group['examples']]
+    all_samples += list(reference_samples.values()) + unknown['examples']
+    for sample in all_samples:
+        for row in sample['context']:
+            key = f'source:{row["line"]}'
+            row['navigation_id'] = key
     _apply_field_severity(grouped, total_boxes)
     grouped.sort(
         key=lambda group: (
@@ -839,6 +870,7 @@ def build_report_payload(
         "priority": _priority_groups([group for group in grouped if group['code'] != 'ORIENTATION']),
         "zones": _zone_summary(grouped),
         "camera": camera_stats,
+        "unknown": unknown,
         "families": [
             {"id": "all", "label": _FAMILY_LABELS["all"]},
             {"id": "critical", "label": _FAMILY_LABELS["critical"]},

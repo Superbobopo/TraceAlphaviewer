@@ -1217,6 +1217,16 @@ class BridgeTests(unittest.TestCase):
             self.assertEqual(view._idx, 2)
             self.assertFalse(view._playing)
             self.assertEqual(view._analysis_tabs.get(), 'Diagnostic')
+            source_result, source_done = {}, threading.Event()
+            view._toggle_details()
+            view._report_bridge.commands.put(({'line':4,'code':'T4_LENGTH','first_line':1,
+                                               'source_line':True}, source_done, source_result))
+            with patch.object(app,'deiconify'), patch.object(app,'lift'):
+                view._poll_report_bridge()
+            self.assertTrue(source_result.get('ok'), source_result)
+            self.assertEqual(view._idx,1)
+            self.assertTrue(view._details_visible)
+            view._go_to(2)
             stale = threading.Event()
             stale.set()
             expired_result = {}

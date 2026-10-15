@@ -269,6 +269,10 @@ def captures():
             page = preview.new_page(viewport={'width':1440,'height':1080})
             page.goto(report.as_uri())
             page.locator('.priority-grid').screenshot(path=str(assets/'priorites.png'))
+            page.locator('.priority-heading').screenshot(path=str(assets/'compteur-unknown.png'))
+            series = page.locator('details[data-group^="INIT-C6:"]')
+            series.evaluate('(node)=>node.open=true')
+            series.locator('.incident-series').first.screenshot(path=str(assets/'serie-rapport.png'))
             page.goto(example.as_uri())
             page.locator('.axis-grid').screenshot(path=str(assets/'decalages.png'))
             preview.close()
@@ -277,6 +281,9 @@ def captures():
             metadata['priorites'] = {'width':picture.width,'height':picture.height}
         with Image.open(assets/'decalages.png') as picture:
             metadata['decalages'] = {'width':picture.width,'height':picture.height}
+        for name in ('compteur-unknown', 'serie-rapport'):
+            with Image.open(assets / f'{name}.png') as picture:
+                metadata[name] = {'width':picture.width,'height':picture.height}
         from Tools.validate_measurement_report import orientation_samples
         rotated = orientation_samples()
         orientation_report = write_diagnostic_report(build_diagnostics(rotated,[]),

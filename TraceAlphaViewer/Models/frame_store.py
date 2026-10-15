@@ -99,6 +99,21 @@ class FrameStore(Sequence[MachineState]):
         with (self.directory / 'events.pkl').open('rb') as source:
             return pickle.load(source)
 
+    def read_camera_report(self):
+        from Models.diagnostic import camera_report_stats
+        path = self.directory / 'camera_report.pkl'
+        if not path.exists():
+            return camera_report_stats(self)
+        with path.open('rb') as source:
+            return pickle.load(source)
+
+    def frames_for_lines(self, lines):
+        """Lire une fois les frames utiles, dans l'ordre des blocs."""
+        indices = {self.frame_index_for_line(line) for line in lines
+                   if len(self) and line >= 1}
+        for index in sorted(indices):
+            yield self[index]
+
     def read_measurements(self):
         from Models.measurement_analysis import analyze_measurements
         path = self.directory / 'measurements.pkl'

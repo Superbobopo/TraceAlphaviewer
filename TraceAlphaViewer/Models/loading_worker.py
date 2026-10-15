@@ -80,7 +80,9 @@ def run(request, send):
         events = measure('evenements', lambda: _collect_events(frames))
         step('diagnostic', 'Analyse diagnostic...')
         measurements = measure('mesures', lambda: analyze_measurements(frames))
-        diagnostics = measure('diagnostics', lambda: build_diagnostics(frames, events, measurements))
+        camera_report = {}
+        diagnostics = measure('diagnostics', lambda: build_diagnostics(
+            frames, events, measurements, camera_report_output=camera_report))
         step('references', 'Index references...')
         references = measure('references', lambda: build_reference_records(frames, events)) if mode == 'file' else []
         step('display', "Preparation de l'affichage...")
@@ -88,6 +90,8 @@ def run(request, send):
         count = len(frames)
         measure('stockage', lambda: write_frame_store(frames, directory, release=True,
                                                      measurement_summary=measurements['summary']))
+        with (directory / 'camera_report.pkl').open('wb') as output:
+            pickle.dump(camera_report, output, protocol=pickle.HIGHEST_PROTOCOL)
         with (directory / 'measurements.pkl').open('wb') as output:
             pickle.dump(measurements, output, protocol=pickle.HIGHEST_PROTOCOL)
         del measurements

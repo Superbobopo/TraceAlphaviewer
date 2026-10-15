@@ -135,15 +135,28 @@ class ReportBridge:
         data_path = path.with_name(path.name.replace('diagnostic_report_', 'report_data_')).with_suffix('.json')
         payload = json.loads(data_path.read_text(encoding='utf-8'))
         examples = {}
+        def register_sources(sample, code, first_line):
+            for row in sample.get('context', []):
+                line = row.get('line')
+                key = row.get('navigation_id')
+                if isinstance(line, int) and line > 0 and key == f'source:{line}':
+                    examples.setdefault(key, {'line': line, 'code': code,
+                                             'first_line': first_line, 'source_line': True})
         for group in payload['groups']:
             for sample in group.get('examples', []):
                 examples[sample['id']] = {'line': sample['line'], 'code': group['code'],
-                                          'first_line': group['first_line']}
+                                          'first_line': sample.get('incident_line', group['first_line'])}
                 if group['code'] in ('T4_LENGTH', 'T5_WIDTH', 'T5_HEIGHT', 'GLOBAL', 'ORIENTATION'):
                     examples[sample['id']]['sample'] = sample
+                register_sources(sample, group['code'], sample.get('incident_line', group['first_line']))
         for sample in payload.get('measurement_examples', []):
             examples[sample['id']] = {'line': sample['line'], 'code': sample['code'],
                                       'first_line': sample['incident_line'], 'sample': sample}
+            register_sources(sample, sample['code'], sample['incident_line'])
+        for sample in payload.get('unknown', {}).get('examples', []):
+            examples[sample['id']] = {'line': sample['line'], 'code': 'UNKNOWN',
+                                      'first_line': sample.get('incident_line', 0)}
+            register_sources(sample, 'UNKNOWN', sample.get('incident_line', 0))
         if self.closed.is_set():
             raise RuntimeError('La vue source est fermee.')
         key = secrets.token_urlsafe(12)

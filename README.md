@@ -381,6 +381,48 @@ inclus dans `validate_all.py`, controle aussi les lectures aleatoires, les
 limites des blocs, le cache, les erreurs de stockage/worker, les annulations,
 le nettoyage, les vues de retour et le viewer de dossier.
 
+## Rapport : UNKNOWN, series et navigation
+
+Le compteur UNKNOWN en tete du rapport affiche les boites finales inconnues apres
+CB1 et CB2 sur le total des boites passees. Il ouvre leur detail, meme sous le seuil
+d'alerte. Au-dessus de 7 %, un encart dedie accompagne les trois priorites sans
+modifier leur classement. Les UNKNOWN temporaires reconnues ensuite sont exclues.
+
+Les repetitions d'un meme incident sont rassemblees en une carte avec son total
+et sa periode. Le detail prepare au plus les dix premieres occurrences de chaque
+serie. Les mesures conservent toutes leurs preuves et leur pagination habituelle.
+Un numero de ligne dans les preuves rejoint cette ligne dans le viewer ; le
+bouton de boite mesuree rejoint toujours l'etat complet apres les trois mesures.
+
+Les statistiques camera sont preparees une fois par session ; les contextes sont
+lus par blocs indexes. La reouverture reutilise le rapport de la vue. Apres un
+`git pull` touchant le rapport, reconstruire `report_app` avec `npm.cmd run build`
+sous Windows, puis relancer le viewer et regenerer le rapport.
+
+Le benchmark `TraceAlphaViewer/Tools/benchmark_report.py` mesure duree, taille
+HTML/JSON et lectures de blocs, trois fois sur la meme session :
+
+```powershell
+python TraceAlphaViewer\Tools\benchmark_report.py --session build\benchmark-rapport --prepare chemin\trace.old --label avant
+python TraceAlphaViewer\Tools\benchmark_report.py --session build\benchmark-rapport --refresh-camera --label apres
+```
+
+Les sessions et resultats restent locaux dans `build/` ; `--revision` permet une
+comparaison Git. La preparation de la session est hors du temps de generation.
+
+Comparatif local du 15 octobre 2026 face a `db8e292`, mediane de trois generations,
+sur les memes sessions et sans autre traitement lourd :
+
+| Trace | Avant | Apres | Gain | Blocs lus avant / apres | HTML avant / apres |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Monistrol | 49,4 s | 6,9 s | x7,2 | 3 367 / 612 | 31,0 / 8,3 Mo |
+| TracAlpha1_017 | 12,5 s | 3,6 s | x3,5 | 891 / 398 | 6,9 / 7,4 Mo |
+
+Les compteurs restent identiques. Les liens de preuves ajoutent des donnees au
+rapport 017, moins repetitif ; le gain de temps provient surtout des lectures
+ciblees. Ces mesures concernent la generation, pas le temps d'ouverture du
+navigateur ni la lecture initiale de la trace.
+
 ## Fichiers importants
 
 - `TraceAlphaViewer/Main.py` : point d'entree de l'application

@@ -1618,9 +1618,28 @@ def _build_inactive_camera_incident(stats: dict[str, object]) -> list[Diagnostic
     )]
 
 
-def camera_report_stats(frames: list[MachineState]) -> dict[str, object]:
+def _unknown_report_stats(stats: dict) -> dict:
+    buckets = {'CB1 seul': 0, 'CB2 seul': 0, 'CB1+CB2': 0, 'non attribue': 0}
+    examples = []
+    for line, ref, _, time_str, readers in stats['created_unknown']:
+        bucket = _camera_unknown_bucket(readers)
+        buckets[bucket] += 1
+        if bucket == 'CB1+CB2' and len(examples) < 10:
+            examples.append({'line': line, 'time_str': time_str, 'barcode': ref,
+                             'box': '', 'detail': 'Boîte finale UNKNOWN après CB1 et CB2.'})
+    total = len(stats['all_hist_boxes'])
+    count = buckets['CB1+CB2']
+    rule = knowledge('camera_unknown_rate')
+    return {'count': count, 'total': total, 'ratio': count / total if total else None,
+            'alert': bool(total and count * 100 > total * 7), 'buckets': buckets,
+            'examples': examples, 'checks': list(rule.get('checks', [])),
+            'causes': list(rule.get('causes', []))}
+
+
+def camera_report_stats(frames: list[MachineState], *, stats=None) -> dict[str, object]:
     """Statistiques de lecture camera pour le rapport terrain."""
-    stats = _camera_stats(_frame_line_states(frames))
+    if stats is None:
+        stats = _camera_stats(_frame_line_states(frames))
     success_by_reader = stats['success_by_reader']
     reader_boxes = stats['reader_boxes']
     reader_zero_boxes = stats['reader_zero_boxes']
@@ -1676,6 +1695,7 @@ def camera_report_stats(frames: list[MachineState]) -> dict[str, object]:
         'reader_stats': reader_stats,
         'alerts': alerts,
         'note': 'CB1 = cameras 1, 2, 4, 5, 6. CB2 = camera 3.',
+        'unknown': _unknown_report_stats(stats),
     }
 
 
@@ -1683,6 +1703,7 @@ def build_diagnostics(
     frames: list[MachineState],
     events: list[MachineEvent],
     measurement_analysis=None,
+    camera_report_output=None,
 ) -> list[DiagnosticIncident]:
     incidents: list[DiagnosticIncident] = []
     line_states = _frame_line_states(frames)
@@ -1700,6 +1721,8 @@ def build_diagnostics(
     incidents.extend(_build_c9_invalid_width_incidents(line_states))
     incidents.extend(_build_dimension_incidents(frames, line_states, measurement_analysis))
     camera_stats = _camera_stats(line_states)
+    if camera_report_output is not None:
+        camera_report_output.update(camera_report_stats(frames, stats=camera_stats))
     incidents.extend(_build_unknown_camera_incident(camera_stats))
     incidents.extend(_build_inactive_camera_incident(camera_stats))
 

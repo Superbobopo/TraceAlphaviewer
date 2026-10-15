@@ -700,13 +700,17 @@ class TraceView(BaseView):
                     if not self._visible or self._disposed.is_set():
                         raise RuntimeError('La trace source doit etre ouverte dans le viewer.')
                     line = target['line']
-                    if not self._frames or not 1 <= line <= self._frames[-1].line_num:
+                    last_line = (max([self._frames[-1].line_num] +
+                                     [row[0] for row in self._frames[-1].raw_lines]) if self._frames else 0)
+                    if not 1 <= line <= last_line:
                         raise RuntimeError('La ligne de cet exemple est indisponible.')
                     if target.get('sample'):
                         self._on_measurement_sample(target['sample'], target.get('axis', 'length'))
                     else:
                         self._on_trace_click(line)
                     self._trace_panel.highlight_lines(line, line)
+                    if target.get('source_line') and not self._details_visible:
+                        self._toggle_details()
                     if hasattr(self, '_analysis_tabs'):
                         self._analysis_tabs.set('Diagnostic')
                     elif hasattr(self, '_show_analysis_fallback_tab'):

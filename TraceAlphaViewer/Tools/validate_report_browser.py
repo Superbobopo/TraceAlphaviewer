@@ -437,6 +437,8 @@ class BrowserTests(unittest.TestCase):
                     self.assertFalse(page.locator('.measurement-exclusions').evaluate('(node)=>node.open'))
                     page.get_by_role('button',name='Exporter PDF').focus()
                     page.keyboard.press('Tab')
+                    self.assertTrue(page.evaluate('document.activeElement.hasAttribute("data-unknown")'))
+                    page.keyboard.press('Tab')
                     self.assertTrue(page.evaluate('document.activeElement.hasAttribute("data-priority")'))
                     page.keyboard.press('Enter')
                     self.assertTrue(page.locator('details[data-group][open]').count())
