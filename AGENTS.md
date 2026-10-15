@@ -13,7 +13,7 @@ Ce fichier est la memoire projet versionnee. Les regles techniques partagees doi
 - Les nouveaux commentaires de code doivent etre en francais.
 - Ne pas traduire les identifiants techniques, noms de fichiers, constantes, classes, fonctions ou libelles issus des traces.
 - Garder les commentaires courts et utiles ; ne pas commenter ce que le code dit deja clairement.
-- Le manuel debutant est dans `docs/manuel-utilisateur/index.html` ; son PDF est genere depuis ce meme HTML. Apres un changement visible de l'interface, verifier les instructions, reperes et captures concernes. Utiliser `Tools/generate_user_manual.py --captures --pdf` avec des donnees fictives et une capture du HWND du viewer uniquement ; ne jamais capturer le bureau ou publier les traces terrain. Controler la pagination et les images du PDF avant livraison.
+- Le manuel debutant est dans `docs/manuel-utilisateur/index.html` ; son PDF est genere depuis ce meme HTML. Apres un changement visible de l'interface, verifier les instructions, reperes et captures concernes. Regenerer les captures et le PDF seulement si leur contenu devient obsolete. Utiliser alors `Tools/generate_user_manual.py --captures --pdf` avec des donnees fictives et une capture du HWND du viewer uniquement ; ne jamais capturer le bureau ou publier les traces terrain. Controler la pagination et les images du PDF regenere avant livraison.
 
 ## Lancement et commandes
 
@@ -23,7 +23,7 @@ Depuis la racine du depot :
 python TraceAlphaViewer\Main.py
 ```
 
-Compilation minimale apres modification de code :
+Pour une correction ciblee, compiler uniquement les fichiers Python modifies avec `python -m py_compile <fichiers_modifies>`. Pour une validation globale, compiler aussi les fichiers principaux :
 
 ```powershell
 python -m py_compile TraceAlphaViewer\Main.py TraceAlphaViewer\Models\state.py TraceAlphaViewer\Parser\trace_parser.py TraceAlphaViewer\Views\traceView.py TraceAlphaViewer\Widgets\machine_canvas.py
@@ -54,7 +54,7 @@ Cette autorisation est permanente pour les prochaines interventions Codex sur ce
 Procedure obligatoire, dans cet ordre :
 
 1. Verifier que la tache est terminee et relire les modifications pour reperer les erreurs evidentes.
-2. Executer `python TraceAlphaViewer\Tools\validate_all.py`, ainsi que la compilation et les validations specifiques deja exigees dans ce fichier. Signaler les controles ignores faute de trace locale. Si un test echoue ou si une validation obligatoire est impossible, ne pas committer ni pousser ; expliquer le blocage.
+2. Appliquer la validation proportionnee de la checklist ci-dessous. Reutiliser les controles deja reussis si aucune modification ulterieure ne peut affecter leur resultat ; aucun second passage systematique avant le commit. Signaler les controles pertinents ignores faute de trace locale. Si un test pertinent echoue ou si une validation requise pour le changement est impossible, ne pas committer ni pousser ; expliquer le blocage.
 3. Examiner `git status --short`, `git diff`, `git diff --cached` et `git diff --cached --name-only`. Verifier aussi les fichiers non suivis susceptibles d'appartenir a la tache et lancer `git diff --check`.
 4. Indexer uniquement les fichiers ou morceaux de modification lies a la tache. Preserver les changements utilisateur preexistants, y compris ceux deja indexes ; ne jamais utiliser un ajout global aveugle comme `git add .` ou `git add -A`. Si un fichier contient des modifications melangees, indexer seulement les morceaux autorises. Le commit final ne doit contenir aucune modification sans rapport avec la tache.
 5. Exclure les secrets, tokens, cles, fichiers d'authentification, traces locales, fichiers temporaires et artefacts non demandes. Respecter les exclusions de traces et l'exception d'echantillon precis deja definies plus haut. Inspecter le contenu a committer sans afficher de donnees sensibles.
@@ -243,8 +243,13 @@ Exception d'installation : cette mise a jour des instructions reste locale, sans
 
 ## Checklist de validation
 
-- Compiler les fichiers principaux avec la commande `py_compile` indiquee plus haut apres toute modification Python.
-- Lancer `python TraceAlphaViewer\Tools\validate_all.py` pour regrouper les controles metier et les regressions du viewer ; signaler les controles ignores faute de trace locale.
+- Texte ou documentation seuls : verifier le diff et les liens concernes ; aucun test metier.
+- Petite modification visuelle : controler le composant concerne ; aucun benchmark ni test des fonctions independantes.
+- Correction fonctionnelle : compiler les fichiers Python modifies et tester la fonction ainsi que ses dependances directement touchees.
+- Modification transversale du parser, des identites de boites, du stockage des frames ou du chargement : validation globale avec `python TraceAlphaViewer\Tools\validate_all.py` et compilation des fichiers principaux. Conserver ce lanceur pour les controles complets, sans ajouter de cache complexe.
+- Un test reussi reste acquis tant qu'aucune modification ulterieure du code, des dependances, des donnees de test ou de l'environnement ne peut affecter son resultat. Ne pas le relancer uniquement pour le commit.
+- Les scenarios metier ci-dessous et les controles specifiques du reste du document s'appliquent aux comportements touches par le changement, pas systematiquement a chaque tache. Signaler les controles pertinents ignores faute de trace locale.
+- Reserver les benchmarks aux changements de performance. Construire et valider l'executable uniquement pour une livraison de l'executable ou une modification du packaging. Reconstruire React uniquement lorsque ses sources changent ; pour les changements documentaires, appliquer la regle du manuel ci-dessus.
 - Les validations automatiques restent en arriere-plan, sans prise de focus. `validate_all.py --visual` et `benchmark_loading.py --show` sont reserves a une demande explicite de controle visible ; les controles d'affichage deja valides ne sont pas repetes sans modification pertinente.
 - Pour une optimisation de chargement, mesurer les grosses traces separement et sans profileur avec `Tools/benchmark_loading.py` ; utiliser `--revision` et `--compare-results` pour comparer tous les diagnostics et references. Les exports JSON restent locaux.
 - Pour la reactivite, mesurer l'ouverture depuis l'accueil avec `--ui-latency --exercise-window --require-responsive` : percentile 95 sous 100 ms, maximum sous 500 ms. Ajouter `--verify-frames --verify-analyses` pour comparer frames/evenements, six filtres et rapport hors mesure, et `--check-navigation` pour la recherche CIP et le player. Garder au moins le gain x2 face a la version precedant les premieres optimisations.
@@ -258,11 +263,17 @@ Exception d'installation : cette mise a jour des instructions reste locale, sans
 - Controler visuellement T2 si modifie : fleche grise a l'arret, coloree pendant les codes moteur actifs.
 - Si un controle echoue, inspecter d'abord l'etat parser (`BoxInfo`, `MachineState`) avant de toucher aux constantes canvas.
 
+## Reduction des tokens et du temps de travail
+
+- Rechercher et lire uniquement le code utile au changement ; regrouper les inspections independantes et eviter les relectures sans nouvelle raison.
+- Conserver les sorties detaillees des tests dans des journaux locaux non versionnes ; lire le resume, puis les details utiles en cas d'echec. Conserver le code de sortie pour ne pas masquer un echec.
+- Rapporter brievement les changements, les controles effectues et les limites ; ne pas reproduire les journaux complets.
+
 ## Definition de termine
 
 - Le changement demande est implemente ou la question est repondue clairement.
-- Si du code Python a change, la compilation `py_compile` a ete lancee ou l'impossibilite est expliquee.
-- Si T5, le parser ou le canvas a change, les scenarios trace critiques ont ete controles.
+- Si du code Python a change, les fichiers modifies ont ete compiles avec `py_compile` ou l'impossibilite est expliquee.
+- Si T5, le parser ou le canvas a change, les scenarios trace critiques concernes ont ete controles selon la checklist proportionnee.
 - Les erreurs ou limites restantes sont listees explicitement.
 - La documentation projet est mise a jour quand une nouvelle regle evite une repetition d'erreur.
 - Les fichiers hors depot ou les memoires personnelles ne sont pas modifies sans demande explicite.
