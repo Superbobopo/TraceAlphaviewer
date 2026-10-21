@@ -422,6 +422,14 @@ conservent alternances, blocages et reprises avec navigation vers les sources.
 Verifier obstacle, proprete, alignement et cablage ; une reprise ne prouve pas
 une reparation du capteur.
 
+`C3_SIGNAL_ANOMALY` ajoute une carte distincte avec les memes seuils. Ses
+alternances sont surveillees avec C2/C4 a zero ; un blocage critique exige C3 seul
+actif dans l'etat complet suivant la relance du vidage. Une activation C2 termine
+le contexte C3 sans prouver une reprise du transfert. Le moteur d'analyse est
+partage avec C2, dont les regles restent identiques. Les deux capteurs conservent
+leurs propres episodes, compteurs et preuves ; les bascules n'amplifient pas la
+priorite. Les exemples C3 du manuel sont fictifs.
+
 Les repetitions d'un meme incident sont rassemblees en une carte avec son total
 et sa periode. Le detail prepare au plus les dix premieres occurrences de chaque
 serie. Les mesures conservent toutes leurs preuves et leur pagination habituelle.

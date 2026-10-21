@@ -82,5 +82,9 @@
   "capteur-c2": {
     "width": 1139,
     "height": 212
+  },
+  "capteur-c3": {
+    "width": 1139,
+    "height": 212
   }
 }

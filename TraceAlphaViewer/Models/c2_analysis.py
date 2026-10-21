@@ -1,4 +1,4 @@
-"""Episodes C2 etablis uniquement depuis les observations brutes de la trace."""
+"""Episodes C2/C3 etablis uniquement depuis les observations brutes de la trace."""
 from __future__ import annotations
 
 import re
@@ -15,12 +15,26 @@ _DRAIN_END = re.compile(r'Vid:\s*Fin de vidage de la machine', re.I)
 
 
 def c2_metric_text(metrics):
-    return (f"{metrics['episode_count']} épisode(s) · {metrics['transitions']} bascule(s) C2 · "
-            f"{metrics['drain_relaunches']} relance(s) de vidage avec C2 seul actif · "
+    return signal_metric_text(metrics, 'C2')
+
+
+def signal_metric_text(metrics, sensor):
+    return (f"{metrics['episode_count']} épisode(s) · {metrics['transitions']} bascule(s) {sensor} · "
+            f"{metrics['drain_relaunches']} relance(s) de vidage avec {sensor} seul actif · "
             f"{metrics['initialization_requests']} demande(s) d'initialisation T2")
 
 
 def analyze_c2(line_states):
+    return _analyze_signal(line_states, 'C2')
+
+
+def analyze_c3(line_states):
+    return _analyze_signal(line_states, 'C3')
+
+
+def _analyze_signal(line_states, sensor):
+    idle_sensors = ('C3', 'C4') if sensor == 'C2' else ('C2', 'C4')
+    complete_state = ' '.join(f'{key}:{int(key == sensor)}' for key in ('C2', 'C3', 'C4', 'C5', 'C6', 'C9'))
     calendar = trace_calendar(line_states)
     episodes = []
     current = None
@@ -39,12 +53,14 @@ def analyze_c2(line_states):
                 'transitions': 0, 'alternations': [], 'blocks': [], 'initializations': [],
                 'drain_end': None, 'recovery': None, 'end_reason': ''}
 
-    def close_episode(reason, recovery=None):
+    def close_episode(reason, recovery=None, boundary=None):
         nonlocal current
         if current is None:
             return
         current['end_reason'] = reason
         current['recovery'] = recovery
+        if boundary:
+            current['boundary'] = boundary
         first, last = current['first_t2'], current['last_t2']
         unstable = bool(first and last and current['transitions'] >= 10
                         and last['time'] - first['time'] >= 300)
@@ -64,26 +80,30 @@ def analyze_c2(line_states):
             pending = None
             continue
         sensors = {key: int(value) for key, value in _SENSOR.findall(text)}
-        if sensors.get('C3') == 1 or sensors.get('C4') == 1:
-            close_episode('Activation C3/C4 : progression observée', obs)
+        if any(sensors.get(key) == 1 for key in idle_sensors):
+            if sensor == 'C3' and sensors.get('C4') != 1 and not _PROGRESS.search(text):
+                close_episode(f"Activation de C2 à {obs['display_time']} : contexte de surveillance terminé, "
+                              "reprise T2 non attestée", boundary=obs)
+            else:
+                close_episode(f"Activation {'/'.join(idle_sensors)} : progression observée", obs)
         elif _PROGRESS.search(text):
             close_episode('Progression T2 confirmée', obs)
         if _RELAUNCH.search(text):
             pending = obs
         if 'Capteurs ' in text and pending and 0 < line - pending['line'] <= 3:
             if set(sensors) == {'C2', 'C3', 'C4', 'C5', 'C6', 'C9'}:
-                if sensors['C2'] == 1 and not any(sensors[key] for key in sensors if key != 'C2'):
+                if sensors[sensor] == 1 and not any(sensors[key] for key in sensors if key != sensor):
                     if current is None:
                         current = open_episode(pending)
                     current['blocks'].append({'request': pending, 'state': obs})
                     current['last'] = obs
                 pending = None
         if _T2.search(text) and all(key in sensors for key in ('C2', 'C3', 'C4')):
-            if sensors['C3'] or sensors['C4'] or _PROGRESS.search(text):
+            if any(sensors[key] for key in idle_sensors) or _PROGRESS.search(text):
                 continue
             if current is None:
                 current = open_episode(obs)
-            obs = dict(obs, value=sensors['C2'])
+            obs = dict(obs, value=sensors[sensor])
             previous = current['last_t2']
             if previous and previous['value'] != obs['value']:
                 current['transitions'] += 1
@@ -124,14 +144,16 @@ def analyze_c2(line_states):
             sources['fin_vidage'] = episode['drain_end']['line']
         if recovery:
             sources['reprise'] = recovery['line']
+        if episode.get('boundary'):
+            sources['fin_contexte'] = episode['boundary']['line']
         detail = (f"Épisode {index} du {first['display_time']} au {last['display_time']} "
-                  f"({duration:g} s) : {episode['transitions']} bascule(s) C2, "
+                  f"({duration:g} s) : {episode['transitions']} bascule(s) {sensor}, "
                   f"{len(blocks)} relance(s) de vidage, {len(episode['initializations'])} "
                   "demande(s) d'initialisation T2. ")
         if episode['unstable']:
-            detail += "Instabilité sans progression T2 attestée, C3 et C4 à zéro. "
+            detail += f"Instabilité sans progression T2 attestée, {' et '.join(idle_sensors)} à zéro. "
         if blocks:
-            detail += "Blocage confirmé : relance explicite suivie de C2:1 C3:0 C4:0 C5:0 C6:0 C9:0. "
+            detail += f"Blocage confirmé : relance explicite suivie de {complete_state}. "
         if episode['drain_end']:
             detail += f"Fin de vidage observée à {episode['drain_end']['display_time']}. "
         detail += (f"Reprise observée à {recovery['display_time']} ; état du capteur à contrôler."
@@ -144,6 +166,8 @@ def analyze_c2(line_states):
                 'unstable': episode['unstable'], 'blocked': bool(blocks),
                 'end_reason': episode['end_reason'], 'recovery': recovery,
                 'blocks': blocks, 'sources': sources, 'detail': detail}
+        if episode.get('boundary'):
+            item['boundary'] = episode['boundary']
         metrics['episodes'].append(item)
         target = blocks[0]['request'] if blocks else first
         examples.append({'line': target['line'], 'time_str': target['display_time'],

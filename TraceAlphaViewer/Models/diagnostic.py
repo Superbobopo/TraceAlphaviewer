@@ -16,7 +16,7 @@ from Models.diagnostic_knowledge import knowledge
 from Models.identification_analysis import identification_cycles, unknown_reference
 from Models.state import MachineEvent, MachineState
 from Models.robot_drain import drain_metrics, drain_summary
-from Models.c2_analysis import analyze_c2, c2_metric_text
+from Models.c2_analysis import analyze_c2, analyze_c3, signal_metric_text
 from Models.trace_calendar import trace_calendar
 
 
@@ -909,21 +909,21 @@ def _duration_text(seconds: float) -> str:
     return f"{seconds}s"
 
 
-def _build_c2_signal_incidents(line_states):
-    analysis = analyze_c2(line_states)
+def _build_signal_incidents(line_states, sensor):
+    analysis = (analyze_c2 if sensor == 'C2' else analyze_c3)(line_states)
     if not analysis:
         return []
     metrics, examples = analysis
     episodes = metrics['episodes']
     first, last = episodes[0], episodes[-1]
-    rule = knowledge('c2_signal_anomaly')
+    rule = knowledge(f'{sensor.lower()}_signal_anomaly')
     return [DiagnosticIncident(
         severity='error' if metrics['drain_relaunches'] else 'warning',
-        title='Capteur C2 — signal anormal', belt='T2', code='C2_SIGNAL_ANOMALY',
+        title=f'Capteur {sensor} — signal anormal', belt='T2', code=f'{sensor}_SIGNAL_ANOMALY',
         first_line=first['first_line'], last_line=last['last_line'],
         start_time=first['start_time'], end_time=last['end_time'],
         start_time_str=first['start_time_str'], end_time_str=last['end_time_str'],
-        count=len(episodes), summary=c2_metric_text(metrics),
+        count=len(episodes), summary=signal_metric_text(metrics, sensor),
         symptom=rule['symptom'], probable_causes=list(rule['causes']),
         checks=list(rule['checks']), confidence=rule['confidence'],
         event_lines=[example['line'] for example in examples], examples=examples, metrics=metrics)]
@@ -1803,7 +1803,8 @@ def build_diagnostics(
     incidents.extend(_build_missing_t5_creation_incidents(events))
     incidents.extend(_build_wait_incidents(frames))
     incidents.extend(_build_t2_blocked_before_ea_incidents(frames))
-    incidents.extend(_build_c2_signal_incidents(line_states))
+    for sensor in ('C2', 'C3'):
+        incidents.extend(_build_signal_incidents(line_states, sensor))
     incidents.extend(_build_cubestop_c4_blocked_incidents(line_states))
     incidents.extend(_build_t4_init_loop_incidents(line_states, events))
     incidents.extend(_build_text_pattern_incidents(line_states))

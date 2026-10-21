@@ -388,27 +388,30 @@ def pdf():
     print(f'PDF : {output.relative_to(ROOT)} ({output.stat().st_size} octets)', flush=True)
 
 
-def c2_capture():
+def signal_capture(sensor):
     from Models.diagnostic import build_diagnostics
     from Models.diagnostic_report import write_diagnostic_report
     from Tools.validate_c2_signal import frames_for, blinking, RELAUNCH, SNAPSHOT
+    if sensor == 'C3':
+        from Tools.validate_c3_signal import blinking, SNAPSHOT
     from playwright.sync_api import sync_playwright
     assets = MANUAL / 'assets'
     frames = frames_for(blinking() + [(301, RELAUNCH), (302, SNAPSHOT),
         (303, 'InitMachine: demande initialisation de T2'), (304, 'T2: BOITE-LOAD')])
-    with tempfile.TemporaryDirectory(dir=ROOT / 'build', prefix='manual-c2-') as directory:
+    filename = f'capteur-{sensor.lower()}'
+    with tempfile.TemporaryDirectory(dir=ROOT / 'build', prefix=f'manual-{sensor.lower()}-') as directory:
         report = write_diagnostic_report(build_diagnostics(frames, []), Path(directory), frames,
-                                         source_name='DEMONSTRATION C2 - DONNEES FICTIVES')
+                                         source_name=f'DEMONSTRATION {sensor} - DONNEES FICTIVES')
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(channel='msedge', headless=True)
             page = browser.new_page(viewport={'width':1200, 'height':900})
             page.goto(report.as_uri())
-            page.locator('details[data-group^="C2_SIGNAL_ANOMALY:"] > summary').screenshot(
-                path=str(assets / 'capteur-c2.png'))
+            page.locator(f'details[data-group^="{sensor}_SIGNAL_ANOMALY:"] > summary').screenshot(
+                path=str(assets / f'{filename}.png'))
             browser.close()
     metadata = json.loads((assets / 'captures.json').read_text(encoding='utf-8'))
-    width, height = struct.unpack('>II', (assets / 'capteur-c2.png').read_bytes()[16:24])
-    metadata['capteur-c2'] = {'width':width, 'height':height}
+    width, height = struct.unpack('>II', (assets / f'{filename}.png').read_bytes()[16:24])
+    metadata[filename] = {'width':width, 'height':height}
     (assets / 'captures.json').write_text(json.dumps(metadata, indent=2), encoding='utf-8')
 
 
@@ -416,7 +419,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--captures', action='store_true', help='Reproduire les captures et verifier les parcours')
     parser.add_argument('--pdf', action='store_true', help='Generer le PDF depuis le HTML')
-    parser.add_argument('--robot-capture', action='store_true', help='Actualiser les captures fictives robot et C2')
+    parser.add_argument('--robot-capture', action='store_true', help='Actualiser les captures fictives robot, C2 et C3')
     args = parser.parse_args()
     if not args.captures and not args.pdf and not args.robot_capture:
         parser.error('Choisir --captures, --robot-capture et/ou --pdf')
@@ -424,7 +427,8 @@ def main():
         captures()
     if args.captures or args.robot_capture:
         robot_capture()
-        c2_capture()
+        for sensor in ('C2', 'C3'):
+            signal_capture(sensor)
     if args.pdf:
         pdf()
 

@@ -186,6 +186,7 @@ class C2Tests(unittest.TestCase):
         frames = parse_file(trace, min_dt=0.0)
         incidents = build_diagnostics(frames, _collect_events(frames))
         by_code = {i.code: i for i in incidents}
+        self.assertNotIn('C3_SIGNAL_ANOMALY', by_code)
         self.assertEqual((by_code['DemVidageComplet'].severity, by_code['DemVidageComplet'].count), ('info', 2))
         self.assertEqual(sum(i.count for i in incidents if i.code == 'INIT-INDEX'), 28)
         incident = by_code['C2_SIGNAL_ANOMALY']
@@ -206,6 +207,12 @@ class C2Tests(unittest.TestCase):
             for key in ('measurements', 'measurement_references', 'orientation_references', 'camera', 'unknown'):
                 self.assertEqual(payload[key], old[key], key)
         output = ROOT/'build/rapport-tracalpha1-c2'; output.mkdir(parents=True, exist_ok=True)
+        previous = output/'payload.json'
+        if previous.exists():
+            old = json.loads(previous.read_text(encoding='utf-8'))
+            fresh = json.loads(json.dumps(payload))
+            old.pop('generated_at', None); fresh.pop('generated_at', None)
+            self.assertEqual(fresh, old, 'Les résultats terrain C2 et les autres diagnostics doivent rester identiques')
         (output/'payload.json').write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
         report = write_diagnostic_report(incidents, output, frames, source_name=Path(trace).name)
         print(f'Trace C2 : {incident.summary}. Rapport : {report}', flush=True)

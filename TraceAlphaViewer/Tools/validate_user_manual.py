@@ -53,7 +53,7 @@ def main():
             assert path.is_file(), f'Fichier absent : {link}'
     assert not re.search(r'@import|https?://|url\(', html), 'Dependance externe dans le guide'
     metadata = json.loads((DIRECTORY / 'assets' / 'captures.json').read_text(encoding='utf-8'))
-    assert len(metadata) == 21, 'Vingt et une captures sont attendues'
+    assert len(metadata) == 22, 'Vingt-deux captures sont attendues'
     for name, size in metadata.items():
         data = (DIRECTORY / 'assets' / f'{name}.png').read_bytes()
         assert data[:8] == b'\x89PNG\r\n\x1a\n', f'PNG invalide : {name}'

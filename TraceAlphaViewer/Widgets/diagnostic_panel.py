@@ -740,9 +740,9 @@ class DiagnosticPanel(ctk.CTkFrame):
                     self._details.tag_configure(tag, foreground='#75bfff', underline=True)
                     self._details.tag_bind(tag, '<Button-1>',
                         lambda event, line=sample['line'], item=incident: self._open_reference_example(item, line))
-                    if incident.code == 'C2_SIGNAL_ANOMALY':
+                    if incident.code in {'C2_SIGNAL_ANOMALY', 'C3_SIGNAL_ANOMALY'}:
                         for label, line in sample.get('sources', {}).items():
-                            tag = f'c2-source-{line}'
+                            tag = f"{incident.code.split('_', 1)[0].lower()}-source-{line}"
                             self._details.insert('end', f'\n{label} : L.{line}', (tag,))
                             self._details.tag_configure(tag, foreground='#75bfff', underline=True)
                             self._details.tag_bind(tag, '<Button-1>',

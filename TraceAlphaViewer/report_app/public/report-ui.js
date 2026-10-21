@@ -6,7 +6,7 @@
   const signed = value => value == null ? '—' : `${value > 0 ? '+' : ''}${number(value)}`;
   const severity = group => group.field_severity || group.severity;
   const referenceRejection = code => ['REFERENCE_ABSENT','REFERENCE_NON_ALPHATISABLE'].includes(code);
-  const structuredProof = code => referenceRejection(code) || code==='C2_SIGNAL_ANOMALY';
+  const structuredProof = code => referenceRejection(code) || ['C2_SIGNAL_ANOMALY','C3_SIGNAL_ANOMALY'].includes(code);
   const criticalRobot = group => Number(group?.metrics?.day?.count||0)>=10;
   const severityLabel = group => ({error:'Critique',warning:'Alerte',info:'Info'}[severity(group)] || 'Info');
   const action = group => group.field_action || group.action || group.title;

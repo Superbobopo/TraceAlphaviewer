@@ -17,7 +17,7 @@ from Models.measurement_analysis import (analyze_measurements, representative_sa
                                          categorize_orientations, ORIENTATION_CATEGORIES)
 from Models.robot_drain import (t5_priority_score, drain_metric_text, drain_metrics,
                                 drain_is_critical, normalize_robot_incidents)
-from Models.c2_analysis import c2_metric_text
+from Models.c2_analysis import signal_metric_text
 from Models.trace_calendar import trace_calendar, display_time
 
 
@@ -29,7 +29,8 @@ _SEVERITY_LABELS = {
 
 _SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
 _REFERENCE_REJECTION_CODES = {'REFERENCE_ABSENT', 'REFERENCE_NON_ALPHATISABLE'}
-_STRUCTURED_PROOF_CODES = _REFERENCE_REJECTION_CODES | {'C2_SIGNAL_ANOMALY'}
+_SIGNAL_CODES = {'C2_SIGNAL_ANOMALY', 'C3_SIGNAL_ANOMALY'}
+_STRUCTURED_PROOF_CODES = _REFERENCE_REJECTION_CODES | _SIGNAL_CODES
 
 _FAMILY_LABELS = {
     "all": "Tout",
@@ -81,8 +82,8 @@ def _metric_from_summary(summary: str, code: str, occurrence_count: int, metrics
     metrics = metrics or {}
     if code == 'DemVidageComplet' and metrics.get('day'):
         return drain_metric_text(metrics)
-    if code == 'C2_SIGNAL_ANOMALY' and metrics:
-        return c2_metric_text(metrics)
+    if code in _SIGNAL_CODES and metrics:
+        return signal_metric_text(metrics, code.split('_', 1)[0])
     if code == 'ALPHA_CARD_RESET' and 'trace_duration' in metrics:
         return f"{occurrence_count} reset(s) sur {metrics['trace_duration']} de trace"
     if code == 'UNKNOWN' and metrics.get('total_boxes'):
@@ -141,8 +142,8 @@ def _family_for(belt: str, code: str, title: str) -> str:
 
 
 def _action_label(code: str, belt: str, title: str) -> str:
-    if code == 'C2_SIGNAL_ANOMALY':
-        return 'Contrôler un obstacle devant C2, sa propreté, son alignement et son câblage.'
+    if code in _SIGNAL_CODES:
+        return f"Contrôler un obstacle devant {code.split('_', 1)[0]}, sa propreté, son alignement et son câblage."
     if code == 'REFERENCE_NON_ALPHATISABLE':
         return 'Vérifier la fiche du produit et la raison de son exclusion Alpha.'
     if code in _REFERENCE_REJECTION_CODES:
@@ -174,8 +175,8 @@ def _action_label(code: str, belt: str, title: str) -> str:
 
 
 def _impact_label(code: str, belt: str) -> str:
-    if code == 'C2_SIGNAL_ANOMALY':
-        return 'Instabilité C2 ou blocage du vidage confirmé par un état complet des capteurs.'
+    if code in _SIGNAL_CODES:
+        return f"Instabilité {code.split('_', 1)[0]} ou blocage du vidage confirmé par un état complet des capteurs."
     if code == 'REFERENCE_NON_ALPHATISABLE':
         return 'Le CIP est lu, mais la référence non alphatisable est rejetée avec une référence technique unknown.'
     if code in _REFERENCE_REJECTION_CODES:
@@ -312,11 +313,13 @@ def _field_explanation(group: dict[str, object], total_boxes: int, c9_massive: b
     count = int(group["occurrence_count"])
     ratio = _ratio(count, total_boxes)
 
-    if code == 'C2_SIGNAL_ANOMALY':
+    if code in _SIGNAL_CODES:
+        sensor = code.split('_', 1)[0]
+        idle = 'C3 et C4' if sensor == 'C2' else 'C2 et C4'
         blocked = int(group.get('metrics', {}).get('drain_relaunches', 0))
         return (
-            ('Blocage du vidage confirmé : C2 seul actif lors des relances.' if blocked else
-             'C2 alterne durablement sans progression T2 attestée, C3 et C4 à zéro.'),
+            (f'Blocage du vidage confirmé : {sensor} seul actif lors des relances.' if blocked else
+             f'{sensor} alterne durablement sans progression T2 attestée, {idle} à zéro.'),
             'Consulter les épisodes, leurs états capteurs et la reprise observée.',
             str(group['action']),
         )
@@ -869,7 +872,7 @@ def build_report_payload(
                 evidence_count = len(lines)
                 if group['code'] in _STRUCTURED_PROOF_CODES and incident['examples']:
                     proofs = sorted(incident['examples'], key=lambda sample: sample['line'])
-                    evidence_count = incident['count'] if group['code'] == 'C2_SIGNAL_ANOMALY' else len(proofs)
+                    evidence_count = incident['count'] if group['code'] in _SIGNAL_CODES else len(proofs)
                     examples.extend(dict(sample, incident_line=incident['first_line']) for sample in proofs[:10])
                 else:
                     for line in lines[:10]:
