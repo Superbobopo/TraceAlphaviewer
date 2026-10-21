@@ -614,7 +614,7 @@ class DiagnosticPanel(ctk.CTkFrame):
         }
         for group in grouped:
             key = (str(group['severity']), str(group['belt']), str(group['code']), str(group['title']))
-            if str(group['code']) in {'UNKNOWN', 'CAM-NO-READ', 'REFERENCE_ABSENT'} and key not in priority_keys:
+            if str(group['code']) in {'UNKNOWN', 'CAM-NO-READ', 'REFERENCE_ABSENT', 'REFERENCE_NON_ALPHATISABLE'} and key not in priority_keys:
                 priority_groups.append(group)
                 priority_keys.add(key)
         for idx, group in enumerate(priority_groups, 1):

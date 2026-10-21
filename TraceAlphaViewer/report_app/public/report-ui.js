@@ -5,6 +5,7 @@
   const number = value => value == null ? '—' : Number(value).toLocaleString('fr-FR', {minimumFractionDigits:1, maximumFractionDigits:1});
   const signed = value => value == null ? '—' : `${value > 0 ? '+' : ''}${number(value)}`;
   const severity = group => group.field_severity || group.severity;
+  const referenceRejection = code => ['REFERENCE_ABSENT','REFERENCE_NON_ALPHATISABLE'].includes(code);
   const severityLabel = group => ({error:'Critique',warning:'Alerte',info:'Info'}[severity(group)] || 'Info');
   const action = group => group.field_action || group.action || group.title;
   const colors = {length:'#A78BFA',width:'#14B8A6',height:'#FDE047'};
@@ -122,7 +123,7 @@
     return group.series.map((series,index)=>{
       const samples=group.examples.slice(series.example_start,series.example_start+series.example_count);
       const label=series.evidence_count>10?`10 premières sur ${integer(series.evidence_count)}`:`${integer(series.evidence_count)} occurrence(s)`;
-      return `<details class='incident-series' data-open='series-${esc(group.id)}-${index}'><summary><strong>${integer(series.count)} ${series.distinct_events?'demandes distinctes':'occurrence(s)'}</strong><span>${esc(series.start_time_str)} → ${esc(series.end_time_str)} · ${esc(series.duration)}</span><span class='muted'>L.${series.first_line} à L.${series.last_line} · ${label}</span></summary><p>${esc(series.summary)}</p>${samples.map(sample=>sampleHtml({...sample,detail:group.code==='REFERENCE_ABSENT'?sample.detail:''},state.connected,'',state.tolerances)).join('')}</details>`;
+      return `<details class='incident-series' data-open='series-${esc(group.id)}-${index}'><summary><strong>${integer(series.count)} ${series.distinct_events?'demandes distinctes':'occurrence(s)'}</strong><span>${esc(series.start_time_str)} → ${esc(series.end_time_str)} · ${esc(series.duration)}</span><span class='muted'>L.${series.first_line} à L.${series.last_line} · ${label}</span></summary><p>${esc(series.summary)}</p>${samples.map(sample=>sampleHtml({...sample,detail:referenceRejection(group.code)?sample.detail:''},state.connected,'',state.tolerances)).join('')}</details>`;
     }).join('');
   }
   function sampleHtml(sample,connected,axis='',tolerances) {
@@ -364,14 +365,14 @@
       if(['T4_LENGTH','T5_WIDTH','T5_HEIGHT','GLOBAL'].includes(group.code)||(data.orientation_references&&group.code==='ORIENTATION'))continue;
       add(`[${severityLabel(group)}] ${group.title}`,'group');add(group.affected_label||group.metric);
       add(group.field_explanation||group.impact);add('Premier contrôle : '+action(group));
-      if(group.code==='REFERENCE_ABSENT')for(const line of group.business_lines||[])add(line);
+      if(referenceRejection(group.code))for(const line of group.business_lines||[])add(line);
       for(const check of (group.checks||[]).filter(check=>check!==action(group)).slice(0,2))add('À vérifier : '+check);
       const examples=(group.examples||[]).filter(sample=>(group.representative_ids||[]).includes(sample.id)).slice(0,3);
       for(const sample of examples){
         add(`${sample.display_time_str||sample.time_str} · ${sample.box||''} · ${sample.barcode||''}`,'example');
         if(sample.measured){table(['Dimension','BdD','Mesure Alpha','Écart'],[['Longueur T4C',2],['Largeur',0],['Hauteur',1]].map(([label,i])=>[label,`${sample.expected[i]} mm`,`${sample.measured[i]} mm`,`${signed(sample.deltas[i])} mm`]));if(sample.t4t)add(`T4T (complément) : ${sample.t4t} mm ; diffT4 ${signed(sample.diff_t4)} mm.`);}
         else add(sample.detail);
-        if(group.code==='REFERENCE_ABSENT')add(`Sources : ${Object.entries(sample.sources||{}).map(([label,line])=>`${label} L.${line}`).join(' · ')}.`);
+        if(referenceRejection(group.code))add(`Sources : ${Object.entries(sample.sources||{}).map(([label,line])=>`${label} L.${line}`).join(' · ')}.`);
       }
     }
     add('Statistiques et explications des mesures','section');

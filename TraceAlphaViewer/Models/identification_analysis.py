@@ -10,6 +10,9 @@ _RESULT = re.compile(r'idCB([12]):\s*-->\s*R\S*f:(\S+)', re.I)
 _REFUSED = re.compile(
     r"idCB([12]):\s+la r\S*f\.\s+(\d+)\s+n'est pas dans les tables.*"
     r'pas dans BdD,\s*refus de cr\S*ation dans param', re.I)
+_NON_ALPHATISABLE = re.compile(
+    r"idCB([12]):\s+la r\S*f\.\s+(\d+)\s+n'est pas dans les tables.*?"
+    r'\((r\S*f\.\s+non\s+Alphatisable\b.*)\)\s*$', re.I)
 _CB2_SOURCE = re.compile(r'idCB2:.*?idCB1\.Ref:(\S+)', re.I)
 _ID_B = re.compile(r'idCB2:.*?\(Nboite=\s*(\d+)\)', re.I)
 _T4_ID = re.compile(r'transfert T3->T4 termin.*?idB=(\d+)', re.I)
@@ -127,12 +130,14 @@ def identification_cycles(line_states):
                 cycle = slots[slot] = new(line)
             cycle.codes.setdefault(reader, []).append(int(match[2]))
 
-        match = _REFUSED.search(text)
+        match = _NON_ALPHATISABLE.search(text) or _REFUSED.search(text)
         if match:
             reader = 'CB' + match[1]
             cycle = current('ea' if reader == 'CB1' else 't3', line)
             cycle.refusals.append(dict(line=line, barcode=match[2], reader=reader,
-                time=state.timestamp, time_str=state.timestamp_str, technical_reference=''))
+                time=state.timestamp, time_str=state.timestamp_str, technical_reference='',
+                reason='non_alphatisable' if match.re is _NON_ALPHATISABLE else 'absent',
+                reason_detail=match[3] if match.re is _NON_ALPHATISABLE else ''))
 
         match = _RESULT.search(text)
         if match:

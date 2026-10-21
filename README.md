@@ -258,6 +258,13 @@ et les preuves dans le logiciel, le rapport web et le PDF. La fiche doit etre
 creee par la zone de chargement manuel. Les ratios camera utilisent les passages
 physiques ; les numeros `Hist_LectCB` reutilises ne fusionnent plus les boites.
 
+Le diagnostic `REFERENCE_NON_ALPHATISABLE` distingue le refus explicite
+`ref. non Alphatisable` des deux cas precedents. Sa carte « References non
+alphatisables » conserve le CIP lu, le motif exact, les lecteurs, les identites
+et les preuves. Verifier la fiche et la raison de l'exclusion Alpha ; ce cas
+ne demande pas une creation par chargement manuel. Il est exclu de tous les
+compteurs UNKNOWN de decodage, meme si CB1 avait d'abord echoue avant CB2.
+
 Dans l'onglet `References`, saisir un CIP, un barcode, un nom ou un identifiant
 (`idB:102`, `IdA:201`). Chaque boite conserve sa propre ligne, meme si plusieurs
 boites partagent le meme CIP. Cliquer sur une ligne pour rejoindre son premier

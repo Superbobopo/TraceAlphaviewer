@@ -26,6 +26,7 @@ _SEVERITY_LABELS = {
 }
 
 _SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
+_REFERENCE_REJECTION_CODES = {'REFERENCE_ABSENT', 'REFERENCE_NON_ALPHATISABLE'}
 
 _FAMILY_LABELS = {
     "all": "Tout",
@@ -82,7 +83,7 @@ def _metric_from_summary(summary: str, code: str, occurrence_count: int, metrics
     if code == 'UNKNOWN' and metrics.get('total_boxes'):
         total = metrics['total_boxes']
         return f"{occurrence_count} unknown / {total} boites ({100 * occurrence_count / total:.1f}%)"
-    if code == 'REFERENCE_ABSENT':
+    if code in _REFERENCE_REJECTION_CODES:
         total = metrics.get('total_boxes', 0)
         population = f" / {total} passages" if total else ''
         return f"{occurrence_count} boîte(s){population} · {metrics.get('reference_count', 0)} référence(s)"
@@ -117,7 +118,7 @@ def _family_for(belt: str, code: str, title: str) -> str:
         return 'robot'
     if code == "ALPHA_CARD_RESET":
         return "system"
-    if code == 'REFERENCE_ABSENT':
+    if code in _REFERENCE_REJECTION_CODES:
         return 'references'
     if code in _DIMENSION_CODES:
         return "dimensions"
@@ -135,7 +136,9 @@ def _family_for(belt: str, code: str, title: str) -> str:
 
 
 def _action_label(code: str, belt: str, title: str) -> str:
-    if code == 'REFERENCE_ABSENT':
+    if code == 'REFERENCE_NON_ALPHATISABLE':
+        return 'Vérifier la fiche du produit et la raison de son exclusion Alpha.'
+    if code in _REFERENCE_REJECTION_CODES:
         return ('Faire passer cette référence par la zone de chargement manuel pour créer sa fiche '
                 'avant son utilisation dans l’Alpha.')
     if code == "ALPHA_CARD_RESET":
@@ -164,7 +167,9 @@ def _action_label(code: str, belt: str, title: str) -> str:
 
 
 def _impact_label(code: str, belt: str) -> str:
-    if code == 'REFERENCE_ABSENT':
+    if code == 'REFERENCE_NON_ALPHATISABLE':
+        return 'Le CIP est lu, mais la référence non alphatisable est rejetée avec une référence technique unknown.'
+    if code in _REFERENCE_REJECTION_CODES:
         return 'Le CIP est lu, mais la référence absente des tables est rejetée avec une référence technique unknown.'
     if code == "C9_WIDTH_INVALID":
         return "La largeur T5 est invalide alors que C9 detecte une presence ; la boite peut etre mal mesuree ou mal passee."
@@ -190,7 +195,7 @@ def _impact_label(code: str, belt: str) -> str:
 
 
 def _business_lines(summary: str, code: str) -> list[str]:
-    if code == 'REFERENCE_ABSENT':
+    if code in _REFERENCE_REJECTION_CODES:
         return [summary]
     if code == "UNKNOWN":
         lines: list[str] = []
@@ -298,9 +303,11 @@ def _field_explanation(group: dict[str, object], total_boxes: int, c9_massive: b
     count = int(group["occurrence_count"])
     ratio = _ratio(count, total_boxes)
 
-    if code == 'REFERENCE_ABSENT':
+    if code in _REFERENCE_REJECTION_CODES:
         return (
-            'Le CIP est décodé, mais la référence est absente et sa création par l’Alpha est refusée.',
+            ('Le CIP est décodé, mais la référence est explicitement non alphatisable.'
+             if code == 'REFERENCE_NON_ALPHATISABLE' else
+             'Le CIP est décodé, mais la référence est absente et sa création par l’Alpha est refusée.'),
             'Le passage reste en référence technique unknown ; il est exclu des UNKNOWN de décodage.',
             str(group['action']),
         )
@@ -424,7 +431,7 @@ def _field_severity_for(group: dict[str, object], total_boxes: int, c9_massive: 
         return "warning" if count > 1 else "info"
     if code == "ORIENTATION":
         return "warning"
-    if code in {"UNKNOWN", "CAM-NO-READ", "REFERENCE_ABSENT"}:
+    if code in {"UNKNOWN", "CAM-NO-READ", "REFERENCE_ABSENT", "REFERENCE_NON_ALPHATISABLE"}:
         return "warning"
     if code in _DIMENSION_CODES:
         return "warning"
@@ -450,6 +457,7 @@ def _field_priority_score(group: dict[str, object]) -> int:
         "T5_WIDTH": 75,
         "UNKNOWN": 65,
         "REFERENCE_ABSENT": 65,
+        "REFERENCE_NON_ALPHATISABLE": 65,
         "CAM-NO-READ": 60,
         "T4_LENGTH": 55,
         "T5_HEIGHT": 55,
@@ -519,6 +527,7 @@ def _priority_score(group: dict[str, object]) -> int:
         "ALPHA_CARD_RESET": 120,
         "UNKNOWN": 85,
         "REFERENCE_ABSENT": 85,
+        "REFERENCE_NON_ALPHATISABLE": 85,
         "CAM-NO-READ": 80,
         "GLOBAL": 70,
         "T5_WIDTH": 60,
@@ -649,7 +658,7 @@ def _priority_groups(grouped: list[dict[str, object]]) -> list[dict[str, object]
         key = (str(group["severity"]), str(group["belt"]), str(group["code"]), str(group["title"]))
         important_code = str(group["code"]) in {
             "C9_WIDTH_INVALID", "CUBESTOP_C4_BLOCKED", "ALPHA_CARD_RESET",
-            "GLOBAL", "T5_WIDTH", "UNKNOWN", "CAM-NO-READ", "REFERENCE_ABSENT",
+            "GLOBAL", "T5_WIDTH", "UNKNOWN", "CAM-NO-READ", "REFERENCE_ABSENT", "REFERENCE_NON_ALPHATISABLE",
         }
         important_et = (str(group["belt"]), str(group["code"])) in {("T2", "-88"), ("T3", "-43"), ("T3", "-48")}
         if (important_code or important_et) and key not in keys:
@@ -837,7 +846,7 @@ def build_report_payload(
                                              for line in lines)
                 start = len(examples)
                 evidence_count = len(lines)
-                if group['code'] == 'REFERENCE_ABSENT' and incident['examples']:
+                if group['code'] in _REFERENCE_REJECTION_CODES and incident['examples']:
                     proofs = sorted(incident['examples'], key=lambda sample: sample['line'])
                     evidence_count = len(proofs)
                     examples.extend(dict(sample, incident_line=incident['first_line']) for sample in proofs[:10])
@@ -875,7 +884,7 @@ def build_report_payload(
         group['examples'] = examples
         for index, sample in enumerate(examples):
             sample.update(id=f"{group['id']}:{index}", group_id=group['id'])
-            if 'measured' not in sample and group['code'] != 'REFERENCE_ABSENT':
+            if 'measured' not in sample and group['code'] not in _REFERENCE_REJECTION_CODES:
                 targets.setdefault(sample['line'], []).append((group['belt'], sample))
             wanted.update(range(max(1, sample['line'] - 2), sample['line'] + 3))
             for line in set(sample.get('sources', {}).values()) - {0}:

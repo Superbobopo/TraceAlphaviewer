@@ -1495,17 +1495,24 @@ def _camera_stats(
 
 
 def _build_reference_absent_incident(stats: dict[str, object]) -> list[DiagnosticIncident]:
-    cycles = [cycle for cycle in stats['cycles'] if cycle.refusals]
+    return _build_reference_rejection_incident(stats, 'absent')
+
+
+def _build_reference_rejection_incident(stats: dict[str, object], reason: str) -> list[DiagnosticIncident]:
+    non_alphatisable = reason == 'non_alphatisable'
+    rows_for = lambda cycle: [row for row in cycle.refusals if row.get('reason', 'absent') == reason]
+    cycles = [cycle for cycle in stats['cycles'] if rows_for(cycle)]
     if not cycles:
         return []
-    refusals = sorted((refusal for cycle in cycles for refusal in cycle.refusals), key=lambda row: row['line'])
+    refusals = sorted((refusal for cycle in cycles for refusal in rows_for(cycle)), key=lambda row: row['line'])
     first, last = refusals[0], refusals[-1]
     references = sorted({row['barcode'] for row in refusals})
-    action = ('Faire passer cette référence par la zone de chargement manuel pour créer sa fiche '
+    action = ('Vérifier la fiche du produit et la raison de son exclusion Alpha.' if non_alphatisable else
+              'Faire passer cette référence par la zone de chargement manuel pour créer sa fiche '
               'avant son utilisation dans l’Alpha.')
     examples = []
     for cycle in cycles:
-        rows = sorted(cycle.refusals, key=lambda row: row['line'])
+        rows = sorted(rows_for(cycle), key=lambda row: row['line'])
         sources = {f'refus_{index + 1}': row['line'] for index, row in enumerate(rows)}
         sources.update({f'reference_{index + 1}': row['reference_line'] for index, row in enumerate(rows)
                         if row.get('reference_line')})
@@ -1515,25 +1522,34 @@ def _build_reference_absent_incident(stats: dict[str, object]) -> list[Diagnosti
         ids = [f'idB:{cycle.id_b}'] if cycle.id_b else []
         if cycle.id_alpha:
             ids.append(f'IdA:{cycle.id_alpha}')
+        reasons = list(dict.fromkeys(row['reason_detail'] for row in rows if row.get('reason_detail')))
+        detail = (f"CIP lu par {', '.join(sorted({row['reader'] for row in rows}))}, "
+                  + ('référence non alphatisable. ' if non_alphatisable else 'référence absente et création refusée. ')
+                  + f"Référence technique : {', '.join(technical_refs) or 'non visible'}."
+                  + (' Motif : ' + ' ; '.join(reasons) if reasons else ''))
         examples.append(dict(line=rows[0]['line'], time_str=rows[0]['time_str'],
             barcode=', '.join(sorted({row['barcode'] for row in rows})), box=' · '.join(ids),
             readers=sorted({row['reader'] for row in rows}), technical_references=technical_refs,
-            sources=sources, detail=(f"CIP lu par {', '.join(sorted({row['reader'] for row in rows}))}, "
-                f"référence absente et création refusée. Référence technique : {', '.join(technical_refs) or 'non visible'}.")))
+            reasons=reasons, sources=sources, detail=detail))
     return [DiagnosticIncident(
-        severity='warning', title='Références absentes — chargement manuel requis',
-        belt='REFERENCES', code='REFERENCE_ABSENT',
+        severity='warning', title=('Références non alphatisables' if non_alphatisable else
+                                   'Références absentes — chargement manuel requis'),
+        belt='REFERENCES', code='REFERENCE_NON_ALPHATISABLE' if non_alphatisable else 'REFERENCE_ABSENT',
         first_line=first['line'], last_line=last['line'], start_time=first['time'], end_time=last['time'],
         start_time_str=first['time_str'], end_time_str=last['time_str'], count=len(cycles),
         summary=(f"{len(cycles)} boîte(s) concernée(s), {len(references)} référence(s) distincte(s) : "
-                 f"{', '.join(references)}. CIP lu, référence absente des tables et création refusée par l’Alpha."),
-        symptom='Le code est décodé, mais la fiche produit manque dans les tables consultées par l’Alpha.',
-        probable_causes=['La référence doit être créée par la zone de chargement manuel ; '
-                         'la trace ne montre pas tout son historique de chargement.'],
-        checks=[action, 'Vérifier ensuite que le CIP est reconnu dans l’Alpha.'], confidence='forte',
+                 f"{', '.join(references)}. " + ('CIP lu, référence explicitement non alphatisable.' if non_alphatisable else
+                 'CIP lu, référence absente des tables et création refusée par l’Alpha.')),
+        symptom=('Le code est décodé, mais la trace indique que la référence est non alphatisable.' if non_alphatisable else
+                 'Le code est décodé, mais la fiche produit manque dans les tables consultées par l’Alpha.'),
+        probable_causes=(['La trace signale une exclusion Alpha ; le motif exact est conservé dans les preuves.']
+                         if non_alphatisable else ['La référence doit être créée par la zone de chargement manuel ; '
+                         'la trace ne montre pas tout son historique de chargement.']),
+        checks=[action, ('Confirmer si cette exclusion est volontaire et utiliser le circuit de traitement adapté.'
+                        if non_alphatisable else 'Vérifier ensuite que le CIP est reconnu dans l’Alpha.')], confidence='forte',
         event_lines=[row['line'] for row in refusals], examples=examples,
         metrics=dict(total_boxes=len(stats['all_hist_boxes']), reference_count=len(references),
-                     references=references, refusal_count=len(refusals)),
+                     references=references, refusal_count=len(refusals), rejection_reason=reason),
     )]
 
 
@@ -1781,6 +1797,7 @@ def build_diagnostics(
         camera_stats['trace'] = trace_calendar(line_states)
         camera_report_output.update(camera_report_stats(frames, stats=camera_stats))
     incidents.extend(_build_reference_absent_incident(camera_stats))
+    incidents.extend(_build_reference_rejection_incident(camera_stats, 'non_alphatisable'))
     incidents.extend(_build_unknown_camera_incident(camera_stats))
     incidents.extend(_build_inactive_camera_incident(camera_stats))
 
