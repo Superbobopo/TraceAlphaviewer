@@ -1,8 +1,11 @@
 """Frequences et priorites partagees des demandes de vidage T5 robot."""
 from __future__ import annotations
+from datetime import date, timedelta
+
+from Models.trace_calendar import date_label, display_time, source_datetime
 
 
-def drain_metrics(occurrences):
+def drain_metrics(occurrences, trace=None):
     ordered = sorted(occurrences, key=lambda item: (item[1], item[0]))
     result = {'total': len(ordered)}
     for name, seconds in (('hour', 3600), ('day', 86400)):
@@ -20,6 +23,31 @@ def drain_metrics(occurrences):
                         'end': ordered[best_right][2] if ordered else ''}
     result['critical'] = result['hour']['count'] >= 2 or result['day']['count'] >= 5
     result['reinforced'] = result['day']['count'] >= 15
+    if trace:
+        result['trace'] = trace
+        result['daily'] = []
+        if trace.get('available'):
+            grouped = {}
+            for line, _, time in ordered:
+                moment = source_datetime(trace, line, time)
+                if moment:
+                    grouped.setdefault(moment.date(), []).append(
+                        {'line': line, 'time_str': moment.strftime('%H:%M:%S'),
+                         'display_time_str': display_time(trace, line, time)})
+            day = date.fromisoformat(trace['first_date'])
+            last = date.fromisoformat(trace['last_date'])
+            while day <= last:
+                examples = grouped.get(day, [])
+                result['daily'].append({'date': day.isoformat(), 'label': date_label(day),
+                    'count': len(examples), 'first_time': examples[0]['time_str'] if examples else '',
+                    'last_time': examples[-1]['time_str'] if examples else '', 'examples': examples[:10]})
+                day += timedelta(days=1)
+        if ordered:
+            result['requests_start'] = display_time(trace, ordered[0][0], ordered[0][2])
+            result['requests_end'] = display_time(trace, ordered[-1][0], ordered[-1][2])
+        for name in ('hour', 'day'):
+            for key, line_key in (('start', 'first_line'), ('end', 'last_line')):
+                result[name][key] = display_time(trace, result[name][line_key], result[name][key])
     return result
 
 

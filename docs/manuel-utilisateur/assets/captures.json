@@ -48,35 +48,35 @@
     "height": 850
   },
   "priorites": {
-    "width": 1150,
+    "width": 1026,
     "height": 270
   },
   "decalages": {
-    "width": 1150,
-    "height": 1079
+    "width": 291,
+    "height": 406
   },
   "compteur-unknown": {
-    "width": 1150,
+    "width": 1026,
     "height": 107
   },
   "serie-rapport": {
-    "width": 1151,
+    "width": 1027,
     "height": 86
   },
   "orientations": {
-    "width": 1204,
-    "height": 502
+    "width": 1080,
+    "height": 917
   },
   "references-absentes": {
-    "width": 1204,
-    "height": 190
+    "width": 1080,
+    "height": 214
   },
   "dossier": {
     "width": 1780,
     "height": 1000
   },
   "vidage-robot": {
-    "width": 1090,
-    "height": 133
+    "width": 1091,
+    "height": 210
   }
 }

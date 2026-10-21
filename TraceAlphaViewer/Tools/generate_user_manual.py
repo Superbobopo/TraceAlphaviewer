@@ -70,7 +70,7 @@ def demonstration(directory):
         state.events = [MachineEvent(index + 1, timestamp, hour, severity, kind, text)]
         frames.append(state)
 
-    add('DEMONSTRATION - DONNEES FICTIVES POUR LA FORMATION')
+    add('DEMONSTRATION - DONNEES FICTIVES POUR LA FORMATION. OUVERTURE DE LA TRACE le 01/06/2026')
     for cycle in range(1, 4):
         barcode = known_cip if cycle < 3 else 'ALPHA-INC-DEMO003'
         name = 'PRODUIT DEMO' if cycle < 3 else 'REFERENCE INCONNUE'
@@ -273,7 +273,7 @@ def captures():
             series.evaluate('(node)=>node.open=true')
             series.locator('.incident-series').first.screenshot(path=str(assets/'serie-rapport.png'))
             page.goto(example.as_uri())
-            page.locator('.axis-grid').screenshot(path=str(assets/'decalages.png'))
+            page.locator('[data-axis=length] .distribution').screenshot(path=str(assets/'decalages.png'))
             preview.close()
         from PIL import Image
         with Image.open(assets/'priorites.png') as picture:
@@ -291,6 +291,7 @@ def captures():
             preview = playwright.chromium.launch(channel='msedge',headless=True)
             page = preview.new_page(viewport={'width':1440,'height':1080})
             page.goto(orientation_report.as_uri())
+            page.locator('[data-orientation-category=flat_rotation] > summary').click()
             page.locator('.orientations').screenshot(path=str(assets/'orientations.png'))
             preview.close()
         with Image.open(assets/'orientations.png') as picture:
@@ -348,17 +349,21 @@ def robot_capture():
     assets = MANUAL / 'assets'
     (ROOT / 'build').mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(dir=ROOT / 'build', prefix='manual-robot-') as directory:
-        frames = [MachineState(line_num=i + 1, timestamp=i * 600,
+        frames = [MachineState(line_num=i + 2, timestamp=i * 600,
                   timestamp_str=f'01|09:{i * 10:02d}:00',
-                  raw_lines=[(i + 1, 'OMEGA:T5-DemVidageComplet')]) for i in range(5)]
+                  raw_lines=[(i + 2, 'OMEGA:T5-DemVidageComplet')]) for i in range(5)]
+        frames.insert(0, MachineState(line_num=1, timestamp=0, timestamp_str='09:00:00',
+                      raw_lines=[(1, 'OUVERTURE DE LA TRACE le 01/06/2026')]))
+        frames.append(MachineState(line_num=7, timestamp=86400, timestamp_str='09:00:00',
+                      raw_lines=[(7, 'Fin de la demonstration fictive')]))
         report = write_diagnostic_report(build_diagnostics(frames, []), Path(directory), frames,
                                          source_name='DEMONSTRATION ROBOT - DONNEES FICTIVES')
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(channel='msedge', headless=True)
             page = browser.new_page(viewport={'width':1200, 'height':900})
             page.goto(report.as_uri())
-            alert = page.locator('.robot-drain-alert')
-            alert.screenshot(path=str(assets / 'vidage-robot.png'))
+            page.locator('details[data-group^="DemVidageComplet:"] > summary').click()
+            page.locator('.robot-days').screenshot(path=str(assets / 'vidage-robot.png'))
             browser.close()
         metadata = json.loads((assets / 'captures.json').read_text(encoding='utf-8'))
         width, height = struct.unpack('>II', (assets / 'vidage-robot.png').read_bytes()[16:24])

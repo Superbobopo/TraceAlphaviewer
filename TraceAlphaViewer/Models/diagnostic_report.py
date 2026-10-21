@@ -13,8 +13,10 @@ from pathlib import Path
 
 from Models.diagnostic import DiagnosticIncident, camera_report_stats
 from Models.state import MachineState
-from Models.measurement_analysis import analyze_measurements, representative_samples
-from Models.robot_drain import t5_priority_score, drain_metric_text
+from Models.measurement_analysis import (analyze_measurements, representative_samples,
+                                         categorize_orientations, ORIENTATION_CATEGORIES)
+from Models.robot_drain import t5_priority_score, drain_metric_text, drain_metrics
+from Models.trace_calendar import trace_calendar, display_time
 
 
 _SEVERITY_LABELS = {
@@ -769,6 +771,11 @@ def build_report_payload(
     grouped = _group_incidents(incidents)
     analysis = (frames.read_measurements() if hasattr(frames, 'read_measurements') else
                 analyze_measurements(frames if frames is not None else []))
+    period = camera_stats.get('trace') or trace_calendar(
+        [(line, text, frame) for frame in (frames or []) for line, text, *_ in frame.raw_lines])
+    if frames and not period.get('start'):
+        period = dict(period, start=frames[0].timestamp_str, end=frames[-1].timestamp_str,
+                      duration=_duration_label(frames[0].timestamp, frames[-1].timestamp))
     wanted = set()
     targets = {}
     reference_samples = {}
@@ -798,7 +805,7 @@ def build_report_payload(
                                                        navigation_sample_id=ids[0] if ids and side in ('under', 'over') else '',
                                                        display_primary=row['count'] * 10 >= row['total'] if side in ('under', 'over') else True))
     orientation_lists = {}
-    for kind, rows in analysis.get('orientation_references', {}).items():
+    for kind, rows in categorize_orientations(analysis.get('orientation_references', {})).items():
         orientation_lists[kind] = []
         for row in rows:
             ids = []
@@ -817,9 +824,17 @@ def build_report_payload(
         else:
             examples = []
             group['series'] = []
+            robot_occurrences = []
             for incident in sorted(group['incidents'], key=lambda item: item['first_line']):
                 lines = list(dict.fromkeys(incident['event_lines'] or [incident['first_line']]))
                 lines.sort()
+                if group['code'] == 'DemVidageComplet' and 'daily' not in group['metrics']:
+                    event_lines = set(lines)
+                    selected = frames.frames_for_lines(lines) if hasattr(frames, 'frames_for_lines') else (frames or [])
+                    times = {line: (frame.timestamp, frame.timestamp_str) for frame in selected
+                             for line, *_ in frame.raw_lines if line in event_lines}
+                    robot_occurrences.extend((line, *times.get(line, (group['start_time'], incident['start_time_str'])))
+                                             for line in lines)
                 start = len(examples)
                 evidence_count = len(lines)
                 if group['code'] == 'REFERENCE_ABSENT' and incident['examples']:
@@ -839,6 +854,24 @@ def build_report_payload(
                 # Le total reste complet ; seules les preuves exportees sont bornees.
                 incident['event_lines'] = lines[:10]
                 incident['examples'] = incident['examples'][:10]
+            if group['code'] == 'DemVidageComplet':
+                metrics = group['metrics']
+                # Les anciens caches gardent les lignes, mais pas encore le calendrier.
+                if 'daily' not in metrics:
+                    daily_metrics = drain_metrics(robot_occurrences, period)
+                    metrics = dict(metrics, **{key: value for key, value in daily_metrics.items()
+                                               if key in ('trace', 'daily', 'requests_start', 'requests_end')})
+                    group['metrics'] = metrics
+                group['daily'] = []
+                if metrics.get('trace', {}).get('available'):
+                    examples = []
+                    for day in metrics.get('daily', []):
+                        start = len(examples)
+                        examples.extend(dict(sample, incident_line=group['first_line'], detail=group['summary'],
+                                             barcode='', box='') for sample in day.get('examples', [])[:10])
+                        group['daily'].append(dict({key: value for key, value in day.items() if key != 'examples'},
+                                                  example_start=start, example_count=len(examples) - start))
+                    group['trace_period'] = f"Trace analysée du {period['start']} au {period['end']}"
         group['examples'] = examples
         for index, sample in enumerate(examples):
             sample.update(id=f"{group['id']}:{index}", group_id=group['id'])
@@ -881,6 +914,8 @@ def build_report_payload(
     all_samples = [sample for group in grouped for sample in group['examples']]
     all_samples += list(reference_samples.values()) + unknown['examples']
     for sample in all_samples:
+        sample['display_time_str'] = display_time(period, sample.get('display_line') or sample['line'],
+                                                  sample.get('display_time_str') or sample.get('time_str', ''))
         for row in sample['context']:
             key = f'source:{row["line"]}'
             row['navigation_id'] = key
@@ -906,12 +941,12 @@ def build_report_payload(
     }
     return {
         "generated_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-        "source": {'name': source_name, 'start': frames[0].timestamp_str if frames else '',
-                   'end': frames[-1].timestamp_str if frames else '',
-                   'duration': _duration_label(frames[0].timestamp, frames[-1].timestamp) if frames else ''},
+        "source": {'name': source_name, 'start': period.get('start', ''), 'end': period.get('end', ''),
+                   'dates_available': period.get('available', False), 'duration': period.get('duration', '')},
         "measurements": analysis['summary'],
         "measurement_references": reference_lists,
         "orientation_references": orientation_lists,
+        "orientation_categories": ORIENTATION_CATEGORIES,
         "measurement_examples": list(reference_samples.values()),
         "counts": counts,
         "verdict": _verdict(counts),

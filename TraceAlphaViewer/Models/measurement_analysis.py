@@ -403,6 +403,44 @@ def analyze_measurements(frames):
             'orientation_references': build_orientation_lists(finals)}
 
 
+ORIENTATION_CATEGORIES = [
+    {'id': 'flat_rotation', 'label': 'Longueur / largeur inversées',
+     'hypothesis': "Rotation à plat probable. La boîte a pu tourner pendant son passage dans l'Alpha, au guidage ou au tassage ; les dimensions seules ne datent pas cette rotation.",
+     'checks': ["Examiner la présentation des boîtes, le guidage et le tassage pendant leur passage dans l'Alpha."]},
+    {'id': 'on_edge', 'label': 'Largeur / hauteur inversées',
+     'hypothesis': 'Boîte sur la tranche probable ; présentation physique à confirmer.',
+     'checks': ["Demander au client de présenter les boîtes bien à plat lorsqu'il les verse sur l'Alpha.",
+                "Vérifier la hauteur de restitution du robot en haut de l'Alpha lors du retraitement. Trop basse, elle peut laisser la boîte retomber sur la tranche ; une hauteur adaptée favorise son retournement au rebond, sans le garantir."]},
+    {'id': 'other', 'label': 'Autres permutations et cas à confirmer',
+     'hypothesis': "Les dimensions ne permettent pas d'isoler l'un des deux échanges simples.",
+     'checks': ["Examiner les permutations proposées et la présentation physique, notamment en cas de dimensions égales."]},
+]
+
+
+def orientation_category(sample):
+    width, height, length = sample['expected']
+    matches = sample.get('orientation_matches') or best_orientation_dimensions(sample['measured'], sample['expected'])
+    candidates = {tuple(match['dimensions']) for match in matches}
+    simple = {'flat_rotation': (length, height, width), 'on_edge': (height, width, length)}
+    categories = [kind for kind, dimensions in simple.items() if candidates == {dimensions}]
+    return categories[0] if len(categories) == 1 else 'other'
+
+
+def categorize_orientations(lists):
+    """Enrichir aussi les analyses mises en cache par les anciennes versions."""
+    result = dict(lists)
+    for category in ORIENTATION_CATEGORIES:
+        rows = []
+        for row in lists.get('probable', []):
+            proofs = [dict(sample, orientation_category=category['id']) for sample in row['samples']
+                      if orientation_category(sample) == category['id']]
+            if proofs:
+                rows.append(dict(row, samples=proofs, count=len(proofs),
+                                 percent=100 * len(proofs) / row['total'], orientation_category=category['id']))
+        result[category['id']] = sorted(rows, key=lambda row: (-row['count'], -row['percent'], row['barcode']))
+    return result
+
+
 def build_orientation_lists(finals):
     """Denominateurs par produit avant exclusion des orientations, une mesure par cycle."""
     eligible = [sample for sample in finals if sample.get('final', True) and not sample.get('invalid')
@@ -426,7 +464,7 @@ def build_orientation_lists(finals):
                          'total': total, 'percent': 100 * count / total, 'samples': proofs,
                          'variant_count': len(variants[barcode])})
         result[kind] = sorted(rows, key=lambda row: (-row['count'], -row['percent'], row['barcode']))
-    return result
+    return categorize_orientations(result)
 
 
 def build_reference_lists(samples, products=None, summary=None):

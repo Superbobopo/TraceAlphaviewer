@@ -275,6 +275,9 @@ Exception d'installation : cette mise a jour des instructions reste locale, sans
 
 ## Definition de termine
 
+- Le rapport doit conserver ses fonctions dans les sources versionnees `report-ui.js` / `report-ui.css`, pas seulement dans un ancien bundle React. Apres reconstruction, verifier la colonne des six cameras ouverte par defaut (empilee avant les mesures sous 1360 px), le compteur UNKNOWN compact et cliquable, les trois categories d'orientation avec leurs controles et les journees robot, y compris celles sans demande. Les nouvelles cartes s'ajoutent sans supprimer les informations existantes.
+- Les dates calendaires du rapport viennent d'une ouverture de trace explicitement datee, jamais de l'horloge du PC ni d'une date de version logiciel. Conserver le repli des anciens rapports sans calendrier ni categories d'orientation. Les demandes robot gardent leurs seuils glissants et dix preuves maximum par jour lorsque le calendrier est disponible ; les autres series hors mesures restent bornees a dix preuves par incident.
+
 - Le changement demande est implemente ou la question est repondue clairement.
 - Si du code Python a change, les fichiers modifies ont ete compiles avec `py_compile` ou l'impossibilite est expliquee.
 - Si T5, le parser ou le canvas a change, les scenarios trace critiques concernes ont ete controles selon la checklist proportionnee.

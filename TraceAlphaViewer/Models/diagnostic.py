@@ -16,6 +16,7 @@ from Models.diagnostic_knowledge import knowledge
 from Models.identification_analysis import identification_cycles, unknown_reference
 from Models.state import MachineEvent, MachineState
 from Models.robot_drain import drain_metrics, drain_metric_text
+from Models.trace_calendar import trace_calendar
 
 
 @dataclass
@@ -882,7 +883,7 @@ def _build_robot_drain_incidents(line_states):
         matched.append((line, state.timestamp, date[1] if date else state.timestamp_str))
     if not matched:
         return []
-    metrics = drain_metrics(matched)
+    metrics = drain_metrics(matched, trace_calendar(line_states))
     rule = knowledge('t5_dem_vidage_complet')
     first, last = matched[0], matched[-1]
     reason = ('Priorite renforcee : au moins 15 demandes sur 24 h.' if metrics['reinforced'] else
@@ -1691,7 +1692,9 @@ def _unknown_report_stats(stats: dict) -> dict:
 def camera_report_stats(frames: list[MachineState], *, stats=None) -> dict[str, object]:
     """Statistiques de lecture camera pour le rapport terrain."""
     if stats is None:
-        stats = _camera_stats(_frame_line_states(frames))
+        line_states = _frame_line_states(frames)
+        stats = _camera_stats(line_states)
+        stats['trace'] = trace_calendar(line_states)
     success_by_reader = stats['success_by_reader']
     reader_boxes = stats['reader_boxes']
     reader_zero_boxes = stats['reader_zero_boxes']
@@ -1748,6 +1751,7 @@ def camera_report_stats(frames: list[MachineState], *, stats=None) -> dict[str, 
         'alerts': alerts,
         'note': 'CB1 = cameras 1, 2, 4, 5, 6. CB2 = camera 3.',
         'unknown': _unknown_report_stats(stats),
+        'trace': stats.get('trace', {}),
     }
 
 
@@ -1774,6 +1778,7 @@ def build_diagnostics(
     incidents.extend(_build_dimension_incidents(frames, line_states, measurement_analysis))
     camera_stats = _camera_stats(line_states)
     if camera_report_output is not None:
+        camera_stats['trace'] = trace_calendar(line_states)
         camera_report_output.update(camera_report_stats(frames, stats=camera_stats))
     incidents.extend(_build_reference_absent_incident(camera_stats))
     incidents.extend(_build_unknown_camera_incident(camera_stats))

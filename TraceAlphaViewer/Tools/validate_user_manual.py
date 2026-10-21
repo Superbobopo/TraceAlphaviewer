@@ -37,6 +37,7 @@ class ManualParser(HTMLParser):
 
 def main():
     html = (DIRECTORY / 'index.html').read_text(encoding='utf-8')
+    assert not re.search(r'\w\?\w', html), 'Texte altere par un mauvais encodage'
     parser = ManualParser()
     parser.feed(html)
     assert len(parser.ids) == len(set(parser.ids)), 'Ancres dupliquees'
