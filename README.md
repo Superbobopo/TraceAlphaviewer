@@ -263,6 +263,9 @@ Dans l'onglet `References`, saisir un CIP, un barcode, un nom ou un identifiant
 boites partagent le meme CIP. Cliquer sur une ligne pour rejoindre son premier
 passage ; `Enter` ouvre le premier resultat filtre.
 
+Dans le viewer principal, cliquer sur la loupe a cote de `Masquer details`
+pour afficher la recherche, masquee au demarrage. La loupe ou `Echap` dans le
+champ la masque sans effacer la saisie ni les resultats.
 Dans la trace brute, le champ `CIP / texte` retrouve les occurrences d'un CIP,
 d'une heure ou de tout autre texte. Les boutons `<` / `>` et les touches
 `Enter`, `F3` / `Shift-F3` dans le champ permettent de passer entre les

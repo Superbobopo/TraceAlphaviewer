@@ -406,6 +406,12 @@ class TraceView(BaseView):
                                           text_color='#aabbcc',
                                           command=self._toggle_details)
         self._btn_details.pack(side='right', padx=(0, 6), pady=5)
+        self._btn_trace_search = ctk.CTkButton(
+            nav_bar, text='\U0001f50d', width=32, height=28,
+            fg_color='#252538', hover_color='#353555',
+            text_color='#aabbcc', font=('Segoe UI Symbol', 17),
+            command=self._toggle_trace_search)
+        self._btn_trace_search.pack(side='right', padx=(0, 6), pady=5)
 
         self._resize_handle = tk.Frame(bottom, bg='#263142', height=RESIZE_HANDLE_H, cursor='sb_v_double_arrow')
         self._resize_handle.pack(fill='x', side='top')
@@ -545,9 +551,23 @@ class TraceView(BaseView):
         self._trace_panel = TracePanel(
             parent,
             on_line_click=self._on_trace_click,
+            search_visible=False,
             height=240,
         )
         self._trace_panel.pack(fill='both', expand=True)
+        self._trace_panel._search_entry.bind('<Escape>', self._hide_trace_search)
+
+    def _toggle_trace_search(self) -> None:
+        visible = not self._trace_panel.search_visible or not self._details_visible
+        if visible and not self._details_visible:
+            self._toggle_details()
+        self._trace_panel.set_search_visible(visible)
+        self._btn_trace_search.configure(fg_color='#1b679c' if visible else '#252538')
+
+    def _hide_trace_search(self, event=None) -> str:
+        self._trace_panel.set_search_visible(False)
+        self._btn_trace_search.configure(fg_color='#252538')
+        return 'break'
 
     def _toggle_details(self) -> None:
         if self._details_visible:

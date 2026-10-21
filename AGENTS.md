@@ -73,6 +73,7 @@ Exception d'installation : cette mise a jour des instructions reste locale, sans
 
 - `TraceAlphaViewer/Main.py` : point d'entree customtkinter.
 - `TraceAlphaViewer/Views/traceView.py` : viewer principal, navigation, player et callbacks.
+- Dans le viewer principal, masquer le champ de recherche brute au demarrage et garder sa loupe a cote du bouton Afficher/Masquer details. La loupe rouvre les details si besoin ; masquer le champ conserve la saisie et les resultats. Les autres usages de `TracePanel` gardent leur recherche visible par defaut.
 - `TraceAlphaViewer/Widgets/machine_canvas.py` : dessin machine et logique de placement/echelle.
 - `TraceAlphaViewer/Widgets/reference_panel.py` : liste des references/boites et navigation vers leur premiere apparition.
 - `TraceAlphaViewer/Widgets/state_table.py` : etats tapis, capteurs et codes firmware.

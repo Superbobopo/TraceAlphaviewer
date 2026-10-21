@@ -207,11 +207,16 @@ def captures():
         view._reference_panel._toggle_unknown_filter()
         assert len(view._reference_panel._visible_records) == 1
         photograph('unknown')
+        view._btn_trace_search.invoke()
+        pump()
+        assert view._trace_panel.search_visible
         view._trace_panel._search_var.set('3400000000001')
         pump(lambda: view._trace_panel._search_job is None)
         assert view._trace_panel._search_matches
         view._trace_panel._navigate_search(1)
         photograph('recherche-trace')
+        view._btn_trace_search.invoke()
+        assert not view._trace_panel.search_visible
         view._analysis_tabs.set('Diagnostic')
         view._diagnostic_panel._show_global_summary()
         photograph('diagnostic-global')

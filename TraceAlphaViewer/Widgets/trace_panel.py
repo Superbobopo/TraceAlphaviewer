@@ -23,6 +23,7 @@ class TracePanel(ctk.CTkFrame):
 
     def __init__(self, master,
                  on_line_click: Optional[Callable[[int], None]] = None,
+                 search_visible: bool = True,
                  **kwargs):
         kwargs.setdefault('fg_color', '#12121f')
         kwargs.setdefault('corner_radius', 0)
@@ -43,15 +44,19 @@ class TracePanel(ctk.CTkFrame):
         self._search_matches = []
         self._search_index = -1
         self._search_pending_direction = None
+        self.search_visible = search_visible
         self._build()
         self._poll_job = self.after(30, self._poll_results)
 
     # ── Construction ─────────────────────────────────────────────────────────
     def _build(self) -> None:
         header = ctk.CTkFrame(self, fg_color='#1e1e30', corner_radius=0)
-        header.pack(fill='x')
+        self._search_header = header
+        if self.search_visible:
+            header.pack(fill='x')
         ctk.CTkLabel(header, text='CIP / texte', font=('Consolas', 10)).pack(side='left', padx=8)
         search = ctk.CTkEntry(header, textvariable=self._search_var, height=26)
+        self._search_entry = search
         search.pack(side='left', fill='x', expand=True, padx=4, pady=4)
         search.bind('<Return>', lambda e: self._navigate_search(1))
         search.bind('<F3>', lambda e: self._navigate_search(1))
@@ -224,6 +229,15 @@ class TracePanel(ctk.CTkFrame):
             self._insert_job = self.after(1, lambda: self._insert_chunk(lines, end, chunk))
         else:
             self._finish_insert()
+
+    def set_search_visible(self, visible: bool) -> None:
+        self.search_visible = visible
+        if visible:
+            self._search_header.pack(fill='x', before=self._text)
+            self._search_entry.focus_set()
+        else:
+            self._search_header.pack_forget()
+            self._text.focus_set()
 
     def _queue_search(self) -> None:
         if self._search_job:
