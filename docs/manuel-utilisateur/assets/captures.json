@@ -78,5 +78,9 @@
   "vidage-robot": {
     "width": 1091,
     "height": 210
+  },
+  "capteur-c2": {
+    "width": 1139,
+    "height": 212
   }
 }

@@ -1,6 +1,7 @@
 """Frequences et priorites partagees des demandes de vidage T5 robot."""
 from __future__ import annotations
 from datetime import date, timedelta
+from dataclasses import replace
 
 from Models.trace_calendar import date_label, display_time, source_datetime
 
@@ -21,8 +22,8 @@ def drain_metrics(occurrences, trace=None):
                         'last_line': ordered[best_right][0] if ordered else 0,
                         'start': ordered[best_left][2] if ordered else '',
                         'end': ordered[best_right][2] if ordered else ''}
-    result['critical'] = result['hour']['count'] >= 2 or result['day']['count'] >= 5
-    result['reinforced'] = result['day']['count'] >= 15
+    result['critical'] = drain_is_critical(result)
+    result['reinforced'] = False
     if trace:
         result['trace'] = trace
         result['daily'] = []
@@ -53,7 +54,30 @@ def drain_metrics(occurrences, trace=None):
 
 def drain_metric_text(metrics):
     return (f"{metrics['total']} demande(s) robot ; maximum "
-            f"{metrics['hour']['count']} sur 1 h et {metrics['day']['count']} sur 24 h")
+            f"{metrics['day']['count']} sur 24 h glissantes")
+
+
+def drain_is_critical(metrics):
+    return int((metrics or {}).get('day', {}).get('count', 0)) >= 10
+
+
+def drain_summary(metrics):
+    return drain_metric_text(metrics) + ('. Critique : au moins 10 demandes sur 24 h glissantes.'
+        if drain_is_critical(metrics) else '. Information : moins de 10 demandes sur 24 h glissantes.')
+
+
+def normalize_robot_incidents(incidents):
+    """Recalcule les anciens caches sans reutiliser leurs indicateurs de criticite."""
+    result = []
+    for incident in incidents:
+        if incident.code == 'DemVidageComplet':
+            metrics = dict(incident.metrics)
+            critical = drain_is_critical(metrics)
+            metrics.update(critical=critical, reinforced=False)
+            incident = replace(incident, metrics=metrics, severity='error' if critical else 'info',
+                               summary=drain_summary(metrics))
+        result.append(incident)
+    return result
 
 
 def t5_priority_score(code, severity, count, metrics=None):
@@ -62,8 +86,7 @@ def t5_priority_score(code, severity, count, metrics=None):
         return base + 120 + min(count, 60)
     if code == 'DemVidageComplet':
         metrics = metrics or {}
-        critical = metrics.get('critical', severity == 'error')
-        return (base + (140 if critical else 0)
-                + min(int(metrics.get('day', {}).get('count', count)), 60)
-                + (100 if metrics.get('reinforced') else 0))
+        critical = drain_is_critical(metrics)
+        return ((500 if critical else 80) + (140 if critical else 0)
+                + min(int(metrics.get('day', {}).get('count', 0)), 60))
     return None

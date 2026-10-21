@@ -17,7 +17,7 @@ import tkinter as tk
 from tkinter import messagebox
 
 from Models.diagnostic import DiagnosticIncident
-from Models.robot_drain import t5_priority_score
+from Models.robot_drain import t5_priority_score, normalize_robot_incidents, drain_is_critical
 from Models.diagnostic_report import write_diagnostic_report, report_files_available
 from Models.diagnostic_report import _metric_from_summary as _structured_metric
 from Models.state import MachineState
@@ -177,7 +177,7 @@ class DiagnosticPanel(ctk.CTkFrame):
         kwargs.setdefault('fg_color', '#12121f')
         kwargs.setdefault('corner_radius', 0)
         super().__init__(master, **kwargs)
-        self._incidents = incidents
+        self._incidents = normalize_robot_incidents(incidents)
         self._frames = frames
         self._measurement_analysis = None if isinstance(frames, FrameStore) else analyze_measurements(frames or [])
         self._measurement_summary = (frames.measurement_summary if isinstance(frames, FrameStore)
@@ -457,6 +457,7 @@ class DiagnosticPanel(ctk.CTkFrame):
             return
 
     def set_incidents(self, incidents: list[DiagnosticIncident]) -> None:
+        incidents = normalize_robot_incidents(incidents)
         self._incidents = incidents
         self._line_to_incident = {}
         errors = sum(1 for incident in incidents if incident.severity == 'error')
@@ -587,7 +588,7 @@ class DiagnosticPanel(ctk.CTkFrame):
             f'Types : {len(grouped)}\n\n'
         )
         for incident in self._incidents:
-            if incident.code == 'DemVidageComplet':
+            if incident.code == 'DemVidageComplet' and drain_is_critical(incident.metrics):
                 self._details.insert('end',
                     f'VIDAGE COMPLET T5 DEMANDE PAR LE ROBOT — {_SEVERITY_LABELS[incident.severity]}\n'
                     f'{incident.summary}\n')
@@ -597,7 +598,8 @@ class DiagnosticPanel(ctk.CTkFrame):
         self._details.insert('end', 'A TRAITER EN PRIORITE\n')
 
         priority_groups = sorted(
-            grouped,
+            [group for group in grouped if group['code'] != 'DemVidageComplet'
+             or drain_is_critical(group.get('metrics'))],
             key=lambda group: (
                 _SEVERITY_ORDER.get(str(group['severity']), 9),
                 -(t5_priority_score(str(group['code']), str(group['severity']),
@@ -700,18 +702,29 @@ class DiagnosticPanel(ctk.CTkFrame):
             )
             self._details.insert('end', text)
             if incident.code == 'DemVidageComplet':
-                for name, label in (('hour', '1 h'), ('day', '24 h')):
+                for name, label in (('day', '24 h'),):
                     period = incident.metrics.get(name)
                     if period:
                         self._details.insert('end', f"\nPic sur {label} : {period['count']} — "
                                              f"{period['start']} -> {period['end']}")
-                self._details.insert('end', f'\n\n{min(10, incident.count)} premieres demandes sur {incident.count} :\n')
-                for line in incident.event_lines[:10]:
-                    if self._on_measurement_click:
-                        self._measurement_link(f'L.{line}\n',
-                            lambda target=line: self._on_measurement_click(target), f'robot-drain-line-{line}')
-                    else:
-                        self._details.insert('end', f'L.{line}\n')
+                daily = incident.metrics.get('daily', [])
+                if not daily:
+                    daily = [{'label': 'Demandes (dates calendaires indisponibles)', 'count': incident.count,
+                              'examples': [{'line': line} for line in incident.event_lines[:10]]}]
+                for day in daily:
+                    count = day['count']
+                    label = f'{count} demande(s)' if count else 'Aucune demande'
+                    self._details.insert('end', f"\n\n{day['label']} : {label}\n")
+                    if count:
+                        self._details.insert('end', f'{min(10, count)} premières preuves sur {count} :\n')
+                    for sample in day['examples'][:10]:
+                        line = sample['line']
+                        label = f"{sample.get('display_time_str', '')} L.{line}\n"
+                        if self._on_measurement_click:
+                            self._measurement_link(label,
+                                lambda target=line: self._on_measurement_click(target), f'robot-drain-line-{line}')
+                        else:
+                            self._details.insert('end', label)
             if incident.measurement_stats:
                 names = {'T4_LENGTH': ('length',), 'T5_WIDTH': ('width',), 'T5_HEIGHT': ('height',)}.get(incident.code)
                 self._details.insert('end', '\n\nBILAN DES MESURES DE LA TRACE\n')
@@ -727,6 +740,13 @@ class DiagnosticPanel(ctk.CTkFrame):
                     self._details.tag_configure(tag, foreground='#75bfff', underline=True)
                     self._details.tag_bind(tag, '<Button-1>',
                         lambda event, line=sample['line'], item=incident: self._open_reference_example(item, line))
+                    if incident.code == 'C2_SIGNAL_ANOMALY':
+                        for label, line in sample.get('sources', {}).items():
+                            tag = f'c2-source-{line}'
+                            self._details.insert('end', f'\n{label} : L.{line}', (tag,))
+                            self._details.tag_configure(tag, foreground='#75bfff', underline=True)
+                            self._details.tag_bind(tag, '<Button-1>',
+                                lambda event, target=line, item=incident: self._open_reference_example(item, target))
         self._details.configure(state='disabled')
 
     def _open_reference_example(self, incident, line):

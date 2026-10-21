@@ -15,7 +15,9 @@ from Models.diagnostic import DiagnosticIncident, camera_report_stats
 from Models.state import MachineState
 from Models.measurement_analysis import (analyze_measurements, representative_samples,
                                          categorize_orientations, ORIENTATION_CATEGORIES)
-from Models.robot_drain import t5_priority_score, drain_metric_text, drain_metrics
+from Models.robot_drain import (t5_priority_score, drain_metric_text, drain_metrics,
+                                drain_is_critical, normalize_robot_incidents)
+from Models.c2_analysis import c2_metric_text
 from Models.trace_calendar import trace_calendar, display_time
 
 
@@ -27,6 +29,7 @@ _SEVERITY_LABELS = {
 
 _SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
 _REFERENCE_REJECTION_CODES = {'REFERENCE_ABSENT', 'REFERENCE_NON_ALPHATISABLE'}
+_STRUCTURED_PROOF_CODES = _REFERENCE_REJECTION_CODES | {'C2_SIGNAL_ANOMALY'}
 
 _FAMILY_LABELS = {
     "all": "Tout",
@@ -76,8 +79,10 @@ def _duration_label(start: float, end: float) -> str:
 
 def _metric_from_summary(summary: str, code: str, occurrence_count: int, metrics=None) -> str:
     metrics = metrics or {}
-    if code == 'DemVidageComplet' and metrics.get('hour'):
+    if code == 'DemVidageComplet' and metrics.get('day'):
         return drain_metric_text(metrics)
+    if code == 'C2_SIGNAL_ANOMALY' and metrics:
+        return c2_metric_text(metrics)
     if code == 'ALPHA_CARD_RESET' and 'trace_duration' in metrics:
         return f"{occurrence_count} reset(s) sur {metrics['trace_duration']} de trace"
     if code == 'UNKNOWN' and metrics.get('total_boxes'):
@@ -136,6 +141,8 @@ def _family_for(belt: str, code: str, title: str) -> str:
 
 
 def _action_label(code: str, belt: str, title: str) -> str:
+    if code == 'C2_SIGNAL_ANOMALY':
+        return 'Contrôler un obstacle devant C2, sa propreté, son alignement et son câblage.'
     if code == 'REFERENCE_NON_ALPHATISABLE':
         return 'Vérifier la fiche du produit et la raison de son exclusion Alpha.'
     if code in _REFERENCE_REJECTION_CODES:
@@ -167,6 +174,8 @@ def _action_label(code: str, belt: str, title: str) -> str:
 
 
 def _impact_label(code: str, belt: str) -> str:
+    if code == 'C2_SIGNAL_ANOMALY':
+        return 'Instabilité C2 ou blocage du vidage confirmé par un état complet des capteurs.'
     if code == 'REFERENCE_NON_ALPHATISABLE':
         return 'Le CIP est lu, mais la référence non alphatisable est rejetée avec une référence technique unknown.'
     if code in _REFERENCE_REJECTION_CODES:
@@ -195,7 +204,7 @@ def _impact_label(code: str, belt: str) -> str:
 
 
 def _business_lines(summary: str, code: str) -> list[str]:
-    if code in _REFERENCE_REJECTION_CODES:
+    if code in _STRUCTURED_PROOF_CODES:
         return [summary]
     if code == "UNKNOWN":
         lines: list[str] = []
@@ -303,6 +312,14 @@ def _field_explanation(group: dict[str, object], total_boxes: int, c9_massive: b
     count = int(group["occurrence_count"])
     ratio = _ratio(count, total_boxes)
 
+    if code == 'C2_SIGNAL_ANOMALY':
+        blocked = int(group.get('metrics', {}).get('drain_relaunches', 0))
+        return (
+            ('Blocage du vidage confirmé : C2 seul actif lors des relances.' if blocked else
+             'C2 alterne durablement sans progression T2 attestée, C3 et C4 à zéro.'),
+            'Consulter les épisodes, leurs états capteurs et la reprise observée.',
+            str(group['action']),
+        )
     if code in _REFERENCE_REJECTION_CODES:
         return (
             ('Le CIP est décodé, mais la référence est explicitement non alphatisable.'
@@ -413,6 +430,8 @@ def _field_severity_for(group: dict[str, object], total_boxes: int, c9_massive: 
 
     if code == "ALPHA_CARD_RESET":
         return "error" if count > 0 else "info"
+    if code == 'DemVidageComplet':
+        return 'error' if drain_is_critical(group.get('metrics')) else 'info'
 
     if code == "C9_WIDTH_INVALID":
         return "error" if count >= 5 or ratio >= 0.10 else "warning"
@@ -650,7 +669,8 @@ def _group_incidents(incidents: list[DiagnosticIncident]) -> list[dict[str, obje
 
 def _priority_groups(grouped: list[dict[str, object]]) -> list[dict[str, object]]:
     priority = sorted(
-        grouped,
+        [group for group in grouped if group['code'] != 'DemVidageComplet'
+         or drain_is_critical(group.get('metrics'))],
         key=lambda group: (-int(group.get("field_priority", group["priority_score"])), int(group["first_line"])),
     )[:5]
     keys = {(str(g["severity"]), str(g["belt"]), str(g["code"]), str(g["title"])) for g in priority}
@@ -771,6 +791,7 @@ def build_report_payload(
     frames: list[MachineState] | None = None,
     source_name: str = '',
 ) -> dict[str, object]:
+    incidents = normalize_robot_incidents(incidents)
     camera_stats = (frames.read_camera_report() if hasattr(frames, 'read_camera_report') else
                     camera_report_stats(frames) if frames is not None else _empty_camera_stats())
     unknown = dict(camera_stats.get('unknown', {}))
@@ -846,9 +867,9 @@ def build_report_payload(
                                              for line in lines)
                 start = len(examples)
                 evidence_count = len(lines)
-                if group['code'] in _REFERENCE_REJECTION_CODES and incident['examples']:
+                if group['code'] in _STRUCTURED_PROOF_CODES and incident['examples']:
                     proofs = sorted(incident['examples'], key=lambda sample: sample['line'])
-                    evidence_count = len(proofs)
+                    evidence_count = incident['count'] if group['code'] == 'C2_SIGNAL_ANOMALY' else len(proofs)
                     examples.extend(dict(sample, incident_line=incident['first_line']) for sample in proofs[:10])
                 else:
                     for line in lines[:10]:
@@ -884,7 +905,7 @@ def build_report_payload(
         group['examples'] = examples
         for index, sample in enumerate(examples):
             sample.update(id=f"{group['id']}:{index}", group_id=group['id'])
-            if 'measured' not in sample and group['code'] not in _REFERENCE_REJECTION_CODES:
+            if 'measured' not in sample and group['code'] not in _STRUCTURED_PROOF_CODES:
                 targets.setdefault(sample['line'], []).append((group['belt'], sample))
             wanted.update(range(max(1, sample['line'] - 2), sample['line'] + 3))
             for line in set(sample.get('sources', {}).values()) - {0}:

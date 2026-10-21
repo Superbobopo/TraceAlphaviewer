@@ -241,14 +241,26 @@ figure{margin:20px 0;break-inside:avoid;border:1px solid #cad7e5;border-radius:8
 </div>
 <div class="report-evidence-guide">
 <span class="chapter">14 • Vidage T5 robot</span><h2>Repérer les incidents de prise robot</h2>
-<p>Une commande <code>OMEGA:T5-DemVidageComplet</code> indique que le robot demande de <strong>vider tout T5</strong> après un incident de prise, et pas seulement la boîte concernée. Une alerte dédiée apparaît dès la première demande dans la vue globale du diagnostic, le rapport web et son PDF.</p>
+<p>Une commande <code>OMEGA:T5-DemVidageComplet</code> indique que le robot demande de <strong>vider tout T5</strong> après un incident de prise, et pas seulement la boîte concernée. Sous dix demandes sur 24 heures glissantes, le diagnostic reste en <strong>Information</strong>, consultable avec ses preuves dans le logiciel, le web et le PDF.</p>
 <figure><img class="report-capture" src="assets/vidage-robot.png" alt="Demandes robot par journée, avec une journée sans demande, sur données fictives"><figcaption>Données fictives : cinq demandes le premier jour, aucune le suivant. Ouvrez la date pour consulter les preuves.</figcaption></figure>
 <h3>La fréquence détermine l'urgence</h3>
-<p>Le diagnostic devient <strong>critique dès deux demandes sur une heure ou cinq sur 24 heures</strong>. Les fenêtres sont glissantes et peuvent traverser minuit. À partir de <strong>quinze demandes sur 24 heures</strong>, sa priorité est renforcée. Un total élevé réparti sur plusieurs jours ne suffit pas à lui seul.</p>
-<p>Un vidage robot critique peut entrer dans les trois premiers points à vérifier. Cinq ou six demandes sur 24 heures passent devant trois occurrences de boîte T5 non mesurée bloquante. L'alerte dédiée reste visible quel que soit le classement.</p>
+<p>Le diagnostic devient <strong>Critique dès dix demandes sur 24 heures glissantes</strong>, bornes incluses. La fenêtre peut traverser minuit. Un total élevé réparti sur plusieurs jours ne suffit pas à lui seul.</p>
+<p>Sous dix, aucun bandeau ni priorité automatique ne met ces demandes en avant. Dès dix, un bandeau apparaît et le diagnostic participe au classement des points à vérifier. Les autres blocages restent classés selon leur propre gravité.</p>
 <h3>Trois pistes à vérifier sur la machine</h3>
 <ul><li><strong>Déplacement réel T5 :</strong> comparer la consigne au déplacement physique ; vérifier entraînement, patinage et rouleaux.</li><li><strong>Présentation de la boîte :</strong> rechercher un retournement ou une instabilité pendant le tassage avant la prise.</li><li><strong>Position de l'Alpha :</strong> après intervention, vérifier son emplacement par rapport au robot et les repères d'apprentissage.</li></ul>
 <p>La commande confirme la demande de vidage, sans prouver la cause du choc. Le détail présente chaque journée de la trace, même sans demande, et jusqu'aux dix premières preuves par jour. Dépliez la date, puis cliquez sur une preuve pour rejoindre la trace. Dates absentes : le rapport le signale ; le total et les seuils restent complets.</p>
+</div>
+<div class="report-evidence-guide">
+<span class="chapter">14 • Signal C2</span><h2>Comprendre un signal C2 anormal</h2>
+<p>La carte <strong>Capteur C2 — signal anormal</strong>, dans la famille T2, regroupe les épisodes observés. Elle sépare le nombre d'épisodes, les bascules C2, les relances de vidage avec C2 seul actif et les demandes d'initialisation T2. Des milliers de bascules ne deviennent pas des milliers d'incidents prioritaires.</p>
+<figure><img class="report-capture" src="assets/capteur-c2.png" alt="Carte du capteur C2 et compteurs distincts sur des données fictives"><figcaption>Données fictives : une instabilité et un blocage confirmés dans un même épisode.</figcaption></figure>
+<h3>Deux niveaux fondés sur les preuves</h3>
+<ul><li><strong>Alerte :</strong> au moins dix changements C2 sur au moins cinq minutes, sans progression T2 attestée, avec C3 et C4 à zéro. Les états identiques ne comptent pas comme des bascules.</li><li><strong>Critique :</strong> une relance explicite du vidage est suivie, dans les trois lignes et sous deux secondes, d'un état complet <code>C2:1 C3:0 C4:0 C5:0 C6:0 C9:0</code>. Ce constat suffit même sans longue instabilité.</li></ul>
+<p>Une progression T2, l'activation de C3/C4, un redémarrage logiciel ou une interruption des observations supérieure à deux minutes termine la séquence. La fin de trace peut laisser sa résolution inconnue.</p>
+<h3>Lire les épisodes et rejoindre leurs sources</h3>
+<p>Ouvrez la carte puis les exemples. Chaque épisode indique ses dates, sa durée, les alternances, les relances, les états capteurs et la reprise lorsqu'elle est observée. Les sources permettent de rejoindre la trace. Une fin de vidage ou une reprise des transferts ne prouve pas une réparation du capteur.</p>
+<div class="callout"><strong>Premier contrôle :</strong> rechercher un obstacle devant C2 ; contrôler sa propreté, son alignement et son câblage. La trace ne permet pas de conclure automatiquement à un capteur hors service.</div>
+<p class="small">Pour appliquer ces nouvelles règles à un ancien rapport exporté, rouvrez la trace et régénérez le rapport web/PDF.</p>
 </div>
 <div class="orientation-guide">
 <span class="chapter">14 • Présentation des boîtes</span><h2>Repérer les boîtes dans le mauvais sens</h2>

@@ -28,12 +28,18 @@ class RobotDrainTests(unittest.TestCase):
     def test_thresholds_and_windows(self):
         for times, critical, reinforced, hour, day in [
             ([], False, False, 0, 0), ([0], False, False, 1, 1),
-            ([0, 3600], True, False, 2, 2), ([0, 3600.1], False, False, 1, 2),
-            ([0, 21600, 43200, 64800, 86400], True, False, 1, 5),
+            ([0, 3600], False, False, 2, 2), ([0, 3600.1], False, False, 1, 2),
+            ([0, 21600, 43200, 64800, 86400], False, False, 1, 5),
             ([0, 21600, 43200, 64800, 86400.1], False, False, 1, 4),
             (list(range(0, 1500000, 100000)), False, False, 1, 1),
-            (list(range(0, 84001, 6000)), True, True, 1, 15),
-            ([86390, 86410], True, False, 2, 2),
+            (list(range(0, 84001, 6000)), True, False, 1, 15),
+            ([86390, 86410], False, False, 2, 2),
+            (list(range(9)), False, False, 9, 9),
+            (list(range(10)), True, False, 10, 10),
+            (list(range(11)), True, False, 11, 11),
+            (list(range(0, 86401, 9600)), True, False, 1, 10),
+            (list(range(0, 86400, 9600)) + [86400.1], False, False, 1, 9),
+            (list(range(86390, 86410, 2)), True, False, 10, 10),
         ]:
             with self.subTest(times=times):
                 metrics = drain_metrics([(i, t, str(t)) for i, t in enumerate(times)])
@@ -41,7 +47,7 @@ class RobotDrainTests(unittest.TestCase):
                                   metrics['day']['count']), (critical, reinforced, hour, day))
 
     def test_detection_and_priority(self):
-        for count in (1, 5, 6, 15):
+        for count in (1, 5, 6, 9, 10, 11, 15):
             frames = frames_for([i * 7200 for i in range(count)] if count < 15 else [i * 6000 for i in range(15)])
             frames[0].raw_lines += [(100, 'T5v: Une demande de vidage complet de T5 est demandee'),
                                     (101, '118-Vide T5 suite blocage poubelle'),
@@ -49,20 +55,22 @@ class RobotDrainTests(unittest.TestCase):
             incidents = build_diagnostics(frames, [])
             robot = next(item for item in incidents if item.code == 'DemVidageComplet')
             self.assertEqual(robot.count, count)
-            self.assertEqual(robot.severity, 'warning' if count == 1 else 'error')
+            self.assertEqual(robot.severity, 'info' if count < 10 else 'error')
             payload = build_report_payload(incidents + [stale_incident()], frames)
             group = next(item for item in payload['groups'] if item['code'] == robot.code)
             self.assertEqual(group['family'], 'robot')
             self.assertLessEqual(len(group['examples']), 10)
             expected = t5_priority_score(robot.code, robot.severity, count, robot.metrics)
             self.assertEqual(group['field_priority'], expected)
-            if count >= 5:
+            if count >= 10:
                 self.assertEqual(payload['priority'][0]['code'], robot.code)
+            else:
+                self.assertNotIn(robot.code, [item['code'] for item in payload['priority']])
         frames = frames_for([i * 100000 for i in range(6)])
         payload = build_report_payload(build_diagnostics(frames, []) + [stale_incident()], frames)
         self.assertEqual(payload['priority'][0]['code'], 'T5_STALE_UNMEASURED_BOX')
-        self.assertGreater(t5_priority_score('DemVidageComplet', 'error', 15,
-            drain_metrics([(i, i * 6000, '') for i in range(15)])), 700)
+        self.assertEqual(t5_priority_score('DemVidageComplet', 'error', 15,
+            drain_metrics([(i, i * 6000, '') for i in range(15)])), 655)
         self.assertFalse(build_diagnostics([], []))
 
     def test_loire_source_commands(self):
@@ -102,18 +110,20 @@ class RobotDrainTests(unittest.TestCase):
         from Widgets.diagnostic_panel import DiagnosticPanel
         root = ctk.CTk(); root.withdraw()
         try:
-            for count in (1, 5, 6):
+            for count in (1, 5, 6, 9, 10):
                 frames = frames_for([i * 7200 for i in range(count)])
                 incidents = build_diagnostics(frames, []) + [stale_incident()]
                 received = []
                 panel = DiagnosticPanel(root, incidents, frames, on_measurement_click=received.append)
                 text = panel._details.get('1.0', 'end')
-                self.assertIn('VIDAGE COMPLET T5 DEMANDE PAR LE ROBOT', text)
-                ranking = text.split('A TRAITER EN PRIORITE')[1]
-                first, second = ('DemVidageComplet', 'T5_STALE_UNMEASURED_BOX') if count > 1 else ('T5_STALE_UNMEASURED_BOX', 'DemVidageComplet')
-                self.assertLess(ranking.index(first), ranking.index(second))
+                self.assertEqual('VIDAGE COMPLET T5 DEMANDE PAR LE ROBOT' in text, count >= 10)
+                ranking = text.split('A TRAITER EN PRIORITE')[1].split('TOUS LES TYPES')[0]
+                if count >= 10:
+                    self.assertLess(ranking.index('DemVidageComplet'), ranking.index('T5_STALE_UNMEASURED_BOX'))
+                else:
+                    self.assertNotIn('DemVidageComplet', ranking)
                 tag = 'robot-drain-details'
-                self.assertTrue(panel._details.tag_ranges(tag))
+                self.assertEqual(bool(panel._details.tag_ranges(tag)), count >= 10)
                 robot = next(item for item in incidents if item.code == 'DemVidageComplet')
                 panel._show_details(robot)
                 self.assertIn('Pic sur 24 h', panel._details.get('1.0', 'end'))

@@ -405,6 +405,23 @@ CB1 et CB2 sur le total des boites passees. Il ouvre leur detail, meme sous le s
 d'alerte. Au-dessus de 7 %, un encart dedie accompagne les trois priorites sans
 modifier leur classement. Les UNKNOWN temporaires reconnues ensuite sont exclues.
 
+Les vidages T5 demandes par le robot restent en Information sous 10 demandes sur
+24 heures glissantes, sans bandeau ni presence dans les priorites. Ils deviennent
+Critiques des 10, bornes incluses. Le detail garde les journees sans demande et
+jusqu'a dix preuves par journee. Les anciens seuils horaires et le renforcement
+a 15 ne s'appliquent plus ; regenerer les anciens rapports exportes.
+
+La carte `C2_SIGNAL_ANOMALY`, famille T2, distingue les episodes, bascules C2,
+relances de vidage et demandes d'initialisation T2. Elle devient Alerte a partir
+de dix bascules sur au moins cinq minutes sans progression T2, C3/C4 a zero.
+Une relance explicite suivie dans les trois lignes et deux secondes d'un etat
+complet avec C2 seul actif parmi C2/C3/C4/C5/C6/C9 suffit pour un niveau Critique.
+Progression T2, activation C3/C4, redemarrage logiciel ou interruption des
+observations superieure a deux minutes terminent la sequence. Les exemples
+conservent alternances, blocages et reprises avec navigation vers les sources.
+Verifier obstacle, proprete, alignement et cablage ; une reprise ne prouve pas
+une reparation du capteur.
+
 Les repetitions d'un meme incident sont rassemblees en une carte avec son total
 et sa periode. Le detail prepare au plus les dix premieres occurrences de chaque
 serie. Les mesures conservent toutes leurs preuves et leur pagination habituelle.

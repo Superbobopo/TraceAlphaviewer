@@ -15,7 +15,8 @@ from Models.et_codes import et_description
 from Models.diagnostic_knowledge import knowledge
 from Models.identification_analysis import identification_cycles, unknown_reference
 from Models.state import MachineEvent, MachineState
-from Models.robot_drain import drain_metrics, drain_metric_text
+from Models.robot_drain import drain_metrics, drain_summary
+from Models.c2_analysis import analyze_c2, c2_metric_text
 from Models.trace_calendar import trace_calendar
 
 
@@ -886,15 +887,12 @@ def _build_robot_drain_incidents(line_states):
     metrics = drain_metrics(matched, trace_calendar(line_states))
     rule = knowledge('t5_dem_vidage_complet')
     first, last = matched[0], matched[-1]
-    reason = ('Priorite renforcee : au moins 15 demandes sur 24 h.' if metrics['reinforced'] else
-              'Critique : au moins 2 demandes sur 1 h ou 5 sur 24 h.' if metrics['critical'] else
-              'Alerte : aucune concentration critique observee.')
     return [DiagnosticIncident(
-        severity='error' if metrics['critical'] else 'warning',
+        severity='error' if metrics['critical'] else 'info',
         title='T5 - Vidage complet demande par le robot', belt='T5', code='DemVidageComplet',
         first_line=first[0], last_line=last[0], start_time=first[1], end_time=last[1],
         start_time_str=first[2], end_time_str=last[2], count=len(matched),
-        summary=drain_metric_text(metrics) + '. ' + reason,
+        summary=drain_summary(metrics),
         symptom=str(rule['symptom']), probable_causes=list(rule['causes']),
         checks=list(rule['checks']), confidence=str(rule['confidence']),
         event_lines=[item[0] for item in matched], metrics=metrics)]
@@ -909,6 +907,26 @@ def _duration_text(seconds: float) -> str:
     if minutes:
         return f"{minutes}m{seconds:02d}s"
     return f"{seconds}s"
+
+
+def _build_c2_signal_incidents(line_states):
+    analysis = analyze_c2(line_states)
+    if not analysis:
+        return []
+    metrics, examples = analysis
+    episodes = metrics['episodes']
+    first, last = episodes[0], episodes[-1]
+    rule = knowledge('c2_signal_anomaly')
+    return [DiagnosticIncident(
+        severity='error' if metrics['drain_relaunches'] else 'warning',
+        title='Capteur C2 — signal anormal', belt='T2', code='C2_SIGNAL_ANOMALY',
+        first_line=first['first_line'], last_line=last['last_line'],
+        start_time=first['start_time'], end_time=last['end_time'],
+        start_time_str=first['start_time_str'], end_time_str=last['end_time_str'],
+        count=len(episodes), summary=c2_metric_text(metrics),
+        symptom=rule['symptom'], probable_causes=list(rule['causes']),
+        checks=list(rule['checks']), confidence=rule['confidence'],
+        event_lines=[example['line'] for example in examples], examples=examples, metrics=metrics)]
 
 
 def _build_alpha_card_reset_incident(
@@ -1785,6 +1803,7 @@ def build_diagnostics(
     incidents.extend(_build_missing_t5_creation_incidents(events))
     incidents.extend(_build_wait_incidents(frames))
     incidents.extend(_build_t2_blocked_before_ea_incidents(frames))
+    incidents.extend(_build_c2_signal_incidents(line_states))
     incidents.extend(_build_cubestop_c4_blocked_incidents(line_states))
     incidents.extend(_build_t4_init_loop_incidents(line_states, events))
     incidents.extend(_build_text_pattern_incidents(line_states))

@@ -161,6 +161,19 @@ DIAGNOSTIC_KNOWLEDGE: dict[str, dict[str, object]] = {
         ],
         'confidence': 'probable',
     },
+    'c2_signal_anomaly': {
+        'symptom': "C2 change d'état sans progression T2 attestée, ou reste seul actif lors d'une relance explicite du vidage.",
+        'causes': [
+            "Obstacle ou boîte devant C2 ; détection intermittente.",
+            "Encrassement, alignement ou câblage de C2 à contrôler.",
+        ],
+        'checks': [
+            "Contrôler un obstacle devant C2, sa propreté, son alignement et son câblage.",
+            "Comparer les alternances C2, les états complets et les relances de vidage dans la trace.",
+            "Vérifier la reprise du vidage et des transferts ; une reprise ne prouve pas une réparation du capteur.",
+        ],
+        'confidence': 'constat confirmé ; cause à vérifier',
+    },
     't5_dem_vidage_complet': {
         'symptom': "Le robot demande de vider tout T5 apres un incident de prise, pas seulement la boite concernee.",
         'causes': [
