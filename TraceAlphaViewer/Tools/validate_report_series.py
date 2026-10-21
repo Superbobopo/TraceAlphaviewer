@@ -27,10 +27,14 @@ def camera_frames(total=100, unknown=8):
         frames.append(MachineState(line_num=line, timestamp=line, timestamp_str=f'00:00:{line}',
                                    raw_lines=[(line, text)]))
     for index in range(total):
+        reference = f'ALPHA-INC-{index}' if index < unknown else f'340{index:010d}'
         for reader in (1, 2):
             add(f'CB{reader}: ajout Hist_LectCB boite n°{index} 0code(s) lu(s)')
-            if index < unknown:
-                add(f'idCB{reader}: --> Réf:ALPHA-INC-{index}')
+            add(f'idCB{reader}: --> Réf:{reference}')
+            if reader == 1:
+                add(f"tEA-T3: demande le transfert de EA->T3 '{reference}'")
+        add(f'idCB2: (Nboite= {index + 1})')
+        add(f"tT3/T4: demande le transfert de T3->T4 '{reference}'")
         if index < unknown:
             add(f"Création de la boite 'ALPHA-INC-{index}' -unknow")
     return frames

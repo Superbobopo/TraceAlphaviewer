@@ -614,7 +614,7 @@ class DiagnosticPanel(ctk.CTkFrame):
         }
         for group in grouped:
             key = (str(group['severity']), str(group['belt']), str(group['code']), str(group['title']))
-            if str(group['code']) in {'UNKNOWN', 'CAM-NO-READ'} and key not in priority_keys:
+            if str(group['code']) in {'UNKNOWN', 'CAM-NO-READ', 'REFERENCE_ABSENT'} and key not in priority_keys:
                 priority_groups.append(group)
                 priority_keys.add(key)
         for idx, group in enumerate(priority_groups, 1):
@@ -717,9 +717,22 @@ class DiagnosticPanel(ctk.CTkFrame):
                 self._details.insert('end', '\n\nBILAN DES MESURES DE LA TRACE\n')
                 self._insert_measurement_summary(incident.measurement_stats, names)
             for sample in incident.examples:
-                self._details.insert('end', f"\n\nExemple L.{sample['line']} - {sample['time_str']} - {sample['box']} {sample['barcode']}\n"
-                    f"Largeur / hauteur / longueur : {sample['measured']} mm ; BdD {sample['expected']} mm ; ecarts {sample['deltas']} mm.")
+                self._details.insert('end', f"\n\nExemple L.{sample['line']} - {sample['time_str']} - {sample['box']} {sample['barcode']}\n")
+                if 'measured' in sample:
+                    self._details.insert('end', f"Largeur / hauteur / longueur : {sample['measured']} mm ; BdD {sample['expected']} mm ; ecarts {sample['deltas']} mm.")
+                else:
+                    self._details.insert('end', sample['detail'])
+                    tag = f"reference-example-{sample['line']}"
+                    self._details.insert('end', '\nVoir dans la trace', (tag,))
+                    self._details.tag_configure(tag, foreground='#75bfff', underline=True)
+                    self._details.tag_bind(tag, '<Button-1>',
+                        lambda event, line=sample['line'], item=incident: self._open_reference_example(item, line))
         self._details.configure(state='disabled')
+
+    def _open_reference_example(self, incident, line):
+        from dataclasses import replace
+        if self._on_incident_click:
+            self._on_incident_click(replace(incident, first_line=line))
 
     def _insert_measurement_summary(self, summary, names=None):
         cursor = self._details.index('end-1c')

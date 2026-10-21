@@ -13,6 +13,7 @@ from Models.dimension_check import (
 )
 from Models.et_codes import et_description
 from Models.diagnostic_knowledge import knowledge
+from Models.identification_analysis import identification_cycles, unknown_reference
 from Models.state import MachineEvent, MachineState
 from Models.robot_drain import drain_metrics, drain_metric_text
 
@@ -82,11 +83,6 @@ _CUBESTOP_TEA_ERROR = re.compile(r'tEA-T3:\s+ERREUR transfert EA->T3\s+(-?\d+)',
 _CUBESTOP_TRANSFER_DONE = re.compile(r'le transfert \(EA->T3\) est termin', re.IGNORECASE)
 _CAMERA_HIST = re.compile(
     r'\bCB([12]):\s+ajout Hist_LectCB .*?boite n\S*?(\d+)\s+(\d+)code\(s\) lu\(s\)',
-    re.IGNORECASE,
-)
-_CAMERA_UNKNOWN_REF = re.compile(r'idCB([12]):\s+-->\s+R\S*f:(ALPHA-(?:INC|DET|DIF)\S*)', re.IGNORECASE)
-_CAMERA_UNKNOWN_CREATE = re.compile(
-    r"Cr\S*ation de la boite '([^']*ALPHA-(?:INC|DET|DIF)[^']*)'\s+-?unknow",
     re.IGNORECASE,
 )
 _CAMERA_SUCCESS_READER = re.compile(r'\bidCB([12]):', re.IGNORECASE)
@@ -1452,10 +1448,10 @@ def _camera_unknown_bucket(readers: set[str] | frozenset[str]) -> str:
 def _camera_stats(
     line_states: list[tuple[int, str, MachineState]],
 ) -> dict[str, object]:
-    all_hist_boxes: set[str] = set()
+    cycles = identification_cycles(line_states)
+    all_hist_boxes = {cycle.first_line for cycle in cycles}
     reader_boxes = {'CB1': set(), 'CB2': set()}
     reader_zero_boxes = {'CB1': set(), 'CB2': set()}
-    reader_unknown_refs: dict[str, set[str]] = {}
     success_by_reader = {'CB1': {}, 'CB2': {}}
     created_unknown: list[tuple[int, str, float, str, frozenset[str]]] = []
     hist_samples: list[tuple[int, float, str]] = []
@@ -1463,19 +1459,7 @@ def _camera_stats(
     for line_num, text, state in line_states:
         match = _CAMERA_HIST.search(text)
         if match:
-            reader = f'CB{match.group(1)}'
-            box_id = match.group(2)
-            code_count = int(match.group(3))
-            all_hist_boxes.add(box_id)
-            reader_boxes[reader].add(box_id)
             hist_samples.append((line_num, state.timestamp, state.timestamp_str))
-            if code_count == 0:
-                reader_zero_boxes[reader].add(box_id)
-
-        match = _CAMERA_UNKNOWN_REF.search(text)
-        if match:
-            reader = f'CB{match.group(1)}'
-            reader_unknown_refs.setdefault(match.group(2), set()).add(reader)
 
         match = _CAMERA_SUCCESS_READER.search(text)
         if match and 'PR' in text:
@@ -1487,11 +1471,16 @@ def _camera_stats(
                     continue
                 success_by_reader[reader][camera] = success_by_reader[reader].get(camera, 0) + 1
 
-        match = _CAMERA_UNKNOWN_CREATE.search(text)
-        if match:
-            ref = match.group(1)
-            readers = frozenset(reader_unknown_refs.get(ref, set()))
-            created_unknown.append((line_num, ref, state.timestamp, state.timestamp_str, readers))
+    for cycle in cycles:
+        for reader, codes in cycle.codes.items():
+            reader_boxes[reader].add(cycle.first_line)
+            if not any(codes):
+                reader_zero_boxes[reader].add(cycle.first_line)
+        if cycle.creation and not cycle.refusals:
+            line, ref, timestamp, time_str, name = cycle.creation
+            if unknown_reference(ref) and 'unknow' in name.lower():
+                created_unknown.append((line, ref, timestamp, time_str, frozenset(cycle.unknown_readers)))
+    created_unknown.sort()
 
     return {
         'all_hist_boxes': all_hist_boxes,
@@ -1500,7 +1489,51 @@ def _camera_stats(
         'success_by_reader': success_by_reader,
         'created_unknown': created_unknown,
         'hist_samples': hist_samples,
+        'cycles': cycles,
     }
+
+
+def _build_reference_absent_incident(stats: dict[str, object]) -> list[DiagnosticIncident]:
+    cycles = [cycle for cycle in stats['cycles'] if cycle.refusals]
+    if not cycles:
+        return []
+    refusals = sorted((refusal for cycle in cycles for refusal in cycle.refusals), key=lambda row: row['line'])
+    first, last = refusals[0], refusals[-1]
+    references = sorted({row['barcode'] for row in refusals})
+    action = ('Faire passer cette référence par la zone de chargement manuel pour créer sa fiche '
+              'avant son utilisation dans l’Alpha.')
+    examples = []
+    for cycle in cycles:
+        rows = sorted(cycle.refusals, key=lambda row: row['line'])
+        sources = {f'refus_{index + 1}': row['line'] for index, row in enumerate(rows)}
+        sources.update({f'reference_{index + 1}': row['reference_line'] for index, row in enumerate(rows)
+                        if row.get('reference_line')})
+        if cycle.creation:
+            sources['creation'] = cycle.creation[0]
+        technical_refs = sorted({row['technical_reference'] for row in rows if row['technical_reference']})
+        ids = [f'idB:{cycle.id_b}'] if cycle.id_b else []
+        if cycle.id_alpha:
+            ids.append(f'IdA:{cycle.id_alpha}')
+        examples.append(dict(line=rows[0]['line'], time_str=rows[0]['time_str'],
+            barcode=', '.join(sorted({row['barcode'] for row in rows})), box=' · '.join(ids),
+            readers=sorted({row['reader'] for row in rows}), technical_references=technical_refs,
+            sources=sources, detail=(f"CIP lu par {', '.join(sorted({row['reader'] for row in rows}))}, "
+                f"référence absente et création refusée. Référence technique : {', '.join(technical_refs) or 'non visible'}.")))
+    return [DiagnosticIncident(
+        severity='warning', title='Références absentes — chargement manuel requis',
+        belt='REFERENCES', code='REFERENCE_ABSENT',
+        first_line=first['line'], last_line=last['line'], start_time=first['time'], end_time=last['time'],
+        start_time_str=first['time_str'], end_time_str=last['time_str'], count=len(cycles),
+        summary=(f"{len(cycles)} boîte(s) concernée(s), {len(references)} référence(s) distincte(s) : "
+                 f"{', '.join(references)}. CIP lu, référence absente des tables et création refusée par l’Alpha."),
+        symptom='Le code est décodé, mais la fiche produit manque dans les tables consultées par l’Alpha.',
+        probable_causes=['La référence doit être créée par la zone de chargement manuel ; '
+                         'la trace ne montre pas tout son historique de chargement.'],
+        checks=[action, 'Vérifier ensuite que le CIP est reconnu dans l’Alpha.'], confidence='forte',
+        event_lines=[row['line'] for row in refusals], examples=examples,
+        metrics=dict(total_boxes=len(stats['all_hist_boxes']), reference_count=len(references),
+                     references=references, refusal_count=len(refusals)),
+    )]
 
 
 def _build_unknown_camera_incident(stats: dict[str, object]) -> list[DiagnosticIncident]:
@@ -1742,6 +1775,7 @@ def build_diagnostics(
     camera_stats = _camera_stats(line_states)
     if camera_report_output is not None:
         camera_report_output.update(camera_report_stats(frames, stats=camera_stats))
+    incidents.extend(_build_reference_absent_incident(camera_stats))
     incidents.extend(_build_unknown_camera_incident(camera_stats))
     incidents.extend(_build_inactive_camera_incident(camera_stats))
 

@@ -18,6 +18,78 @@ from Models.report_bridge import ReportBridge
 
 
 class BrowserTests(unittest.TestCase):
+    def test_reference_absent_card_sources_navigation_and_pdf(self):
+        from playwright.sync_api import sync_playwright
+        import pypdfium2 as pdfium
+        from Tools.validate_reference_absent import frames_for, cycle_lines, CIP
+        frames = frames_for(cycle_lines(1) + cycle_lines(2, missing=(1, 2))
+                            + cycle_lines(3, known=True, direct=True))
+        incidents = build_diagnostics(frames, [])
+        output = ROOT / 'build' / 'report-validation'
+        output.mkdir(parents=True, exist_ok=True)
+        report = write_diagnostic_report(incidents, output, frames, source_name='REFERENCES FICTIVES')
+        fallback = output / 'secours-references.html'
+        fallback.write_text(build_diagnostic_report_html(incidents, frames), encoding='utf-8')
+        bridge = ReportBridge()
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(channel='msedge', headless=True)
+                page = browser.new_page(viewport={'width': 1440, 'height': 1080})
+                errors = []
+                page.on('pageerror', lambda error: errors.append(str(error)))
+                for url in (bridge.register(report), fallback.as_uri()):
+                    local = url.startswith('http:')
+                    page.goto(url)
+                    if local:
+                        page.get_by_role('status').filter(has_text='Liaison avec').wait_for()
+                    self.assertIn('1 / 3', page.locator('.unknown-counter').inner_text())
+                    page.locator('[data-family]').select_option('references')
+                    group = page.locator('details[data-group]')
+                    self.assertEqual(group.count(), 1)
+                    self.assertIn('chargement manuel requis', group.inner_text())
+                    self.assertIn('1 boîte(s) / 3 passages', group.inner_text())
+                    group.locator(':scope > summary').click()
+                    self.assertIn(CIP, group.inner_text())
+                    group.locator('.incident-series > summary').click()
+                    sample = group.locator('.evidence .sample').first
+                    sample.locator('details > summary').click()
+                    self.assertIn('refus_2', sample.inner_text())
+                    self.assertIn('IdA:102', sample.inner_text())
+                    self.assertNotIn('undefined', group.inner_text())
+                    button = sample.locator('[data-navigate]')
+                    if local:
+                        received = []
+                        def navigate():
+                            target, done, result = bridge.commands.get(timeout=10)
+                            received.append(target)
+                            result.update(ok=True, line=target['line'])
+                            done.set()
+                        thread = threading.Thread(target=navigate)
+                        thread.start()
+                        button.click()
+                        page.get_by_role('status').filter(has_text='positionné').wait_for()
+                        thread.join(5)
+                        expected = next(item for item in incidents if item.code == 'REFERENCE_ABSENT').first_line
+                        self.assertEqual(received[0]['line'], expected)
+                    else:
+                        self.assertTrue(button.is_disabled())
+                    with page.expect_download() as download:
+                        page.get_by_role('button', name='Exporter PDF').click()
+                    pdf_path = output / ('references-react.pdf' if local else 'references-secours.pdf')
+                    download.value.save_as(pdf_path)
+                    document = pdfium.PdfDocument(pdf_path)
+                    contents = '\n'.join(p.get_textpage().get_text_range() for p in document)
+                    self.assertIn('chargement manuel requis', contents)
+                    self.assertIn(CIP, contents)
+                    self.assertIn('refus_2', contents)
+                    document[0].render(scale=1.3).to_pil().save(output / 'references-pdf.png')
+                    document.close()
+                    group.screenshot(path=str(output / 'references-carte.png'))
+                    self.assertFalse(errors, errors)
+                browser.close()
+        finally:
+            bridge.close()
+
     def test_header_priority_alignment_and_progressive_distributions(self):
         from playwright.sync_api import sync_playwright
         import pypdfium2 as pdfium

@@ -32,6 +32,7 @@ _FAMILY_LABELS = {
     "t4": "T4/C6",
     "t5": "T5/C9",
     "camera": "Cameras",
+    "references": "Références",
     "dimensions": "Dimensions",
     "robot": "Robot/vidage",
     "system": "Carte Alpha",
@@ -79,6 +80,10 @@ def _metric_from_summary(summary: str, code: str, occurrence_count: int, metrics
     if code == 'UNKNOWN' and metrics.get('total_boxes'):
         total = metrics['total_boxes']
         return f"{occurrence_count} unknown / {total} boites ({100 * occurrence_count / total:.1f}%)"
+    if code == 'REFERENCE_ABSENT':
+        total = metrics.get('total_boxes', 0)
+        population = f" / {total} passages" if total else ''
+        return f"{occurrence_count} boîte(s){population} · {metrics.get('reference_count', 0)} référence(s)"
     if code == 'CAM-NO-READ' and 'missing_cameras' in metrics:
         return 'cameras sans lecture: ' + ', '.join(metrics['missing_cameras'])
     if code == "ALPHA_CARD_RESET":
@@ -110,6 +115,8 @@ def _family_for(belt: str, code: str, title: str) -> str:
         return 'robot'
     if code == "ALPHA_CARD_RESET":
         return "system"
+    if code == 'REFERENCE_ABSENT':
+        return 'references'
     if code in _DIMENSION_CODES:
         return "dimensions"
     if code in {"UNKNOWN", "CAM-NO-READ"} or belt == "IDENTIF":
@@ -126,6 +133,9 @@ def _family_for(belt: str, code: str, title: str) -> str:
 
 
 def _action_label(code: str, belt: str, title: str) -> str:
+    if code == 'REFERENCE_ABSENT':
+        return ('Faire passer cette référence par la zone de chargement manuel pour créer sa fiche '
+                'avant son utilisation dans l’Alpha.')
     if code == "ALPHA_CARD_RESET":
         return "Verifier shunts CubeStop/balance et alimentation Alpha"
     if code == "C9_WIDTH_INVALID":
@@ -152,6 +162,8 @@ def _action_label(code: str, belt: str, title: str) -> str:
 
 
 def _impact_label(code: str, belt: str) -> str:
+    if code == 'REFERENCE_ABSENT':
+        return 'Le CIP est lu, mais la référence absente des tables est rejetée avec une référence technique unknown.'
     if code == "C9_WIDTH_INVALID":
         return "La largeur T5 est invalide alors que C9 detecte une presence ; la boite peut etre mal mesuree ou mal passee."
     if code == "CUBESTOP_C4_BLOCKED":
@@ -176,6 +188,8 @@ def _impact_label(code: str, belt: str) -> str:
 
 
 def _business_lines(summary: str, code: str) -> list[str]:
+    if code == 'REFERENCE_ABSENT':
+        return [summary]
     if code == "UNKNOWN":
         lines: list[str] = []
         attribution = re.search(r"Attribution unknown finales: ([^.]+)\.", summary)
@@ -281,6 +295,13 @@ def _field_explanation(group: dict[str, object], total_boxes: int, c9_massive: b
     belt = str(group["belt"])
     count = int(group["occurrence_count"])
     ratio = _ratio(count, total_boxes)
+
+    if code == 'REFERENCE_ABSENT':
+        return (
+            'Le CIP est décodé, mais la référence est absente et sa création par l’Alpha est refusée.',
+            'Le passage reste en référence technique unknown ; il est exclu des UNKNOWN de décodage.',
+            str(group['action']),
+        )
 
     if code == "ALPHA_CARD_RESET":
         if count <= 0:
@@ -401,7 +422,7 @@ def _field_severity_for(group: dict[str, object], total_boxes: int, c9_massive: 
         return "warning" if count > 1 else "info"
     if code == "ORIENTATION":
         return "warning"
-    if code in {"UNKNOWN", "CAM-NO-READ"}:
+    if code in {"UNKNOWN", "CAM-NO-READ", "REFERENCE_ABSENT"}:
         return "warning"
     if code in _DIMENSION_CODES:
         return "warning"
@@ -426,6 +447,7 @@ def _field_priority_score(group: dict[str, object]) -> int:
         "GLOBAL": 90,
         "T5_WIDTH": 75,
         "UNKNOWN": 65,
+        "REFERENCE_ABSENT": 65,
         "CAM-NO-READ": 60,
         "T4_LENGTH": 55,
         "T5_HEIGHT": 55,
@@ -494,6 +516,7 @@ def _priority_score(group: dict[str, object]) -> int:
         "CUBESTOP_C4_BLOCKED": 100,
         "ALPHA_CARD_RESET": 120,
         "UNKNOWN": 85,
+        "REFERENCE_ABSENT": 85,
         "CAM-NO-READ": 80,
         "GLOBAL": 70,
         "T5_WIDTH": 60,
@@ -624,7 +647,7 @@ def _priority_groups(grouped: list[dict[str, object]]) -> list[dict[str, object]
         key = (str(group["severity"]), str(group["belt"]), str(group["code"]), str(group["title"]))
         important_code = str(group["code"]) in {
             "C9_WIDTH_INVALID", "CUBESTOP_C4_BLOCKED", "ALPHA_CARD_RESET",
-            "GLOBAL", "T5_WIDTH", "UNKNOWN", "CAM-NO-READ",
+            "GLOBAL", "T5_WIDTH", "UNKNOWN", "CAM-NO-READ", "REFERENCE_ABSENT",
         }
         important_et = (str(group["belt"]), str(group["code"])) in {("T2", "-88"), ("T3", "-43"), ("T3", "-48")}
         if (important_code or important_et) and key not in keys:
@@ -634,7 +657,7 @@ def _priority_groups(grouped: list[dict[str, object]]) -> list[dict[str, object]
 
 
 def _zone_summary(grouped: list[dict[str, object]]) -> list[dict[str, object]]:
-    order = ["system", "camera", "t2", "t4", "t5", "dimensions", "robot", "other"]
+    order = ["system", "references", "camera", "t2", "t4", "t5", "dimensions", "robot", "other"]
     summaries: dict[str, dict[str, object]] = {
         family: {
             "family": family,
@@ -798,14 +821,20 @@ def build_report_payload(
                 lines = list(dict.fromkeys(incident['event_lines'] or [incident['first_line']]))
                 lines.sort()
                 start = len(examples)
-                for line in lines[:10]:
-                    examples.append({'line': line, 'time_str': incident['start_time_str'],
-                                     'box': '', 'barcode': '', 'detail': incident['summary'],
-                                     'incident_line': incident['first_line']})
+                evidence_count = len(lines)
+                if group['code'] == 'REFERENCE_ABSENT' and incident['examples']:
+                    proofs = sorted(incident['examples'], key=lambda sample: sample['line'])
+                    evidence_count = len(proofs)
+                    examples.extend(dict(sample, incident_line=incident['first_line']) for sample in proofs[:10])
+                else:
+                    for line in lines[:10]:
+                        examples.append({'line': line, 'time_str': incident['start_time_str'],
+                                         'box': '', 'barcode': '', 'detail': incident['summary'],
+                                         'incident_line': incident['first_line']})
                 group['series'].append({key: incident[key] for key in (
                     'first_line', 'last_line', 'start_time_str', 'end_time_str', 'duration', 'summary', 'count')})
                 group['series'][-1].update(example_start=start, example_count=len(examples) - start,
-                                          evidence_count=len(lines),
+                                          evidence_count=evidence_count,
                                           distinct_events=group['code'] == 'DemVidageComplet')
                 # Le total reste complet ; seules les preuves exportees sont bornees.
                 incident['event_lines'] = lines[:10]
@@ -813,7 +842,7 @@ def build_report_payload(
         group['examples'] = examples
         for index, sample in enumerate(examples):
             sample.update(id=f"{group['id']}:{index}", group_id=group['id'])
-            if 'measured' not in sample:
+            if 'measured' not in sample and group['code'] != 'REFERENCE_ABSENT':
                 targets.setdefault(sample['line'], []).append((group['belt'], sample))
             wanted.update(range(max(1, sample['line'] - 2), sample['line'] + 3))
             for line in set(sample.get('sources', {}).values()) - {0}:
@@ -899,6 +928,7 @@ def build_report_payload(
             {"id": "t4", "label": _FAMILY_LABELS["t4"]},
             {"id": "t5", "label": _FAMILY_LABELS["t5"]},
             {"id": "camera", "label": _FAMILY_LABELS["camera"]},
+            {"id": "references", "label": _FAMILY_LABELS["references"]},
             {"id": "dimensions", "label": _FAMILY_LABELS["dimensions"]},
             {"id": "robot", "label": _FAMILY_LABELS["robot"]},
             {"id": "other", "label": _FAMILY_LABELS["other"]},

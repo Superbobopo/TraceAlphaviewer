@@ -85,21 +85,19 @@ def demonstration(directory):
             measured_t4_length_mm=70, measured_t5_width_mm=40,
             measured_t5_height_mm=25, measured_t5_length_mm=70)
         add(f'Boite idB:{box.id_b} sur EA ref:{barcode}', 'TRANSFERT', box_in_EA=box, C4=1)
-        if cycle == 3:
-            add(f'idCB1: --> Ref:{barcode}', 'CAMERA')
         add(f'CB1: ajout Hist_LectCB pour la boite n{cycle} {1 if cycle < 3 else 0}code(s) lu(s)', 'CAMERA')
-        add(f'Boite idB:{box.id_b} sur T3 ref:{barcode}', 'TRANSFERT', box_on_T3=box, C5=1, eT3=43)
-        if cycle == 3:
-            add(f'idCB2: --> Ref:{barcode}', 'CAMERA')
+        add(f'idCB1: --> Ref:{barcode}', 'CAMERA')
+        add(f"tEA-T3: demande le transfert de EA->T3 '{barcode}' ...", 'TRANSFERT', box_on_T3=box, C5=1, eT3=43)
         add(f'CB2: ajout Hist_LectCB pour la boite n{cycle} {1 if cycle < 3 else 0}code(s) lu(s)', 'CAMERA')
-        if cycle == 3:
-            add(f"Creation de la boite '{barcode}' -unknow", 'CAMERA', 'warning')
-        add(f'Boite idB:{box.id_b} sur T4 ref:{barcode}', 'T4', box_on_T4=box, C6=1, pT4=120, eT4=43)
+        add(f'idCB2: --> Ref:{barcode}', 'CAMERA')
+        add(f'idCB2: (Nboite= {box.id_b})', 'CAMERA')
+        add(f"tT3/T4: demande le transfert de T3->T4 '{barcode}' ...", 'T4', box_on_T4=box, C6=1, pT4=120, eT4=43)
         box.id_alpha = 200 + cycle
         box.x_pos = 942 + (cycle - 1) * 200
         box.t5_visual_x_pos = box.x_pos
         box.measurement_status = 'ok' if cycle < 3 else ''
         active_t5.append(box)
+        add(f"Creation de la boite '{barcode}' {'PRODUIT DEMO' if cycle < 3 else '-unknow'} x={box.x_pos} (40x25x70) IdA:{box.id_alpha}", 'T5')
         add(f'AjoutBtT5.idA{box.id_alpha}.idB{box.id_b}', 'T5', C9=1, eT5=8)
         add(f"MAJ (APRES-MESURE-LARG) bt IdA:{box.id_alpha} '{barcode}' nvlle lxH:40x25 [x70] X:{box.x_pos}",
             'T5', C9=1, eT5=89)
@@ -297,6 +295,18 @@ def captures():
             preview.close()
         with Image.open(assets/'orientations.png') as picture:
             metadata['orientations'] = {'width':picture.width,'height':picture.height}
+        from Tools.validate_reference_absent import frames_for, cycle_lines
+        fictive = frames_for(cycle_lines(1, missing=(2,)))
+        reference_report = write_diagnostic_report(build_diagnostics(fictive, []),
+            output_dir=session.directory/'references-absentes', frames=fictive, source_name='REFERENCE ABSENTE FICTIVE')
+        with sync_playwright() as playwright:
+            preview = playwright.chromium.launch(channel='msedge', headless=True)
+            page = preview.new_page(viewport={'width':1440, 'height':1080})
+            page.goto(reference_report.as_uri())
+            page.locator('details[data-group^="REFERENCE_ABSENT:"]').screenshot(path=str(assets/'references-absentes.png'))
+            preview.close()
+        with Image.open(assets/'references-absentes.png') as picture:
+            metadata['references-absentes'] = {'width':picture.width,'height':picture.height}
         other_path = session.directory / 'Demonstration - autre jour.old'
         other_path.write_text(path.read_text(encoding='latin-1'), encoding='latin-1')
         entries = [TraceReportEntry(str(path), path.name, frames=frames, events=events,

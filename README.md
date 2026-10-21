@@ -251,6 +251,13 @@ Points de controle visuel utiles avec les traces locales :
 
 ## Recherche par CIP
 
+Le diagnostic `REFERENCE_ABSENT` distingue un CIP lu dont la fiche manque dans les
+tables, avec creation refusee par l'Alpha, des UNKNOWN de decodage. Sa carte
+« References absentes — chargement manuel requis » indique les CIP, les boites
+et les preuves dans le logiciel, le rapport web et le PDF. La fiche doit etre
+creee par la zone de chargement manuel. Les ratios camera utilisent les passages
+physiques ; les numeros `Hist_LectCB` reutilises ne fusionnent plus les boites.
+
 Dans l'onglet `References`, saisir un CIP, un barcode, un nom ou un identifiant
 (`idB:102`, `IdA:201`). Chaque boite conserve sa propre ligne, meme si plusieurs
 boites partagent le meme CIP. Cliquer sur une ligne pour rejoindre son premier
