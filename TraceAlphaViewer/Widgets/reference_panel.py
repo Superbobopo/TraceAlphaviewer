@@ -10,6 +10,8 @@ import tkinter as tk
 
 from Models.reference_index import ReferenceRecord
 from Widgets.text_renderer import TextRenderer
+from Widgets.pagination import Pagination
+from Models.list_navigation import LineIndex, PAGE_SIZE
 
 
 class ReferencePanel(ctk.CTkFrame):
@@ -18,6 +20,8 @@ class ReferencePanel(ctk.CTkFrame):
         master,
         records: list[ReferenceRecord],
         on_reference_click: Optional[Callable[[ReferenceRecord], None]] = None,
+        line_label=None,
+        navigation=None,
         **kwargs,
     ):
         kwargs.setdefault('fg_color', '#12121f')
@@ -26,9 +30,13 @@ class ReferencePanel(ctk.CTkFrame):
         self._records = records
         self._visible_records: list[ReferenceRecord] = []
         self._on_reference_click = on_reference_click
+        self._line_label = line_label or (lambda line: f'L.{line:<7}')
         self._line_to_record: dict[int, ReferenceRecord] = {}
         self._search_var = tk.StringVar()
         self._unknown_only = False
+        self._navigation = navigation
+        self._page_navigation = None
+        self._page = 0
         self._build()
         self._highlight_line = None
         self._renderer = TextRenderer(self, self._text,
@@ -79,6 +87,8 @@ class ReferencePanel(ctk.CTkFrame):
         )
         self._btn_unknown.pack(side='right', padx=(0, 6), pady=5)
 
+        self._pagination = Pagination(self, self._set_page)
+        self._pagination.pack(side='bottom', fill='x')
         vscroll = tk.Scrollbar(self, orient='vertical')
         vscroll.pack(side='right', fill='y')
 
@@ -106,6 +116,8 @@ class ReferencePanel(ctk.CTkFrame):
         self._text.bind('<Button-1>', self._on_click)
 
     def set_records(self, records: list[ReferenceRecord]) -> None:
+        if records is not self._records:
+            self._navigation = None
         self._records = records
         self._render()
 
@@ -131,6 +143,8 @@ class ReferencePanel(ctk.CTkFrame):
 
     def _filtered_records(self) -> list[ReferenceRecord]:
         query = self._search_var.get().strip().lower()
+        if not query and not self._unknown_only:
+            return self._records
         records = [record for record in self._records if self._record_matches(record, query)]
         if self._unknown_only:
             records = [record for record in records if record.is_unknown()]
@@ -148,6 +162,16 @@ class ReferencePanel(ctk.CTkFrame):
     def _render(self) -> None:
         records = self._filtered_records()
         self._visible_records = records
+        self._page_navigation = (self._navigation if records is self._records and self._navigation is not None
+                                 else LineIndex(records, 'first_line'))
+        self._highlight_line = None
+        self._set_page(0)
+
+    def _set_page(self, page, restore=False):
+        records = self._visible_records
+        self._page = self._pagination.update_page(len(records), page)
+        if not restore:
+            self._highlight_line = None
         self._line_to_record = {}
         self._title.configure(text=f'REFERENCES ({len(records)}/{len(self._records)})')
 
@@ -155,7 +179,7 @@ class ReferencePanel(ctk.CTkFrame):
             yield f'{"Heure":<8} {"Ligne":<9} {"Parcours":<13} {"Ids":<20} Reference / nom\n', ('header',), None
             if not records:
                 yield 'Aucune reference trouvee.\n', ('normal',), None
-            for record in records:
+            for record in records[self._page * PAGE_SIZE:(self._page + 1) * PAGE_SIZE]:
                 ids = ' '.join(
                     part for part in (
                         f'idB:{record.id_b}' if record.id_b else '',
@@ -165,7 +189,7 @@ class ReferencePanel(ctk.CTkFrame):
                 )
                 text = (
                     f'{record.first_time_str:<8} '
-                    f'L.{record.first_line:<7} '
+                    f'{self._line_label(record.first_line)} '
                     f'{record.stages_label():<13} '
                     f'{ids:<20} '
                     f'{record.main_ref()} {record.name}\n'
@@ -193,6 +217,10 @@ class ReferencePanel(ctk.CTkFrame):
 
     def highlight_for_line(self, file_line: int) -> None:
         self._highlight_line = file_line
+        position = self._page_navigation.position_for_line(file_line) if self._page_navigation is not None else None
+        if position is not None and position // PAGE_SIZE != self._page:
+            self._set_page(position // PAGE_SIZE, restore=True)
+            return
         self._text.tag_remove('current', '1.0', 'end')
         best_line = None
         best_record = None

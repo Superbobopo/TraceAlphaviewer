@@ -268,11 +268,12 @@ class MeasurementTests(unittest.TestCase):
                     self.assertEqual(dimension['field_severity'],expected)
                     self.assertEqual(dimension['occurrence_count'],bad)
                     self.assertAlmostEqual(dimension['affected_ratio'],bad/total)
-                    first=code if expected=='error' else 'ALPHA_CARD_RESET'
+                    first=code if expected=='error' or bad>=10 else 'ALPHA_CARD_RESET'
                     self.assertEqual(payload['groups'][0]['code'],first)
                     self.assertEqual(payload['priority'][0]['code'],first)
                     if (total,bad)==(100,10):
                         incidents[-1].count=100
+                        incidents[-1].metrics['max_daily_count']=3
                         frequent_reset=build_report_payload(incidents,frames)
                         self.assertEqual(frequent_reset['groups'][0]['code'],'ALPHA_CARD_RESET')
                         self.assertEqual(frequent_reset['priority'][0]['code'],'ALPHA_CARD_RESET')
@@ -423,7 +424,7 @@ class MeasurementTests(unittest.TestCase):
         root.withdraw()
         try:
             panel = DiagnosticPanel(root,build_diagnostics(frames,[]),frames)
-            self.assertIn('12 boîtes à -4,0 mm',panel._details.get('1.0','end'))
+            self.assertNotIn('12 boîtes à -4,0 mm',panel._details.get('1.0','end'))
             panel._show_details(build_diagnostics(frames,[])[0])
             self.assertIn('12 boîtes à -4,0 mm',panel._details.get('1.0','end'))
             panel.destroy()
@@ -970,7 +971,11 @@ class ReportReuseTests(unittest.TestCase):
                 visited=[]
                 panel=DiagnosticPanel(app,build_diagnostics(frames,[]),store,load_session=session,
                                       on_measurement_click=visited.append)
-                self.assertTrue(panel._details.tag_ranges('measurement-length-over'))
+                self.assertNotIn('BILAN DES MESURES', panel._details.get('1.0','end'))
+                measured = next(item for item in panel._incidents if item.measurement_stats)
+                panel._show_details(measured)
+                self.assertIn('BILAN DES MESURES DE LA TRACE', panel._details.get('1.0','end'))
+                panel._show_global_summary()
                 before=len(panel._details._tclCommands)
                 for _ in range(12):panel._show_global_summary()
                 self.assertLessEqual(len(panel._details._tclCommands),before+2)

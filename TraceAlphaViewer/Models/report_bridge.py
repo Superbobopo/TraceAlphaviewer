@@ -143,7 +143,7 @@ class ReportBridge:
                     examples.setdefault(key, {'line': line, 'code': code,
                                              'first_line': first_line, 'source_line': True})
         for group in payload['groups']:
-            for sample in group.get('examples', []):
+            for sample in group.get('examples', []) + group.get('pick_examples', []):
                 examples[sample['id']] = {'line': sample['line'], 'code': group['code'],
                                           'first_line': sample.get('incident_line', group['first_line'])}
                 if group['code'] in ('T4_LENGTH', 'T5_WIDTH', 'T5_HEIGHT', 'GLOBAL', 'ORIENTATION'):

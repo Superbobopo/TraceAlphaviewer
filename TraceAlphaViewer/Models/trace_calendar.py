@@ -1,6 +1,7 @@
 """Calendrier observe dans les entetes de trace, sans supposer la date du PC."""
 from bisect import bisect_right
 from datetime import datetime, timedelta
+from functools import lru_cache
 import re
 
 
@@ -14,16 +15,52 @@ def date_label(day):
     return f'{day.day} {_MONTHS[day.month - 1]} {day.year}'
 
 
+@lru_cache(maxsize=8192)
+def clock_seconds(time_str):
+    clock = _CLOCK.search(time_str)
+    return sum(int(value) * factor for value, factor in zip(clock.groups(), (3600, 60, 1))) if clock else None
+
+
+class TraceLines(list):
+    """Lignes d'un seul segment avec calendrier partage entre analyses."""
+
+    calendar = None
+
+
+class _Calendar(dict):
+    def compile_segments(self):
+        self.starts = tuple(item['line'] for item in self['segments'])
+        self.dates = tuple(item['date'] for item in self['segments'])
+
+
+@lru_cache(maxsize=8192)
+def _format_clock(date, hour, minute, second):
+    return datetime.fromisoformat(date).replace(hour=hour, minute=minute, second=second).strftime('%d/%m/%Y à %H:%M:%S')
+
+
+def format_observed_time(moment):
+    return _format_clock(moment.date().isoformat(), moment.hour, moment.minute, moment.second)
+
+
 def trace_calendar(line_states):
+    if isinstance(line_states, TraceLines) and line_states.calendar is not None:
+        return line_states.calendar
+    result = _Calendar(_build_calendar(line_states))
+    result.compile_segments()
+    if isinstance(line_states, TraceLines):
+        line_states.calendar = result
+    return result
+
+
+def _build_calendar(line_states):
     observations = []
     anchor = None
     previous = None
     elapsed = 0.0
     for line, text, state in line_states:
-        clock = _CLOCK.search(state.timestamp_str)
-        if not clock:
+        seconds = clock_seconds(state.timestamp_str)
+        if seconds is None:
             continue
-        seconds = sum(int(value) * factor for value, factor in zip(clock.groups(), (3600, 60, 1)))
         current = (state.timestamp, seconds)
         if previous is not None and current != previous:
             delta = current[0] - previous[0]
@@ -66,11 +103,19 @@ def source_datetime(period, line, time_str):
     clock = _CLOCK.search(time_str)
     if not segments or not clock:
         return None
-    index = max(0, bisect_right([item['line'] for item in segments], line) - 1)
+    starts = period.starts if isinstance(period, _Calendar) else [item['line'] for item in segments]
+    index = max(0, bisect_right(starts, line) - 1)
     return datetime.fromisoformat(segments[index]['date']).replace(
         hour=int(clock[1]), minute=int(clock[2]), second=int(clock[3]))
 
 
 def display_time(period, line, time_str):
-    moment = source_datetime(period, line, time_str)
-    return moment.strftime('%d/%m/%Y à %H:%M:%S') if moment else time_str
+    segments = period.get('segments', [])
+    if not segments:
+        return time_str
+    clock = _CLOCK.search(time_str)
+    if not clock:
+        return time_str
+    starts = period.starts if isinstance(period, _Calendar) else [item['line'] for item in segments]
+    index = max(0, bisect_right(starts, line) - 1)
+    return _format_clock(segments[index]['date'], int(clock[1]), int(clock[2]), int(clock[3]))

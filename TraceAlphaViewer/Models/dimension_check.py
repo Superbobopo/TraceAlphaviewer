@@ -6,6 +6,19 @@ DIMENSION_TOLERANCES_MM = {'length': 3, 'width': 3, 'height': 2}
 
 DIMENSION_TOLERANCE_MM = 3
 
+ORIENTATION_CATEGORIES = (
+    {'id': 'flat_rotation', 'label': 'Longueur / largeur inversées',
+     'hypothesis': "Rotation à plat probable. La boîte a pu tourner pendant son passage dans l'Alpha, au guidage ou au tassage ; les dimensions seules ne datent pas cette rotation.",
+     'checks': ["Examiner la présentation des boîtes, le guidage et le tassage pendant leur passage dans l'Alpha."]},
+    {'id': 'on_edge', 'label': 'Largeur / hauteur inversées',
+     'hypothesis': 'Boîte sur la tranche probable ; présentation physique à confirmer.',
+     'checks': ["Demander au client de présenter les boîtes bien à plat lorsqu'il les verse sur l'Alpha.",
+                "Vérifier la hauteur de restitution du robot en haut de l'Alpha lors du retraitement. Trop basse, elle peut laisser la boîte retomber sur la tranche ; une hauteur adaptée favorise son retournement au rebond, sans le garantir."]},
+    {'id': 'other', 'label': 'Autres permutations et cas à confirmer',
+     'hypothesis': "Les dimensions ne permettent pas d'isoler l'un des deux échanges simples.",
+     'checks': ['Examiner les permutations proposées et la présentation physique, notamment en cas de dimensions égales.']},
+)
+
 
 def dimension_tolerance(axis: str | int) -> int:
     if isinstance(axis, int):
@@ -57,6 +70,21 @@ def best_orientation_dimensions(measured, expected):
     best = min(score for score, _ in scored)
     return [{'dimensions': list(dimensions), 'error_mm': score}
             for score, dimensions in scored if score == best]
+
+
+def orientation_category(measured, expected, matches=None):
+    if len(set(expected)) != 3:
+        return 'other'
+    matches = best_orientation_dimensions(measured, expected) if matches is None else matches
+    if len(matches) != 1:
+        return 'other'
+    dimensions = tuple(matches[0]['dimensions'])
+    width, height, length = expected
+    if dimensions == (length, height, width):
+        return 'flat_rotation'
+    if dimensions == (height, width, length):
+        return 'on_edge'
+    return 'other'
 
 
 def dimension_tuple_matches_unordered(

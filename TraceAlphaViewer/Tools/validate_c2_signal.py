@@ -1,5 +1,6 @@
 """Valide les episodes C2, leurs limites et les preuves viewer/web/PDF."""
 from pathlib import Path
+from datetime import datetime
 import json
 import os
 import re
@@ -161,7 +162,7 @@ class C2Tests(unittest.TestCase):
             panel._details.tk.call(command, *(['0'] * len(panel._details._subst_format)))
             self.assertEqual(received[0].first_line, line)
             dated = dated_frames()
-            robot = next(i for i in build_diagnostics(dated, []) if i.code == 'DemVidageComplet')
+            robot = next(i for i in build_diagnostics(dated, [], trace_origin=datetime(2025, 12, 31, 23)) if i.code == 'DemVidageComplet')
             panel.set_incidents([robot])
             panel._show_details(robot)
             text = panel._details.get('1.0', 'end')
@@ -228,7 +229,7 @@ class C2Tests(unittest.TestCase):
             (310, 'OMEGA:T5-DemVidageComplet'), (311, 'OMEGA:T5-DemVidageComplet'),
             (86400, 'Fin de démonstration fictive')]
         frames = frames_for(rows)
-        incidents = build_diagnostics(frames, [])
+        incidents = build_diagnostics(frames, [], trace_origin=datetime(2026, 6, 1))
         incidents.append(DiagnosticIncident(severity='error', title='T4 - Initialisations répétées',
             belt='T4', code='INIT-INDEX', count=28, first_line=1, last_line=1))
         output = ROOT/'build/c2-validation'; output.mkdir(parents=True, exist_ok=True)
@@ -271,7 +272,7 @@ class C2Tests(unittest.TestCase):
                     detail.screenshot(path=str(output/'c2-large.png'))
                     robot = page.locator('details[data-group^="DemVidageComplet:"]')
                     robot.locator('> summary').click()
-                    self.assertIn('Information', robot.inner_text())
+                    self.assertIn('Info', robot.inner_text())
                     self.assertIn('Aucune demande', robot.inner_text())
                     with page.expect_download() as download:
                         page.locator('[data-pdf]').click()
@@ -280,12 +281,13 @@ class C2Tests(unittest.TestCase):
                     text = '\n'.join(document[i].get_textpage().get_text_range() for i in range(len(document)))
                     self.assertIn('C2', text)
                     self.assertIn('10 bascule(s)', text)
-                    self.assertIn('Blocage confirmé', text)
-                    self.assertIn('Reprise observée', text)
-                    self.assertIn('Aucune demande', text)
-                    self.assertIn('Pic sur 24 h', text)
+                    self.assertIn('Synthèse terrain', text)
+                    self.assertNotIn('Blocage confirmé', text)
+                    self.assertNotIn('Aucune demande', text)
+                    self.assertIn('2 demandes sur 2 jours de trace', text)
+                    self.assertNotIn('Pic sur 24 h', text)
                     self.assertNotIn('Pic sur 1 h', text)
-                    self.assertGreater(text.index('Vidage complet'), text.index('Diagnostics et contrôles'))
+                    self.assertGreater(text.index('Vidage complet'), text.index('Lecture et exploitation'))
                     document.close()
                 self.assertFalse(errors)
                 browser.close()

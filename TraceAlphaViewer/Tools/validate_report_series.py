@@ -61,7 +61,7 @@ class ReportSeriesTests(unittest.TestCase):
         series_frames, incident = repeated_frames(6188)
         # Les deux series fictives conservent des bornes distinctes.
         second = DiagnosticIncident(severity='error',title='T4',code='INIT-C6',belt='T4',
-            first_line=20,last_line=21,count=2,event_lines=[20,21])
+            first_line=6200,last_line=6201,count=2,event_lines=[6200,6201])
         diagnostics += [incident,second]
         output=ROOT/'build'/'report-series-validation'
         output.mkdir(parents=True,exist_ok=True)
@@ -79,21 +79,21 @@ class ReportSeriesTests(unittest.TestCase):
                     self.assertEqual(page.locator('[data-priority]').count(),3)
                     self.assertIn('8 / 100',page.locator('.unknown-counter').inner_text())
                     self.assertIn('8,0 %',page.locator('.unknown-counter').inner_text())
-                    self.assertTrue(page.locator('.unknown-alert').is_visible())
-                    page.locator('.unknown-counter').focus();page.keyboard.press('Enter')
-                    self.assertTrue(page.locator('#unknown-details').evaluate('(node)=>node.open'))
-                    self.assertEqual(page.locator('#unknown-details .sample').count(),8)
+                    self.assertEqual(page.locator('.unknown-alert,#unknown-details,[data-unknown]').count(),0)
+                    self.assertEqual(page.locator('.unknown-counter').get_attribute('role'),'group')
+                    self.assertTrue(page.locator('.unknown-counter').evaluate("node=>node.classList.contains('is-warning')"))
                     group=page.locator('details[data-group]').filter(has=page.locator('.incident-series')).filter(has_text='6188 demandes').first
                     group.evaluate('(node)=>node.open=true')
                     series=group.locator('.incident-series')
                     self.assertEqual(series.count(),2)
-                    self.assertEqual(series.nth(0).locator('.sample').count(),10)
-                    self.assertEqual(series.nth(1).locator('.sample').count(),2)
-                    self.assertIn('10 premières sur 6',series.first.inner_text())
+                    self.assertEqual(group.locator('.incident-series .sample').count(),10)
+                    self.assertEqual(series.nth(1).locator('.sample').count(),1)
+                    self.assertIn('10 exemples présentés',group.inner_text())
                     if url.startswith('http:'):
-                        page.locator('#unknown-details .sample-technical').first.evaluate('(node)=>node.open=true')
-                        link=page.locator('#unknown-details .trace-line').first
-                        page.wait_for_function("!document.querySelector('#unknown-details .trace-line').disabled")
+                        series.first.evaluate('(node)=>node.open=true')
+                        series.first.locator('.sample-technical').first.evaluate('(node)=>node.open=true')
+                        link=series.first.locator('.trace-line').first
+                        page.wait_for_function("!document.querySelector('.incident-series .trace-line').disabled")
                         received=[]
                         def receive():
                             target,done,result=bridge.commands.get(timeout=5)
@@ -115,11 +115,35 @@ class ReportSeriesTests(unittest.TestCase):
                     content=' '.join(p.get_textpage().get_text_range() for p in document)
                     self.assertIn('UNKNOWN CB1+CB2',content)
                     self.assertIn('8 / 100',content)
-                    self.assertIn('Seuil de 7 %',content)
                     document.close()
                 self.assertFalse(errors,errors)
                 browser.close()
         finally:bridge.close()
+
+    def test_compact_unknown_counter_colors(self):
+        from playwright.sync_api import sync_playwright
+        payload = build_report_payload([], None)
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel='msedge',headless=True)
+            page = browser.new_page()
+            page.set_content('<div id="preview"></div>')
+            page.add_style_tag(path=str(ROOT/'TraceAlphaViewer/report_app/public/report-ui.css'))
+            page.add_script_tag(path=str(ROOT/'TraceAlphaViewer/report_app/public/report-ui.js'))
+            for width in (1440,390):
+                page.set_viewport_size({'width':width,'height':1000})
+                for count,total,tone in ((0,100,'good'),(799,10000,'good'),(8,100,'warning'),
+                                         (12,100,'warning'),(1201,10000,'bad'),(0,0,'neutral')):
+                    payload['unknown'].update(count=count,total=total,ratio=count/total if total else None)
+                    page.evaluate('(data)=>TraceReport.mount(document.querySelector("#preview"),data)',payload)
+                    counter=page.locator('.unknown-counter')
+                    self.assertIn('is-'+tone,counter.get_attribute('class'))
+                    self.assertEqual(counter.evaluate('node=>node.tagName'),'DIV')
+                    self.assertIsNone(counter.get_attribute('tabindex'))
+                    self.assertEqual(round(counter.bounding_box()['height']),60)
+                    self.assertEqual(page.locator('.unknown-alert,#unknown-details,[data-unknown]').count(),0)
+                    self.assertTrue(page.evaluate('document.documentElement.scrollWidth<=innerWidth'))
+                    if not total:self.assertIn('Indisponible',counter.inner_text())
+            browser.close()
 
     def test_series_counts_and_boundaries(self):
         for count in (2, 10, 11, 6188):
@@ -131,7 +155,9 @@ class ReportSeriesTests(unittest.TestCase):
                 self.assertEqual(len(group['examples']), min(10, count))
                 self.assertEqual(group['series'][0]['evidence_count'], count)
                 self.assertEqual(len(incident.event_lines), count)
-                self.assertEqual([s['line'] for s in group['examples']], list(range(1, min(10, count) + 1)))
+                expected = (list(range(1, count + 1)) if count <= 10
+                            else [1 + round(i * (count - 1) / 9) for i in range(10)])
+                self.assertEqual([s['line'] for s in group['examples']], expected)
         frames, incident = repeated_frames(20)
         second = DiagnosticIncident(severity='error', title='T4', code='INIT-C6', belt='T4',
             first_line=15, last_line=20, count=6, event_lines=list(range(15, 21)))
@@ -140,6 +166,7 @@ class ReportSeriesTests(unittest.TestCase):
         self.assertEqual(len(group['series']), 2)
         self.assertEqual([s['first_line'] for s in group['series']], [1,15])
         self.assertEqual(group['occurrence_count'], 16)
+        self.assertEqual(len(group['examples']),10)
 
     def test_unknown_thresholds_and_temporary_reads(self):
         self.assertIsNone(build_report_payload([], None)['unknown']['ratio'])

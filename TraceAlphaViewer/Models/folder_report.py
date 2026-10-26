@@ -170,14 +170,27 @@ def export_folder_report_csv(report: FolderReport, output_path: str | Path) -> N
     fieldnames = [
         'fichier', 'statut', 'type', 'severite', 'zone', 'code', 'titre',
         'premiere_ligne', 'derniere_ligne', 'heure_debut', 'heure_fin',
-        'occurrences', 'resume',
+        'occurrences', 'resume', 'alpha', 'pharmacie', 'fichier_debut', 'fichier_fin',
     ]
     with open(output_path, 'w', newline='', encoding='utf-8') as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         for entry in report.entries:
+            metadata = getattr(entry.frames, 'source_metadata', {})
+            identity = metadata.get('identity') or {}
+
+            def write_row(row):
+                row.update(alpha=identity.get('alpha_number') or identity.get('alpha_database', ''),
+                           pharmacie=identity.get('pharmacy', ''), fichier_debut=entry.name, fichier_fin=entry.name)
+                if metadata.get('sources'):
+                    for key, filename in (('premiere_ligne', 'fichier_debut'), ('derniere_ligne', 'fichier_fin')):
+                        if row[key]:
+                            location = entry.frames.source_location(row[key])
+                            row[key], row[filename] = location['source_line'], location['filepath']
+                writer.writerow(row)
+
             if entry.parse_error:
-                writer.writerow({
+                write_row({
                     'fichier': entry.name,
                     'statut': 'Erreur parse',
                     'type': 'erreur',
@@ -195,7 +208,7 @@ def export_folder_report_csv(report: FolderReport, output_path: str | Path) -> N
                 continue
 
             for incident in entry.diagnostics:
-                writer.writerow({
+                write_row({
                     'fichier': entry.name,
                     'statut': entry.status_label,
                     'type': 'diagnostic',
@@ -212,7 +225,7 @@ def export_folder_report_csv(report: FolderReport, output_path: str | Path) -> N
                 })
 
             for event in entry.events:
-                writer.writerow({
+                write_row({
                     'fichier': entry.name,
                     'statut': entry.status_label,
                     'type': 'erreur' if event.severity == 'error' else 'evenement',

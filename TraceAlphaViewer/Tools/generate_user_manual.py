@@ -20,6 +20,13 @@ MANUAL = ROOT / 'docs' / 'manuel-utilisateur'
 sys.path.insert(0, str(APP_ROOT))
 
 
+def fictive_period(frames):
+    from datetime import datetime, timedelta
+    from Models.robot_drain import trace_period
+    start = datetime(2026,2,13,9)
+    return trace_period(start, start + timedelta(seconds=frames[-1].timestamp))
+
+
 def browser_path():
     candidates = [
         Path(os.environ.get('PROGRAMFILES(X86)', 'C:/Program Files (x86)')) / 'Microsoft/Edge/Application/msedge.exe',
@@ -119,16 +126,16 @@ def demonstration(directory):
     return path, frames, events, diagnostics, records
 
 
-def captures():
+def captures(viewer_only=False):
+    import customtkinter as ctk
     if sys.platform != 'win32':
         raise RuntimeError('Les captures natives de ce manuel necessitent Windows')
     from PIL import ImageGrab
     from Main import TraceAlphaViewer
     from Models.loading_client import LoadingSession
-    from Models.folder_report import FolderReport, TraceReportEntry
     from Models.diagnostic_report import write_diagnostic_report
     from Views.traceView import TraceView
-    from Views.folderTraceView import FolderTraceView
+    from Views.alphaFolderView import AlphaFolderView
 
     assets = MANUAL / 'assets'
     assets.mkdir(parents=True, exist_ok=True)
@@ -207,16 +214,25 @@ def captures():
         view._reference_panel._toggle_unknown_filter()
         assert len(view._reference_panel._visible_records) == 1
         photograph('unknown')
-        view._btn_trace_search.invoke()
-        pump()
-        assert view._trace_panel.search_visible
+        assert not view._trace_panel._search_visible
+        assert view._slider.winfo_x() + view._slider.winfo_width() <= view._btn_search.winfo_x()
+        assert view._btn_search.winfo_x() + view._btn_search.winfo_width() <= view._btn_details.winfo_x()
+        controls = [view._slider, view._btn_prev_error, view._btn_next_error,
+                    view._btn_search, view._btn_details, view._lbl_time]
+        assert all(left.winfo_x() + left.winfo_width() <= right.winfo_x()
+                   for left, right in zip(controls, controls[1:]))
+        for label in ('Err◄', 'Err►'):
+            assert sum(getattr(widget, 'cget', lambda key: '')('text') == label
+                       for widget in view._btn_search.master.winfo_children()
+                       if isinstance(widget, ctk.CTkButton)) == 1
+        view._btn_search.invoke()
+        assert view._trace_panel._search_visible
         view._trace_panel._search_var.set('3400000000001')
         pump(lambda: view._trace_panel._search_job is None)
         assert view._trace_panel._search_matches
         view._trace_panel._navigate_search(1)
         photograph('recherche-trace')
-        view._btn_trace_search.invoke()
-        assert not view._trace_panel.search_visible
+        view._toggle_trace_search()
         view._analysis_tabs.set('Diagnostic')
         view._diagnostic_panel._show_global_summary()
         photograph('diagnostic-global')
@@ -226,9 +242,20 @@ def captures():
         photograph('diagnostic-detail')
         view._analysis_tabs.set('Erreur')
         view._go_start()
-        view._next_error()
+        view._btn_next_error.invoke()
         assert view._current_error_line is not None
+        first_error = view._current_error_line
+        view._btn_prev_error.invoke()
+        assert view._current_error_line == view._error_events[-1].line_num
+        view._btn_next_error.invoke()
+        assert view._current_error_line == first_error
         photograph('erreurs')
+        if viewer_only:
+            manifest = assets / 'captures.json'
+            previous = json.loads(manifest.read_text(encoding='utf-8'))
+            previous.update(metadata)
+            manifest.write_text(json.dumps(previous, indent=2), encoding='utf-8')
+            return
         view._analysis_tabs.set('Evenements')
         view._event_panel._set_belt_filter('T5')
         pump(lambda: not view._event_panel.loading)
@@ -246,7 +273,8 @@ def captures():
 
         report_paths = []
         def report_writer(incidents, frames=None, **kwargs):
-            return write_diagnostic_report(incidents, output_dir=session.directory / 'reports', frames=frames, **kwargs)
+            return write_diagnostic_report(incidents, output_dir=session.directory / 'reports', frames=frames,
+                                           trace_period=fictive_period(frames), **kwargs)
         with patch('Widgets.diagnostic_panel.write_diagnostic_report', side_effect=report_writer), \
              patch('Widgets.diagnostic_panel.webbrowser.open', side_effect=lambda uri, **kwargs: report_paths.append(uri)):
             view._diagnostic_panel._open_web_report()
@@ -278,7 +306,7 @@ def captures():
             series.evaluate('(node)=>node.open=true')
             series.locator('.incident-series').first.screenshot(path=str(assets/'serie-rapport.png'))
             page.goto(example.as_uri())
-            page.locator('[data-axis=length] .distribution').screenshot(path=str(assets/'decalages.png'))
+            page.locator('.axis-grid').screenshot(path=str(assets/'decalages.png'))
             preview.close()
         from PIL import Image
         with Image.open(assets/'priorites.png') as picture:
@@ -288,15 +316,14 @@ def captures():
         for name in ('compteur-unknown', 'serie-rapport'):
             with Image.open(assets / f'{name}.png') as picture:
                 metadata[name] = {'width':picture.width,'height':picture.height}
-        from Tools.validate_measurement_report import orientation_samples
-        rotated = orientation_samples()
+        from Tools.validate_orientation_categories import category_frames
+        rotated = category_frames()[:10]
         orientation_report = write_diagnostic_report(build_diagnostics(rotated,[]),
             output_dir=session.directory/'orientations',frames=rotated,source_name='ORIENTATIONS FICTIVES')
         with sync_playwright() as playwright:
             preview = playwright.chromium.launch(channel='msedge',headless=True)
             page = preview.new_page(viewport={'width':1440,'height':1080})
             page.goto(orientation_report.as_uri())
-            page.locator('[data-orientation-category=flat_rotation] > summary').click()
             page.locator('.orientations').screenshot(path=str(assets/'orientations.png'))
             preview.close()
         with Image.open(assets/'orientations.png') as picture:
@@ -315,28 +342,34 @@ def captures():
             metadata['references-absentes'] = {'width':picture.width,'height':picture.height}
         other_path = session.directory / 'Demonstration - autre jour.old'
         other_path.write_text(path.read_text(encoding='latin-1'), encoding='latin-1')
-        entries = [TraceReportEntry(str(path), path.name, frames=frames, events=events,
-            diagnostics=diagnostics, error_events=[item for item in events if item.severity == 'error']),
-            TraceReportEntry(str(other_path), other_path.name, frames=frames, events=events,
-            diagnostics=diagnostics, error_events=[item for item in events if item.severity == 'error'])]
-        folder = FolderTraceView(app, FolderReport('Dossier de demonstration', entries))
+        groups = []
+        for index, (source, number, pharmacy) in enumerate(((path, '031', 'Lahlou'), (other_path, '009', 'Motte'))):
+            groups.append({'id': f'group-{index:06}', 'label': f'Alpha {number} — Pharmacie {pharmacy}',
+                           'identity': {'alpha_database': f'BASEALPHA_#2025.{number}.MDB',
+                                        'pharmacy_database': f'BASEFIC{pharmacy.upper()}.MDB'},
+                           'sources': [{'filepath': str(source), 'line_count': len(frames)}],
+                           'duplicates': [], 'start': '2026-02-13T09:00:00',
+                           'end': '2026-02-13T09:01:00', 'status': 'ready', 'issues': []})
+        folder = AlphaFolderView(app, 'Dossier de demonstration', {'groups': groups}, session)
+        folder._cache = {index: {'filepath': str(source), 'name': groups[index]['label'],
+                                'frames': frames, 'events': events, 'diagnostics': diagnostics,
+                                'references': records} for index, source in enumerate((path, other_path))}
         app.switch_view(folder)
-        pump(lambda: not folder._event_panel.loading and not folder._trace_panel._loading)
+        pump(lambda: folder._prepared)
+        with patch.object(folder, '_open_selected', return_value=None):
+            folder._tree.selection_set('0')
+            pump(lambda: folder._selected == 0)
         photograph('dossier')
-        with patch('Views.folderTraceView.filedialog.asksaveasfilename', return_value=str(session.directory / 'rapport-demo.csv')):
+        with patch('Views.alphaFolderView.filedialog.asksaveasfilename', return_value=str(session.directory / 'rapport-demo.csv')):
             folder._export_csv()
+        pump(lambda: (session.directory / 'rapport-demo.csv').exists() and not folder._exporting)
         with (session.directory / 'rapport-demo.csv').open(encoding='utf-8-sig', newline='') as source:
             rows = list(csv.DictReader(source))
         assert rows and any(row['type'] == 'diagnostic' for row in rows)
-        import customtkinter as ctk
-        original_toplevel = ctk.CTkToplevel.__init__
-        def hidden_toplevel(window, *args, **kwargs):
-            original_toplevel(window, *args, **kwargs)
-            window.withdraw()
-        with patch.object(ctk.CTkToplevel, '__init__', hidden_toplevel):
-            folder._open_selected_trace()
-        pump(lambda: folder._viewer_view is not None)
-        folder._close_viewer_window()
+        folder._open_selected()
+        pump(lambda: isinstance(app.main_view, TraceView))
+        app.main_view._close()
+        pump(lambda: app.main_view is folder)
         (assets / 'captures.json').write_text(json.dumps(metadata, indent=2), encoding='utf-8')
         print(f'Parcours verifies : {len(frames)} frames, {len(diagnostics)} diagnostics, {len(records)} references', flush=True)
     finally:
@@ -347,6 +380,7 @@ def captures():
 
 
 def robot_capture():
+    from datetime import datetime
     from Models.state import MachineState
     from Models.diagnostic import build_diagnostics
     from Models.diagnostic_report import write_diagnostic_report
@@ -354,26 +388,87 @@ def robot_capture():
     assets = MANUAL / 'assets'
     (ROOT / 'build').mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(dir=ROOT / 'build', prefix='manual-robot-') as directory:
-        frames = [MachineState(line_num=i + 2, timestamp=i * 600,
-                  timestamp_str=f'01|09:{i * 10:02d}:00',
-                  raw_lines=[(i + 2, 'OMEGA:T5-DemVidageComplet')]) for i in range(5)]
-        frames.insert(0, MachineState(line_num=1, timestamp=0, timestamp_str='09:00:00',
-                      raw_lines=[(1, 'OUVERTURE DE LA TRACE le 01/06/2026')]))
-        frames.append(MachineState(line_num=7, timestamp=86400, timestamp_str='09:00:00',
-                      raw_lines=[(7, 'Fin de la demonstration fictive')]))
-        report = write_diagnostic_report(build_diagnostics(frames, []), Path(directory), frames,
+        frames = []
+        for i in range(10):
+            texts = ['OMEGA:T5-DEL-PACK@Ok@' + str(100 + i),
+                     'OMEGA:T5-DemVidageComplet',
+                     'T5v: Une demande de vidage complet de T5 est demandee ...',
+                     'Suppression de toutes les boites/goul. en attente sur le tampon: X99 ...']
+            texts += [f'- supp. de T5 la boite Id:{200 + i * 3 + j} ref:PRODUIT-FICTIF lot:DEMO' for j in range(3)]
+            texts += ['envoi en UDP la liste des boites valides sur T5.  0 boite(s)']
+            for offset, text in enumerate(texts):
+                line = len(frames) + 1
+                frames.append(MachineState(line_num=line, timestamp=i * 600 + offset / 10,
+                    timestamp_str=f'13|{9 + i // 6:02d}:{i % 6 * 10:02d}:00', raw_lines=[(line, text)]))
+        report = write_diagnostic_report(build_diagnostics(frames, [], trace_origin=datetime(2026,2,13,9)), Path(directory), frames,
                                          source_name='DEMONSTRATION ROBOT - DONNEES FICTIVES')
         with sync_playwright() as playwright:
             browser = playwright.chromium.launch(channel='msedge', headless=True)
             page = browser.new_page(viewport={'width':1200, 'height':900})
             page.goto(report.as_uri())
-            page.locator('details[data-group^="DemVidageComplet:"] > summary').click()
-            page.locator('.robot-days').screenshot(path=str(assets / 'vidage-robot.png'))
+            alert = page.locator('details[data-group^="DemVidageComplet:"]')
+            alert.screenshot(path=str(assets / 'vidage-robot.png'))
+            page.set_viewport_size({'width':1000, 'height':900})
+            page.locator('.priority-grid').screenshot(path=str(assets / 'priorite-robot.png'))
             browser.close()
         metadata = json.loads((assets / 'captures.json').read_text(encoding='utf-8'))
         width, height = struct.unpack('>II', (assets / 'vidage-robot.png').read_bytes()[16:24])
         metadata['vidage-robot'] = {'width':width, 'height':height}
+        width, height = struct.unpack('>II', (assets / 'priorite-robot.png').read_bytes()[16:24])
+        metadata['priorite-robot'] = {'width':width, 'height':height}
         (assets / 'captures.json').write_text(json.dumps(metadata, indent=2), encoding='utf-8')
+
+
+def unknown_capture():
+    from Models.diagnostic_report import write_diagnostic_report
+    from playwright.sync_api import sync_playwright
+    assets = MANUAL / 'assets'
+    (ROOT / 'build').mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=ROOT / 'build', prefix='manual-unknown-') as directory:
+        _, frames, _, incidents, _ = demonstration(Path(directory))
+        class IdentifiedFrames(list):
+            source_metadata = {'identity': {'alpha_database': 'BASEALPHA_#2025.031.MDB',
+                'pharmacy_database': 'BASEFICDEMONSTRATION.MDB', 'alpha_number': '031',
+                'pharmacy': 'Démonstration'}}
+        frames = IdentifiedFrames(frames)
+        report = write_diagnostic_report(incidents, Path(directory), frames,
+                                         source_name='DEMONSTRATION - DONNEES FICTIVES', trace_period=fictive_period(frames))
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel='msedge', headless=True)
+            page = browser.new_page(viewport={'width':1440, 'height':850})
+            page.goto(report.as_uri())
+            page.screenshot(path=str(assets / 'rapport.png'))
+            page.locator('.priority-heading').screenshot(path=str(assets / 'compteur-unknown.png'))
+            browser.close()
+    metadata = json.loads((assets / 'captures.json').read_text(encoding='utf-8'))
+    for name in ('rapport', 'compteur-unknown'):
+        width, height = struct.unpack('>II', (assets / f'{name}.png').read_bytes()[16:24])
+        metadata[name] = {'width':width, 'height':height}
+    (assets / 'captures.json').write_text(json.dumps(metadata, indent=2), encoding='utf-8')
+
+
+def layout_captures():
+    from Tools.validate_orientation_categories import category_frames
+    from Models.diagnostic import build_diagnostics
+    from Models.diagnostic_report import write_diagnostic_report
+    from playwright.sync_api import sync_playwright
+    unknown_capture()
+    robot_capture()
+    assets = MANUAL / 'assets'
+    with tempfile.TemporaryDirectory(dir=ROOT / 'build', prefix='manual-layout-') as directory:
+        frames = category_frames()[:10]
+        report = write_diagnostic_report(build_diagnostics(frames, []), Path(directory), frames,
+                                         source_name='ORIENTATIONS FICTIVES')
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(channel='msedge', headless=True)
+            page = browser.new_page(viewport={'width':1440, 'height':1080})
+            page.goto(report.as_uri())
+            page.locator('.orientations').screenshot(path=str(assets / 'orientations.png'))
+            browser.close()
+    metadata = json.loads((assets / 'captures.json').read_text(encoding='utf-8'))
+    width, height = struct.unpack('>II', (assets / 'orientations.png').read_bytes()[16:24])
+    metadata['orientations'] = {'width':width, 'height':height}
+    (assets / 'captures.json').write_text(json.dumps(metadata, indent=2), encoding='utf-8')
 
 
 def pdf():
@@ -398,6 +493,9 @@ def signal_capture(sensor):
     assets = MANUAL / 'assets'
     frames = frames_for(blinking() + [(301, RELAUNCH), (302, SNAPSHOT),
         (303, 'InitMachine: demande initialisation de T2'), (304, 'T2: BOITE-LOAD')])
+    if sensor == 'C5':
+        from Tools.validate_c5_signal import fixture
+        frames = frames_for(fixture())
     filename = f'capteur-{sensor.lower()}'
     with tempfile.TemporaryDirectory(dir=ROOT / 'build', prefix=f'manual-{sensor.lower()}-') as directory:
         report = write_diagnostic_report(build_diagnostics(frames, []), Path(directory), frames,
@@ -415,20 +513,74 @@ def signal_capture(sensor):
     (assets / 'captures.json').write_text(json.dumps(metadata, indent=2), encoding='utf-8')
 
 
+def observation_captures():
+    from datetime import datetime
+    from Tools.validate_motor_dp import fixture, frames_for
+    from Models.diagnostic import build_diagnostics
+    from Models.diagnostic_report import write_diagnostic_report
+    from playwright.sync_api import sync_playwright
+    assets=MANUAL/'assets'
+    frames=frames_for(fixture())
+    incidents=build_diagnostics(frames,[],trace_origin=datetime(2026,10,21,9))
+    metadata=json.loads((assets/'captures.json').read_text(encoding='utf-8'))
+    with tempfile.TemporaryDirectory(dir=ROOT/'build',prefix='manual-observations-') as directory:
+        report=write_diagnostic_report(incidents,Path(directory),frames,source_name='DEMONSTRATION FICTIVE')
+        with sync_playwright() as pw:
+            browser=pw.chromium.launch(channel='msedge',headless=True)
+            page=browser.new_page(viewport={'width':1200,'height':900})
+            page.goto(report.as_uri())
+            for code,name in (('MOTOR_COMM','communication-moteurs'),('DP_MISSING','peremption-absente'),('CAMERA_CODE_MODE','mode-lecture')):
+                path=assets/f'{name}.png'
+                page.locator(f'details[data-group^="{code}:"] > summary').screenshot(path=str(path))
+                width,height=struct.unpack('>II',path.read_bytes()[16:24])
+                metadata[name]={'width':width,'height':height}
+            browser.close()
+    (assets/'captures.json').write_text(json.dumps(metadata,indent=2),encoding='utf-8')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--captures', action='store_true', help='Reproduire les captures et verifier les parcours')
+    parser.add_argument('--viewer-captures', action='store_true', help='Actualiser uniquement les captures natives du viewer')
     parser.add_argument('--pdf', action='store_true', help='Generer le PDF depuis le HTML')
-    parser.add_argument('--robot-capture', action='store_true', help='Actualiser les captures fictives robot, C2 et C3')
+    parser.add_argument('--robot-capture', action='store_true', help='Actualiser uniquement la capture fictive de l alerte robot')
+    parser.add_argument('--unknown-capture', action='store_true', help='Actualiser uniquement les captures fictives du compteur UNKNOWN')
+    parser.add_argument('--layout-captures', action='store_true', help='Actualiser les captures web concernees par la disposition du rapport')
+    parser.add_argument('--c5-capture', action='store_true', help='Actualiser la capture fictive du diagnostic C5')
+    parser.add_argument('--observation-captures', action='store_true', help='Actualiser les captures fictives moteurs, DP et modes camera')
     args = parser.parse_args()
-    if not args.captures and not args.pdf and not args.robot_capture:
-        parser.error('Choisir --captures, --robot-capture et/ou --pdf')
+    if not any((args.captures, args.viewer_captures, args.pdf, args.robot_capture, args.unknown_capture, args.layout_captures, args.c5_capture, args.observation_captures)):
+        parser.error('Choisir --captures, --robot-capture, --unknown-capture, --layout-captures et/ou --pdf')
     if args.captures:
         captures()
+    elif args.viewer_captures:
+        captures(viewer_only=True)
     if args.captures or args.robot_capture:
         robot_capture()
         for sensor in ('C2', 'C3'):
             signal_capture(sensor)
+    if args.unknown_capture:
+        unknown_capture()
+    if args.captures or args.c5_capture:
+        signal_capture('C5')
+    if args.captures or args.observation_captures:
+        observation_captures()
+    if args.layout_captures:
+        layout_captures()
+    if any((args.captures, args.viewer_captures, args.robot_capture, args.unknown_capture, args.layout_captures, args.c5_capture, args.observation_captures)):
+        import re
+        metadata = json.loads((MANUAL / 'assets' / 'captures.json').read_text(encoding='utf-8'))
+        document = MANUAL / 'index.html'
+        text = document.read_text(encoding='utf-8')
+        def image_size(match):
+            tag = match[0]
+            name = re.search(r'assets/([^"\s]+)\.png', tag)[1]
+            size = metadata[name]
+            for axis in ('width', 'height'):
+                tag = re.sub(rf'{axis}="\d+"', f'{axis}="{size[axis]}"', tag)
+            return tag
+        text = re.sub(r'<image\b[^>]*href="assets/[^"\s]+\.png"[^>]*>', image_size, text)
+        document.write_text(text, encoding='utf-8')
     if args.pdf:
         pdf()
 

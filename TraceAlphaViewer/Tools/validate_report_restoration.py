@@ -1,5 +1,6 @@
 """Verifie les informations restaurees, leurs preuves et les anciens rapports."""
 from copy import deepcopy
+from datetime import datetime
 from pathlib import Path
 import os
 import sys
@@ -13,7 +14,9 @@ from Models.state import MachineState
 from Models.trace_calendar import trace_calendar
 from Models.diagnostic import build_diagnostics
 from Models.diagnostic_report import build_report_payload, write_diagnostic_report, build_diagnostic_report_html
-from Models.measurement_analysis import analyze_measurements, categorize_orientations, orientation_category
+from Models.measurement_analysis import analyze_measurements
+from Models.dimension_check import orientation_category
+from Models.robot_drain import read_trace_origin
 from Models.report_bridge import ReportBridge
 from Tools.validate_measurement_report import orientation_samples
 
@@ -36,7 +39,7 @@ class RestorationTests(unittest.TestCase):
         frames = [MachineState(timestamp=0, timestamp_str='09:00:00'),
                   MachineState(timestamp=60, timestamp_str='09:01:00')]
         source = build_report_payload([], frames)['source']
-        self.assertEqual((source['start'], source['end']), ('09:00:00', '09:01:00'))
+        self.assertEqual((source['start'], source['end']), ('Dates indisponibles', 'Rechargez la trace'))
         self.assertFalse(source['dates_available'])
 
     def test_calendar_rollovers_and_no_invented_date(self):
@@ -53,7 +56,7 @@ class RestorationTests(unittest.TestCase):
 
     def test_daily_zero_days_proofs_and_cached_metrics(self):
         frames = dated_frames()
-        incidents = build_diagnostics(frames, [])
+        incidents = build_diagnostics(frames, [], trace_origin=datetime(2025, 12, 31, 23))
         payload = build_report_payload(incidents, frames)
         robot = next(group for group in payload['groups'] if group['code'] == 'DemVidageComplet')
         self.assertEqual([day['count'] for day in robot['daily']], [2, 0, 0])
@@ -65,33 +68,35 @@ class RestorationTests(unittest.TestCase):
                 for key in ('trace', 'daily', 'requests_start', 'requests_end'):
                     incident.metrics.pop(key, None)
         restored = next(group for group in build_report_payload(old, frames)['groups'] if group['code'] == 'DemVidageComplet')
-        self.assertEqual(restored['daily'], robot['daily'])
+        self.assertNotIn('daily', restored)
+        self.assertIn('Dates indisponibles', restored['trace_period'])
         self.assertEqual(restored['metrics']['critical'], robot['metrics']['critical'])
 
     def test_orientation_partition_keeps_denominators_and_cached_analyses(self):
         analysis = analyze_measurements(orientation_samples())
-        lists = categorize_orientations({kind: analysis['orientation_references'][kind] for kind in ('probable', 'uncertain')})
+        lists = analysis['orientation_references']
         self.assertEqual(sum(row['count'] for kind in ('flat_rotation', 'on_edge', 'other') for row in lists[kind]),
                          sum(row['count'] for row in lists['probable']))
         self.assertEqual(lists['flat_rotation'][0]['total'], 7)
         self.assertEqual(lists['flat_rotation'][0]['count'], 2)
-        self.assertEqual(orientation_category({'expected': [50, 40, 100], 'measured': [40, 50, 100]}), 'on_edge')
-        self.assertEqual(orientation_category({'expected': [50, 50, 100], 'measured': [100, 50, 50]}), 'flat_rotation')
-        self.assertEqual(orientation_category({'expected': [50, 100, 100], 'measured': [100, 75, 75]}), 'other')
+        self.assertEqual(orientation_category([40, 50, 100], [50, 40, 100]), 'on_edge')
+        self.assertEqual(orientation_category([100, 50, 50], [50, 50, 100]), 'other')
+        self.assertEqual(orientation_category([100, 75, 75], [50, 100, 100]), 'other')
 
-    def test_ten_proofs_per_day_keep_complete_counts_and_later_days(self):
+    def test_ten_proofs_over_period_keep_complete_counts_and_later_days(self):
         frames = dated_frames()[:1]
         for day in range(2):
             for index in range(12):
                 line = len(frames) + 1
                 frames.append(MachineState(line_num=line, timestamp=day*86400 + index + 1,
                     timestamp_str=f'23:00:{index+1:02d}', raw_lines=[(line, 'OMEGA:T5-DemVidageComplet')]))
-        robot = next(group for group in build_report_payload(build_diagnostics(frames, []), frames)['groups']
+        robot = next(group for group in build_report_payload(build_diagnostics(frames, [], trace_origin=datetime(2025, 12, 31, 23)), frames)['groups']
                      if group['code'] == 'DemVidageComplet')
         self.assertEqual(robot['occurrence_count'], 24)
         self.assertEqual([day['count'] for day in robot['daily']], [12, 12])
-        self.assertEqual([day['example_count'] for day in robot['daily']], [10, 10])
-        self.assertEqual(robot['examples'][10]['line'], 14)
+        self.assertEqual([day['example_count'] for day in robot['daily']], [5, 5])
+        self.assertEqual(robot['examples'][5]['line'], 15)
+        self.assertEqual(len(robot['examples']),10)
 
     def test_browser_sidebar_categories_days_navigation_pdf_and_legacy(self):
         from playwright.sync_api import sync_playwright
@@ -99,7 +104,7 @@ class RestorationTests(unittest.TestCase):
         frames = orientation_samples()
         payload = build_report_payload(build_diagnostics(frames, []), frames, 'DEMONSTRATION FICTIVE')
         dated = dated_frames()
-        robot_payload = build_report_payload(build_diagnostics(dated, []), dated)
+        robot_payload = build_report_payload(build_diagnostics(dated, [], trace_origin=datetime(2025, 12, 31, 23)), dated)
         payload['source'] = robot_payload['source']
         robot = next(group for group in robot_payload['groups'] if group['code'] == 'DemVidageComplet')
         payload['groups'].append(robot)
@@ -177,9 +182,9 @@ class RestorationTests(unittest.TestCase):
                     download.value.save_as(pdf)
                     document = pdfium.PdfDocument(pdf)
                     content = ' '.join(' '.join(p.get_textpage().get_text_range() for p in document).split())
-                    for text in ('31/12/2025', '02/01/2026', '3 jours de trace', 'Aucune demande',
-                                 'Longueur / largeur inversées', 'Largeur / hauteur inversées',
-                                 'guidage', 'Lecture des caméras', 'L.3'):
+                    for text in ('31/12/2025', '02/01/2026', '3 jours de trace', 'Synthèse terrain',
+                                 'Longueur / largeur inversées', 'Orientations indécidables',
+                                 'Cycles', 'Lecture des caméras'):
                         self.assertIn(text, content)
                     document.close()
                 legacy = deepcopy(payload)
@@ -193,13 +198,14 @@ class RestorationTests(unittest.TestCase):
                 page.evaluate('(payload)=>{document.body.innerHTML="<div id=legacy></div>";TraceReport.mount(document.querySelector("#legacy"),payload)}', legacy)
                 self.assertEqual(page.locator('[data-orientation-list=probable]').count(), 1)
                 page.locator(f'[data-group="{robot["id"]}"] > summary').click()
-                self.assertIn('dates indisponibles', page.locator('.robot-days').inner_text())
+                self.assertIn('Dates indisponibles', page.locator('.robot-days').inner_text())
                 for ratio, band in ((0.07, 'is-good'), (0.075, 'is-good'), (0.08, 'is-warning'), (0.12, 'is-warning'), (0.121, 'is-bad')):
                     legacy['unknown'] = dict(legacy['unknown'], total=1000, count=int(ratio*1000), ratio=ratio, alert=ratio>0.07)
                     page.evaluate('(payload)=>TraceReport.mount(document.querySelector("#legacy"),payload)', legacy)
                     self.assertIn(band, page.locator('.unknown-counter').get_attribute('class'))
                     self.assertEqual(page.locator('.unknown-counter').bounding_box()['height'], 60)
-                    self.assertEqual(page.locator('.unknown-alert').count(), int(ratio>0.07))
+                    self.assertEqual(page.locator('.unknown-alert').count(), 0)
+                    self.assertEqual(page.locator('button.unknown-counter').count(), 0)
                 self.assertFalse(errors, errors)
                 browser.close()
         finally:
@@ -209,8 +215,9 @@ class RestorationTests(unittest.TestCase):
     def test_real_trace_invariants(self):
         from Parser.trace_parser import parse_file
         from Models.folder_report import _collect_events
-        frames = parse_file(os.environ['TRACE_ALPHA_REFERENCE_TRACE'], min_dt=0)
-        payload = build_report_payload(build_diagnostics(frames, _collect_events(frames)), frames)
+        trace = os.environ['TRACE_ALPHA_REFERENCE_TRACE']
+        frames = parse_file(trace, min_dt=0)
+        payload = build_report_payload(build_diagnostics(frames, _collect_events(frames), trace_origin=read_trace_origin(trace)), frames)
         self.assertEqual(payload['source']['end'], '21/10/2026 à 08:57:35')
         self.assertEqual(payload['source']['duration'], '16 h 37 min 14 s')
         self.assertEqual((payload['unknown']['count'], payload['unknown']['total']), (80, 161))

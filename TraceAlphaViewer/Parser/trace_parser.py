@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import os
 import re
+from contextlib import closing
 from typing import Callable, List, Optional
 
 from Models.dimension_check import dimension_finding_code, measurement_status_from_code
 from Models.measurement_identity import is_unknown_reference, record_identification, measurement_exclusion
 from Models.state import BoxInfo, MachineEvent, MachineState, box_color
+from Parser.trace_source import canonical_lines
 
 # ── Regex d'en-tête de ligne ─────────────────────────────────────────────────
 _HDR = re.compile(
@@ -88,6 +90,7 @@ _T3_T4_FIN_IDB = re.compile(
 _AJOUT_T5_ID = re.compile(
     r"AjoutBtT5\.idA(\d+)\.idB(-?\d+)", re.IGNORECASE
 )
+_T4_T5_REQUEST = re.compile(r"Demande le transfert \(physique\).*?T4 vers T5 '([^']*)'", re.I)
 _DB_INFO = re.compile(
     r'-->\s+(.+?)\s+(\d+)x(\d+)x(\d+)\s+[\d,]+g'
 )
@@ -213,6 +216,7 @@ def _classify_alpha_measurement(box: BoxInfo) -> None:
 
 
 def _copy_dimension_tracking(dst: BoxInfo, src: BoxInfo) -> None:
+    dst.t5_transfer_id = src.t5_transfer_id
     dst.source_ref = src.source_ref
     dst.identified_barcode = src.identified_barcode
     dst.identified_name = src.identified_name
@@ -263,6 +267,10 @@ def _find_t5_box(
 
 
 def _find_t4_measure_box(state: MachineState, ctx: dict) -> Optional[BoxInfo]:
+    transfer = ctx.get('pending_t4_length_transfer')
+    if transfer:
+        matches = [b for b in state.boxes_on_T5 if b.t5_transfer_id == transfer]
+        return matches[0] if len(matches) == 1 else None
     id_b = int(ctx.get('pending_t4_length_idb') or 0)
     if not id_b:
         return None
@@ -644,7 +652,11 @@ def _apply_t5_list_pack(state: MachineState, text: str, ctx: Optional[dict] = No
 
 
 def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
-    """Applique une ligne de texte sur l'état courant (in-place)."""
+    """Applique une ligne de texte sur l'etat courant."""
+    if 'version logiciel VBalpha:' in text:
+        for key in ('pending_t5_creation_box', 'pending_t4_length_transfer',
+                    'pending_t4_length_idb', 'pending_t4_length_ida', 't4_t5_requested_ref'):
+            ctx.pop(key, None)
 
     if 'idCB2:' in text or 'CB2:' in text:
         ctx['last_reader'] = 'CB2'
@@ -821,10 +833,14 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         x    = int(mo.group(3))
         w, hh, lg = int(mo.group(4)), int(mo.group(5)), int(mo.group(6))
         id_a = int(mo.group(7))
-        id_b = int(ctx.get('last_t5_transfer_idb') or 0)
+        pending = ctx.pop('pending_t5_creation_box', None)
+        id_b = pending.id_b if pending is not None else 0
         box = _find_t5_box(state, id_alpha=id_a, id_b=id_b)
-        if box is None and id_b:
-            box = _find_unique_barcode(state.boxes_on_T5, bc)
+        if box is not None and box.id_alpha not in (0, id_a):
+            box = None
+        if box is None and pending is not None and not pending.id_alpha:
+            if any(item is pending for item in state.boxes_on_T5):
+                box = pending
         if box is None:
             box = BoxInfo()
             state.boxes_on_T5.append(box)
@@ -838,8 +854,9 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
             box.id_b = id_b
             ctx.setdefault('idb_to_ida', {})[id_b] = id_a
             ctx.setdefault('ida_to_idb', {})[id_a] = id_b
-            if ctx.get('pending_t4_length_idb') == id_b:
-                ctx['pending_t4_length_ida'] = id_a
+        if ctx.get('pending_t4_length_transfer') == box.t5_transfer_id or (
+                id_b and ctx.get('pending_t4_length_idb') == id_b):
+            ctx['pending_t4_length_ida'] = id_a
         _add_event(
             state, line_num, 'info', 'BOITE',
             f'T4->T5 {_box_label(box)} -> IdA={id_a}', f'{bc} {name} x={x}'
@@ -1147,7 +1164,17 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
             )
 
     # ── Fin de transfert T4 → T5 : box_on_T4 est ajoutée à boxes_on_T5 ──────
+    request = _T4_T5_REQUEST.search(text)
+    if request:
+        ctx['t4_t5_requested_ref'] = request[1]
+
     if 'la boite est rendu (physiquement) sur T5' in text:
+        ctx.pop('pending_t5_creation_box', None)
+        ctx.pop('pending_t4_length_transfer', None)
+        reference = ctx.pop('t4_t5_requested_ref', None)
+        if reference == '' and state.box_on_T4 is not None and state.box_on_T4.barcode:
+            # Un transfert explicitement anonyme n'herite pas d'un ancien produit.
+            state.box_on_T4 = BoxInfo()
         bc = state.box_on_T4.barcode if state.box_on_T4 else ''
         id_b = state.box_on_T4.id_b if state.box_on_T4 else 0
         ctx['last_t5_transfer_idb'] = id_b
@@ -1185,6 +1212,9 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
                 box.t5_entry_aligned = True
                 box.t5_after_c9 = False
                 _copy_dimension_tracking(box, b)
+            box.t5_transfer_id = line_num
+            ctx['pending_t5_creation_box'] = box
+            ctx['pending_t4_length_transfer'] = box.t5_transfer_id
         _add_event(state, line_num, 'info', 'TRANSFERT', f'T4 vers T5 {_box_label(state.box_on_T4)}')
         state.box_on_T4 = None
 
@@ -1219,6 +1249,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
             _classify_alpha_measurement(measure_box)
         ctx.pop('pending_t4_length_idb', None)
         ctx.pop('pending_t4_length_ida', None)
+        ctx.pop('pending_t4_length_transfer', None)
         severity = 'warning' if abs(diff) > 10 else 'info'
         _add_event(
             state, line_num, severity, 'T4',
@@ -1330,6 +1361,7 @@ def parse_file(
     filepath: str,
     progress_cb: Optional[Callable[[int, int], None]] = None,
     min_dt: float = 2.0,
+    source_metadata_output: Optional[dict] = None,
 ) -> List[MachineState]:
     """
     Parse un fichier .old et retourne la liste des frames.
@@ -1338,6 +1370,7 @@ def parse_file(
                 Défaut 2.0 s → ~1 frame/2 s + tous les événements clés.
                 Un frame est toujours ajouté en cas de changement significatif.
     progress_cb(done_bytes, total_bytes) est appelé périodiquement.
+    source_metadata_output reçoit les plages copiées et leurs lignes originales.
     """
     total = os.path.getsize(filepath)
     done  = 0
@@ -1358,14 +1391,14 @@ def parse_file(
                 'supp.', 'suppression', 'Suppr.', 'D\xe9place', 'MAJ (BUTEE', 'MAJ (APRES',
                 'ALPHA:T5-LIST-PACK', 'Cr\xe9ation',
                 'AjoutBtT5', 'DeplBtSurT5', 'capteurC1', 'FlagPoubelle', 'LzB', 'longueur boite',
-                'mesure de longueur', 'tassement', 'diffT4', 'CubeStop')
+                'mesure de longueur', 'tassement', 'diffT4', 'CubeStop', 'version logiciel VBalpha:')
 
     file_line = 0
-    with open(filepath, encoding='latin-1', errors='replace') as fh:
-        for raw in fh:
-            file_line += 1
-            done += len(raw)
-            if progress_cb and done % chunk < len(raw):
+    with closing(canonical_lines(filepath, source_metadata_output)) as source:
+        for file_line, raw, position in source:
+            previous_done = done
+            done = position
+            if progress_cb and done // chunk != previous_done // chunk:
                 progress_cb(done, total)
 
             # Pré-filtre ultra-rapide : cherche '|' (séparateur timestamp)

@@ -162,6 +162,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('trace', type=Path)
     parser.add_argument('--revision', help='Version Git des modules concernes, chargee en memoire')
+    parser.add_argument('--source-tree', type=Path, help='Copie locale des sources servant de reference')
     parser.add_argument('--results-json', type=Path, help='Resultats complets a conserver localement')
     parser.add_argument('--compare-results', type=Path, help='Resultats precedents a verifier')
     parser.add_argument('--show', action='store_true', help='Afficher la fenetre pendant la mesure')
@@ -180,6 +181,10 @@ def main() -> None:
         parser.error('Le fichier trace est introuvable')
     if args.timeout <= 0:
         parser.error('Le delai doit etre positif')
+    if args.source_tree:
+        if args.revision or not (args.source_tree / 'Models').is_dir():
+            parser.error('--source-tree attend une copie des sources, sans --revision')
+        sys.path.insert(0, str(args.source_tree.resolve()))
     if args.revision:
         _load_revision(args.revision)
 
@@ -324,7 +329,8 @@ def verify_storage(path, frames, events, diagnostics, analyses):
             if expected != actual:
                 raise AssertionError(f'Filtre different : {belt}')
             print(f'Filtre {belt} identique : {len(actual)} elements', flush=True)
-        expected = build_report_payload(diagnostics, frames=direct)
+        expected = build_report_payload(diagnostics, frames=direct,
+            **({'trace_period': frames.trace_period} if hasattr(frames, 'trace_period') else {}))
         actual = build_report_payload(diagnostics, frames=frames)
         expected.pop('generated_at')
         actual.pop('generated_at')

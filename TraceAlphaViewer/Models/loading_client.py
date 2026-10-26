@@ -135,7 +135,7 @@ class LoadingSession:
     def start(self, mode: str, **arguments) -> WorkerTask:
         if self.closed.is_set():
             raise RuntimeError('La session de trace est fermee')
-        if mode in ('file', 'folder'):
+        if mode in ('file', 'folder', 'folder_catalog', 'folder_group'):
             arguments['path'] = str(Path(arguments['path']).resolve())
         task = WorkerTask(self.directory / ('job-' + uuid.uuid4().hex),
                           dict(arguments, mode=mode, session=str(self.directory)))

@@ -21,6 +21,16 @@ _ID_A = re.compile(r'\bIdA:(\d+)', re.I)
 _ADDED = re.compile(r'AjoutBtT5\.idA(\d+)\.idB(-?\d+)', re.I)
 _TRANSFER = re.compile(r"demande le transfert de (EA->T3|T3->T4).*?'([^']*)'", re.I)
 _TO_T5 = re.compile(r"Demande le transfert \(physique\).*?T4 vers T5 '([^']*)'", re.I)
+_DP_FINAL = re.compile(r'boite n\S*\s*(\d+)\s+manque la DP\s+(\d+)', re.I)
+_DP_RENAME = re.compile(r'Change r\S*f derni\S* boite transf\S*.*?IdBdD:(\d+)\s+IdT5:(\d+).*?\)\s+(\S+)\s*->\s*(\S*\[MqDP\]\S*)', re.I)
+_CAMERA_DP = re.compile(r'\bDP:(\d{1,2}(?:/\d{1,2})?/\d{4})\b')
+_RAW_CAMERA = re.compile(r'idCB([12]):.*?PR<Soh>')
+_RAW_CODE = re.compile(r'<Soh>\d+<Dc2>(.*?)<Dc2>')
+_RAW_RECORD = re.compile(r'<Soh>(\d+)<Dc2>(.*?)<Dc2>')
+_PHOTO_REQUEST = re.compile(r'idCB([12]):.*?demande prise photos',re.I)
+_RELEVANT = re.compile(
+    r'CB[12]:|EA->T3|T2->EA|T3->T4|Cr\S*ation de la boite|AjoutBtT5|'
+    r'T4 vers T5|manque la DP|Change|DataArrival\[|version logiciel VBalpha:', re.I)
 
 
 def unknown_reference(reference: str) -> bool:
@@ -40,6 +50,10 @@ class IdentificationCycle:
     id_b: int = 0
     id_alpha: int = 0
     creation: tuple | None = None
+    dp_attempts: list[dict] = field(default_factory=list)
+    dp_recoveries: list[dict] = field(default_factory=list)
+    dp_final: list[dict] = field(default_factory=list)
+    raw_codes: list[dict] = field(default_factory=list)
 
     def root(self):
         if self.parent is not None:
@@ -48,11 +62,37 @@ class IdentificationCycle:
         return self
 
 
-def identification_cycles(line_states):
+def identification_cycles(line_states, *, dp_output=None):
     """Les compteurs Hist_LectCB sont des preuves de lecture, pas des identites."""
     cycles = []
     slots = dict(ea=None, t3=None, t4=None, t5=None)
     aliases, by_b, by_a = {}, {}, {}
+    pending_ea = None
+    failed_ea = False
+    attempts = {}
+    pending_dp = None
+    unassigned_dp = []
+    raw_pending = {}
+
+    def dp_proof(line, state, **values):
+        return dict(line=line,time=state.timestamp,time_str=state.timestamp_str,**values)
+
+    def attach_dp(cycle, proof):
+        cycle=cycle.root()
+        if proof['barcode'] not in cycle.references and not any(row['code']==proof['barcode'] for row in cycle.raw_codes):
+            return False
+        if not any(row['line']==proof['line'] for row in cycle.dp_final):cycle.dp_final.append(proof)
+        return True
+
+    def complete_ea():
+        nonlocal pending_ea, failed_ea
+        if pending_ea is not None:
+            cycle = pending_ea.root()
+            slots['t3'] = cycle
+            if slots['ea'] is not None and slots['ea'].root() is cycle:
+                slots['ea'] = None
+            pending_ea = None
+            failed_ea = False
 
     def new(line):
         cycle = IdentificationCycle(line)
@@ -78,6 +118,8 @@ def identification_cycles(line_states):
             left.codes.setdefault(reader, []).extend(codes)
         left.unknown_readers.update(right.unknown_readers)
         left.refusals.extend(right.refusals)
+        for key in ('dp_attempts','dp_recoveries','dp_final','raw_codes'):
+            getattr(left,key).extend(getattr(right,key))
         left.references.update(right.references)
         if right.result_line > left.result_line:
             left.reference, left.result_line = right.reference, right.result_line
@@ -93,16 +135,44 @@ def identification_cycles(line_states):
         return None
 
     for line, text, state in line_states:
+        if pending_dp and state.timestamp-pending_dp['time']>120:
+            if not pending_dp.get('attributed'):unassigned_dp.append(pending_dp)
+            pending_dp=None
+        if not _RELEVANT.search(text):
+            continue
         # Une reouverture du fichier de trace ne redemarre pas la machine.
         if 'version logiciel VBalpha:' in text:
+            if pending_dp and not pending_dp.get('attributed'):unassigned_dp.append(pending_dp)
+            pending_dp=None
             slots = dict.fromkeys(slots)
             aliases, by_b, by_a = {}, {}, {}
+            pending_ea = None
+            failed_ea = False
+            attempts = {}
+            raw_pending = {}
+
+        if 'ERREUR transfert EA->T3' in text:
+            failed_ea = True
+
+        if 'le transfert (EA->T3) est termin' in text:
+            complete_ea()
+        if 'T2: Transfert de T2->EA termin' in text:
+            complete_ea()
+            slots['ea'] = None
 
         match = _TRANSFER.search(text)
         if match:
             source, target = ('ea', 't3') if match[1].upper() == 'EA->T3' else ('t3', 't4')
+            if source == 't3' and slots['t3'] is None:
+                complete_ea()
             cycle = technical(match[2]) or slots[source] or new(line)
-            slots[target], slots[source] = cycle.root(), None
+            if source == 'ea':
+                if pending_ea is not None and pending_ea.root() is not cycle.root():
+                    failed_ea = False
+                pending_ea = cycle.root()
+                slots['ea'] = pending_ea
+            else:
+                slots[target], slots[source] = cycle.root(), None
 
         match = _TO_T5.search(text)
         if match:
@@ -118,17 +188,44 @@ def identification_cycles(line_states):
                 cycle = ea.root()
             if cycle is not None and cycle.creation is None:
                 slots['t3'] = cycle
+                if pending_ea is not None and pending_ea.root() is cycle:
+                    pending_ea = None
+                    failed_ea = False
                 if ea is not None and ea.root() is cycle:
                     slots['ea'] = None
+
+        if match and '[manque DP]' in text and slots['t3'] is not None:
+            cycle=slots['t3'].root()
+            cycle.dp_attempts.append(dp_proof(line,state,barcode=match[1],reader='CB2'))
+
+        request=_PHOTO_REQUEST.search(text)
+        if request:raw_pending['CB'+request[1]]={'time':state.timestamp,'codes':[]}
+        raw_camera=_RAW_CAMERA.search(text)
+        if raw_camera or ('DataArrival[' in text and 'R<Soh>' in text):
+            for camera,code in _RAW_RECORD.findall(text):
+                reader=('CB'+raw_camera[1] if raw_camera else
+                        'CB2' if camera=='3' else 'CB1' if camera in {'1','2','4','5','6'} else '')
+                pending=raw_pending.get(reader)
+                if pending and 0<=state.timestamp-pending['time']<=120 and len(pending['codes'])<10:
+                    pending['codes'].append(dp_proof(line,state,reader=reader,code=code[:256]))
 
         match = _HIST.search(text)
         if match:
             reader = 'CB' + match[1]
             slot = 'ea' if reader == 'CB1' else 't3'
+            if reader == 'CB2' and slots['t3'] is None:
+                complete_ea()
             cycle = current(slot, line)
-            if reader == 'CB1' and reader in cycle.codes and cycle.result_line:
+            if (reader == 'CB1' and pending_ea is not None and not failed_ea
+                    and cycle is pending_ea.root() and cycle.result_line):
+                # La nouvelle tentative sera rattachee au meme passage si le produit ne change pas.
+                previous = cycle
                 cycle = slots[slot] = new(line)
+                attempts[cycle] = previous
             cycle.codes.setdefault(reader, []).append(int(match[2]))
+            pending=raw_pending.pop(reader,None)
+            if pending and 0<=state.timestamp-pending['time']<=120:
+                cycle.raw_codes.extend(pending['codes'][:max(0,10-len(cycle.raw_codes))])
 
         match = _NON_ALPHATISABLE.search(text) or _REFUSED.search(text)
         if match:
@@ -144,11 +241,19 @@ def identification_cycles(line_states):
             reader, ref = 'CB' + match[1], match[2]
             slot = 'ea' if reader == 'CB1' else 't3'
             cycle = current(slot, line)
+            previous_attempt = attempts.pop(cycle, None) if reader == 'CB1' else None
+            if previous_attempt is not None and previous_attempt.reference == ref:
+                cycle = join(previous_attempt, cycle)
             previous = technical(ref) if unknown_reference(ref) else None
             if previous is not None and previous.creation is None:
                 cycle = join(cycle, previous)
             cycle.reference, cycle.result_line = ref, line
             cycle.references.add(ref)
+            dp=_CAMERA_DP.search(text)
+            if dp and cycle.dp_attempts and not dp[1].endswith('/2099'):
+                parts=dp[1].split('/')
+                if 1<=int(parts[-2])<=12 and any(row['barcode']==ref for row in cycle.dp_attempts):
+                    cycle.dp_recoveries.append(dp_proof(line,state,barcode=ref,reader=reader,dp=dp[1]))
             if unknown_reference(ref):
                 aliases[ref] = cycle
                 cycle.unknown_readers.add(reader)
@@ -159,6 +264,8 @@ def identification_cycles(line_states):
 
         match = _ID_B.search(text)
         if match:
+            if slots['t3'] is None:
+                complete_ea()
             cycle = current('t3', line)
             id_b = int(match[1])
             if cycle.id_b and cycle.id_b != id_b:
@@ -186,9 +293,11 @@ def identification_cycles(line_states):
             id_match = _ID_A.search(text)
             id_a = int(id_match[1]) if id_match else 0
             cycle = by_a.get(id_a) if id_a else None
+            if cycle is not None and cycle.root().creation is not None:
+                cycle=None
             candidates = [cycle, technical(ref), slots['t5'], slots['t4']]
             cycle = next((item.root() for item in candidates if item is not None and
-                          (item.root().creation is None or (id_a and item.root().id_alpha == id_a))), None)
+                          item.root().creation is None), None)
             cycle = cycle or new(line)
             cycle = cycle.root()
             cycle.reference = ref
@@ -205,7 +314,8 @@ def identification_cycles(line_states):
             id_a, id_b = int(match[1]), int(match[2])
             cycle = by_a.get(id_a) or slots['t5'] or by_b.get(id_b) or new(line)
             cycle = cycle.root()
-            if id_b > 0 and id_b in by_b:
+            if (id_b > 0 and id_b in by_b and
+                    (by_b[id_b].root() is cycle or by_b[id_b].root().creation is None)):
                 cycle = join(cycle, by_b[id_b])
             cycle.id_alpha = id_a
             by_a[id_a] = cycle
@@ -214,5 +324,28 @@ def identification_cycles(line_states):
                 by_b[id_b] = cycle
             slots['t5'] = None
 
+        final=_DP_FINAL.search(text)
+        if final:
+            if pending_dp and not pending_dp.get('attributed'):unassigned_dp.append(pending_dp)
+            pending_dp=dp_proof(line,state,id_b=int(final[1]),barcode=final[2])
+            cycle=by_b.get(int(final[1]))
+            if cycle is not None and cycle.root().creation and attach_dp(cycle,pending_dp):
+                pending_dp['attributed']=True
+        rename=_DP_RENAME.search(text)
+        if rename:
+            id_a,id_t5=int(rename[1]),int(rename[2])
+            proof=dp_proof(line,state,id_alpha=id_a,barcode=rename[3],technical_reference=rename[4])
+            cycle=by_a.get(id_a)
+            if id_a==id_t5 and cycle is not None and attach_dp(cycle,proof):
+                if pending_dp and pending_dp['barcode']==rename[3] and 0<=line-pending_dp['line']<=10:
+                    attach_dp(cycle,pending_dp)
+                    pending_dp['attributed']=True
+            else:unassigned_dp.append(proof)
+
+    if pending_dp and not pending_dp.get('attributed'):unassigned_dp.append(pending_dp)
+    if dp_output is not None:dp_output['unattributed']=unassigned_dp
+    for attempt, previous in attempts.items():
+        if not attempt.result_line:
+            join(previous, attempt)
     return [cycle for cycle in cycles if cycle.parent is None and
             (cycle.codes or cycle.refusals or cycle.result_line or cycle.id_b or cycle.creation)]

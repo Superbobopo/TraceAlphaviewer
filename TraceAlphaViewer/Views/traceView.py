@@ -21,6 +21,7 @@ import math
 import os
 import threading
 import webbrowser
+import time
 from queue import Empty
 from typing import Callable, List, Optional
 from collections.abc import Sequence
@@ -78,6 +79,9 @@ class TraceView(BaseView):
         return_view: BaseView | None = None,
         on_close: Callable[[], None] | None = None,
         load_session=None,
+        owns_load_session: bool = True,
+        source_name: str = '',
+        navigation=None,
         **kwargs,
     ):
         super().__init__(master, fg_color='#12121f', **kwargs)
@@ -88,11 +92,15 @@ class TraceView(BaseView):
         self._return_view = return_view
         self._on_close    = on_close
         self._load_session = load_session
+        self._owns_load_session = owns_load_session
+        self._source_name = source_name or os.path.basename(filepath)
         self._prepared = False
+        self._navigation = navigation or {}
+        self.preparation_timings = {}
         self._events      = events if events is not None else self._collect_events(frames)
         self._diagnostics = diagnostics if diagnostics is not None else build_diagnostics(frames, self._events)
         self._references  = references if references is not None else build_reference_records(frames, self._events)
-        self._error_events = (
+        self._error_events = self._navigation.get('error_events') if 'error_events' in self._navigation else (
             [e for e in self._events if e.severity == 'error']
             + self._diagnostic_error_events(self._diagnostics)
         )
@@ -160,6 +168,7 @@ class TraceView(BaseView):
             self._go_to(0)
 
     def prepare(self, on_ready, on_error=None) -> None:
+        started = time.perf_counter()
         self._build_title_bar()
 
         def layout():
@@ -167,11 +176,15 @@ class TraceView(BaseView):
             self.after(5, self.preparation_step, middle, on_error)
 
         def middle():
+            tick = time.perf_counter()
             self._build_middle(self._middle_pane)
+            self.preparation_timings['panneaux'] = time.perf_counter() - tick
             self.after(5, self.preparation_step, bottom, on_error)
 
         def bottom():
+            tick = time.perf_counter()
             self._build_bottom(self._bottom_pane)
+            self.preparation_timings['player'] = time.perf_counter() - tick
             self.after(80, lambda: self._set_bottom_height(self._details_height))
             self.after(5, self.preparation_step, wait_panels, on_error)
 
@@ -181,13 +194,14 @@ class TraceView(BaseView):
                 self.after(5, self.preparation_step, wait_panels, on_error)
             else:
                 self._prepared = True
+                self.preparation_timings['total'] = time.perf_counter() - started
                 on_ready()
 
         self.after(5, self.preparation_step, layout, on_error)
 
     def destroy(self) -> None:
         self._close_report_bridge()
-        if self._load_session is not None:
+        if self._load_session is not None and self._owns_load_session:
             self._load_session.close()
         super().destroy()
 
@@ -208,7 +222,7 @@ class TraceView(BaseView):
         bar.pack(fill='x', side='top')
         bar.pack_propagate(False)
 
-        fname = os.path.basename(self._filepath)
+        fname = self._source_name
         ctk.CTkLabel(bar, text=f'  {fname}',
                      font=('Consolas', 12, 'bold'),
                      text_color='#88aacc').pack(side='left', padx=12)
@@ -352,19 +366,6 @@ class TraceView(BaseView):
         ctk.CTkButton(nav_bar, text='►|', **btn_cfg,
                       command=self._go_end).pack(side='left', padx=2)
 
-        ctk.CTkButton(nav_bar, text='Err◄', width=48, height=30,
-                      fg_color='#3a2028', hover_color='#5a2834',
-                      font=('Consolas', 11, 'bold'), text_color='#ff9999',
-                      command=self._prev_error).pack(side='left', padx=(10, 2), pady=4)
-        ctk.CTkButton(nav_bar, text='Err►', width=48, height=30,
-                      fg_color='#3a2028', hover_color='#5a2834',
-                      font=('Consolas', 11, 'bold'), text_color='#ff9999',
-                      command=self._next_error).pack(side='left', padx=2, pady=4)
-        self._lbl_error_pos = ctk.CTkLabel(nav_bar, text=self._error_pos_text(),
-                                           font=('Consolas', 10),
-                                           text_color='#cc7777', width=62)
-        self._lbl_error_pos.pack(side='left', padx=(4, 8))
-
         ctk.CTkLabel(nav_bar, text='×', font=('Consolas', 10),
                      text_color='#445566').pack(side='left', padx=(10, 0))
         speed_btn_cfg = dict(width=32, height=26, fg_color='#252538',
@@ -406,12 +407,25 @@ class TraceView(BaseView):
                                           text_color='#aabbcc',
                                           command=self._toggle_details)
         self._btn_details.pack(side='right', padx=(0, 6), pady=5)
-        self._btn_trace_search = ctk.CTkButton(
-            nav_bar, text='\U0001f50d', width=32, height=28,
-            fg_color='#252538', hover_color='#353555',
-            text_color='#aabbcc', font=('Segoe UI Symbol', 17),
+        self._btn_search = ctk.CTkButton(
+            nav_bar, text='🔍', font=('Segoe UI Symbol', 16), width=30, height=30,
+            fg_color='#252538', hover_color='#344c66', text_color='#a8c4e4',
             command=self._toggle_trace_search)
-        self._btn_trace_search.pack(side='right', padx=(0, 6), pady=5)
+        self._btn_search.pack(side='right', padx=(0, 6), pady=5)
+        self._btn_next_error = ctk.CTkButton(nav_bar, text='Err►', width=48, height=30,
+                      fg_color='#3a2028', hover_color='#5a2834',
+                      font=('Consolas', 11, 'bold'), text_color='#ff9999',
+                      command=self._next_error)
+        self._btn_next_error.pack(side='right', padx=2, pady=4)
+        self._btn_prev_error = ctk.CTkButton(nav_bar, text='Err◄', width=48, height=30,
+                      fg_color='#3a2028', hover_color='#5a2834',
+                      font=('Consolas', 11, 'bold'), text_color='#ff9999',
+                      command=self._prev_error)
+        self._btn_prev_error.pack(side='right', padx=(2, 2), pady=4)
+        self._lbl_error_pos = ctk.CTkLabel(nav_bar, text=self._error_pos_text(),
+                                           font=('Consolas', 10),
+                                           text_color='#cc7777', width=62)
+        self._lbl_error_pos.pack(side='right', padx=(4, 8))
 
         self._resize_handle = tk.Frame(bottom, bg='#263142', height=RESIZE_HANDLE_H, cursor='sb_v_double_arrow')
         self._resize_handle.pack(fill='x', side='top')
@@ -431,6 +445,7 @@ class TraceView(BaseView):
         self.bind_shortcut('<End>', self._go_end)
         self.bind_shortcut('e', self._next_error)
         self.bind_shortcut('E', self._prev_error)
+        self.bind_shortcut('<Control-f>', self._open_trace_search)
 
     def _build_analysis_tabs(self, parent) -> None:
         if hasattr(ctk, 'CTkTabview'):
@@ -458,26 +473,33 @@ class TraceView(BaseView):
                 on_report_open=self._open_linked_report,
                 on_measurement_click=self._on_trace_click,
                 on_measurement_sample=self._on_measurement_sample,
-                source_name=os.path.basename(self._filepath),
+                source_name=self._source_name,
             )
             self._diagnostic_panel.pack(fill='both', expand=True, padx=0, pady=0)
             self._reference_panel = ReferencePanel(
                 ref_tab, self._references,
+                navigation=self._navigation.get('references'),
                 on_reference_click=self._on_reference_click,
+                line_label=self._source_line_label if self._is_group() else None,
             )
             self._reference_panel.pack(fill='both', expand=True, padx=0, pady=0)
             self._error_panel = EventPanel(
                 error_tab, self._error_events,
+                navigation=self._navigation.get('errors'),
                 on_event_click=self._on_event_click,
                 title='ERREURS',
+                line_label=self._source_line_label if self._is_group() else None,
                 empty_text='Aucune erreur detectee',
+                show_error_descriptions=True,
             )
             self._error_panel.pack(fill='both', expand=True, padx=0, pady=0)
             self._event_panel = EventPanel(
                 events_tab, self._events,
+                navigation=self._navigation.get('events'),
                 frames=self._frames,
                 on_event_click=self._on_event_click,
                 show_belt_filters=True,
+                line_label=self._source_line_label if self._is_group() else None,
                 load_session=self._load_session,
             )
             self._event_panel.pack(fill='both', expand=True, padx=0, pady=0)
@@ -515,23 +537,30 @@ class TraceView(BaseView):
             on_report_open=self._open_linked_report,
             on_measurement_click=self._on_trace_click,
             on_measurement_sample=self._on_measurement_sample,
-            source_name=os.path.basename(self._filepath),
+            source_name=self._source_name,
         )
         self._diagnostic_panel.pack(fill='both', expand=True)
         self._reference_panel = ReferencePanel(
             self._analysis_fallback_tab_frames['References'], self._references,
+                navigation=self._navigation.get('references'),
             on_reference_click=self._on_reference_click,
+            line_label=self._source_line_label if self._is_group() else None,
         )
         self._reference_panel.pack(fill='both', expand=True)
         self._error_panel = EventPanel(
             self._analysis_fallback_tab_frames['Erreur'], self._error_events,
+                navigation=self._navigation.get('errors'),
             on_event_click=self._on_event_click,
             title='ERREURS',
+            line_label=self._source_line_label if self._is_group() else None,
             empty_text='Aucune erreur detectee',
+            show_error_descriptions=True,
         )
         self._error_panel.pack(fill='both', expand=True)
         self._event_panel = EventPanel(
             self._analysis_fallback_tab_frames['Evenements'], self._events,
+                navigation=self._navigation.get('events'),
+            line_label=self._source_line_label if self._is_group() else None,
             frames=self._frames,
             on_event_click=self._on_event_click,
             show_belt_filters=True,
@@ -551,23 +580,21 @@ class TraceView(BaseView):
         self._trace_panel = TracePanel(
             parent,
             on_line_click=self._on_trace_click,
-            search_visible=False,
+            line_label=self._source_line_label if self._is_group() else None,
             height=240,
         )
         self._trace_panel.pack(fill='both', expand=True)
-        self._trace_panel._search_entry.bind('<Escape>', self._hide_trace_search)
+
+    def _open_trace_search(self) -> None:
+        if not self._details_visible:
+            self._toggle_details()
+        self._trace_panel.set_search_visible(True)
 
     def _toggle_trace_search(self) -> None:
-        visible = not self._trace_panel.search_visible or not self._details_visible
-        if visible and not self._details_visible:
-            self._toggle_details()
-        self._trace_panel.set_search_visible(visible)
-        self._btn_trace_search.configure(fg_color='#1b679c' if visible else '#252538')
-
-    def _hide_trace_search(self, event=None) -> str:
-        self._trace_panel.set_search_visible(False)
-        self._btn_trace_search.configure(fg_color='#252538')
-        return 'break'
+        if self._trace_panel._search_visible and self._details_visible:
+            self._trace_panel.set_search_visible(False)
+        else:
+            self._open_trace_search()
 
     def _toggle_details(self) -> None:
         if self._details_visible:
@@ -624,7 +651,7 @@ class TraceView(BaseView):
         # Titre
         self._lbl_ts.configure(text=st.timestamp_str)
         self._lbl_frame.configure(text=f'{idx + 1} / {len(self._frames)}')
-        self._lbl_line.configure(text=f'L. {st.line_num:,}')
+        self._lbl_line.configure(text=self._source_line_label(st.line_num))
         t = int(st.timestamp)
         h, r = divmod(t, 3600); m, s = divmod(r, 60)
         self._lbl_time.configure(text=f'{h:02d}:{m:02d}:{s:02d}')
@@ -655,6 +682,15 @@ class TraceView(BaseView):
         if pos < 0:
             return 0
         return self._line_map[pos][1]
+
+    def _source_line_label(self, line: int) -> str:
+        if self._is_group():
+            location = self._frames.source_location(line)
+            return f"{location['name']} · L.{location['source_line']}"
+        return f'L. {line:,}'
+
+    def _is_group(self) -> bool:
+        return isinstance(self._frames, FrameStore) and bool(self._frames.source_metadata.get('sources'))
 
     def _on_trace_click(self, file_line: int) -> None:
         """Callback clic sur la trace → navigation vers le frame correspondant."""
@@ -978,6 +1014,12 @@ class TraceView(BaseView):
             return
         if self._idx >= len(self._frames) - 1:
             self._stop_playback(); return
+        if isinstance(self._frames, FrameStore) and (
+                self._frames.segment_index_for_frame(self._idx) !=
+                self._frames.segment_index_for_frame(self._idx + 1)):
+            self._go_to(self._idx + 1)
+            self._play_job = self.after(self._play_delay, self._schedule_next)
+            return
         steps = self._interp_step_count()
         delay = max(10, self._play_delay // (steps + 1))
         self._animate_to_frame(self._idx + 1, 1, steps, delay)

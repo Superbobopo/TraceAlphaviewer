@@ -11,3 +11,5 @@ node_modules/
 .next/
 TraceAlphaViewer/report_app/out/
 TraceAlphaViewer/.trace_work/
+TraceAlphaViewer/bin/
+native/folder_engine/target/

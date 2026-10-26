@@ -209,8 +209,9 @@ class C3Tests(unittest.TestCase):
                     document = pdfium.PdfDocument(pdf)
                     text = '\n'.join(document[i].get_textpage().get_text_range() for i in range(len(document)))
                     for expected in ('Capteur C2', 'Capteur C3', '10 bascule(s) C3', 'C3 seul actif',
-                                     'reprise T2 non attestée', 'Reprise observée', 'fin_contexte'):
+                                     'Synthèse terrain', 'Mesures et présentation'):
                         self.assertIn(expected, text)
+                    self.assertNotIn('fin_contexte', text)
                     document.close()
                 self.assertFalse(errors)
                 browser.close()

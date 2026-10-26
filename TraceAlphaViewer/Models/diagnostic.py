@@ -15,9 +15,20 @@ from Models.et_codes import et_description
 from Models.diagnostic_knowledge import knowledge
 from Models.identification_analysis import identification_cycles, unknown_reference
 from Models.state import MachineEvent, MachineState
-from Models.robot_drain import drain_metrics, drain_summary
+from Models.robot_drain import drain_metrics, drain_metric_text, TraceCalendar, date_drain_metrics, trace_period
 from Models.c2_analysis import analyze_c2, analyze_c3, signal_metric_text
-from Models.trace_calendar import trace_calendar
+from Models.c5_analysis import analyze_c5, c5_metric_text
+from Models.trace_observations import analyze_motor_communication, analyze_code_modes, observation_metric_text, observations
+from Models.trace_calendar import trace_calendar, TraceLines, clock_seconds
+from Models.diagnostic_summary import normalize_summary_incidents, motor_metrics
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticState:
+    """Projection immuable des seuls champs lus par les diagnostics de lignes."""
+    timestamp: float
+    timestamp_str: str
+    C6: int
 
 
 @dataclass
@@ -121,6 +132,9 @@ _T5_REMOVE2 = re.compile(r"-suppression de la boite ID:(\d+)", re.IGNORECASE)
 _T5_REMOVE3 = re.compile(r"Suppr\. la boite IdA:(\d+)", re.IGNORECASE)
 _T5_NO_SPACE = re.compile(r"pas assez de place", re.IGNORECASE)
 _T5_VIDAGE = re.compile(r"DEM-VIDAGE|demande de vidage complet|AvVideCompletDeT5", re.IGNORECASE)
+_T5_STALE_RELEVANT = re.compile(
+    r'Cr\S*ation de la boite|AjoutBtT5|MAJ|supp\.|suppression de la boite|Suppr\.|'
+    r'pas assez de place|DEM-VIDAGE|demande de vidage complet|AvVideCompletDeT5|ALPHA:T5-LIST-PACK', re.I)
 _T5_STALE_MIN_SECONDS = 120
 _T5_STALE_MIN_NO_SPACE = 5
 _DIMENSION_CONTEXT_PATTERNS = (
@@ -145,7 +159,7 @@ _T4_NORMAL_CYCLE_TITLES = (
 
 
 def _frame_line_states(frames: list[MachineState]) -> list[tuple[int, str, MachineState]]:
-    lines: list[tuple[int, str, MachineState]] = []
+    lines: list[tuple[int, str, MachineState]] = TraceLines()
     seen: set[int] = set()
     for frame in frames:
         for line_num, text, *_ in frame.raw_lines:
@@ -222,6 +236,10 @@ def _motor_error_rule_id(belt: str, code: str) -> str:
     return 'motor_error_generic'
 
 
+def t2_c4_error_severity(metrics: dict) -> str:
+    return 'error' if metrics.get('max_24h_count', 0) >= 10 else 'warning'
+
+
 def _build_motor_error_incidents(events: list[MachineEvent]) -> list[DiagnosticIncident]:
     grouped: dict[tuple[str, str], list[MachineEvent]] = {}
     for event in events:
@@ -245,7 +263,7 @@ def _build_motor_error_incidents(events: list[MachineEvent]) -> list[DiagnosticI
             f"et {group[-1].timestamp_str}."
         )
         rule = knowledge(_motor_error_rule_id(belt, code))
-        incidents.append(_event_group_incident(
+        incident = _event_group_incident(
             'error',
             title,
             belt,
@@ -256,7 +274,19 @@ def _build_motor_error_incidents(events: list[MachineEvent]) -> list[DiagnosticI
             symptom=str(rule.get('symptom', '')),
             checks=list(rule.get('checks', [])),
             confidence=str(rule.get('confidence', '')),
-        ))
+        )
+        if belt == 'T2' and code == '-88':
+            times = sorted(event.timestamp for event in group)
+            left = 0
+            maximum = 0
+            for right, timestamp in enumerate(times):
+                while timestamp - times[left] > 86400:
+                    left += 1
+                maximum = max(maximum, right - left + 1)
+            incident.metrics = {'max_24h_count': maximum}
+            incident.severity = t2_c4_error_severity(incident.metrics)
+            incident.summary += f" Maximum sur 24 h glissantes : {maximum} occurrence(s)."
+        incidents.append(incident)
     return incidents
 
 
@@ -278,7 +308,7 @@ def _build_t4_diff_incidents(events: list[MachineEvent]) -> list[DiagnosticIncid
     if not group:
         return []
 
-    return [_event_group_incident(
+    incident = _event_group_incident(
         'warning',
         f'T4 - Ecart firmware T4C/T4T > 10mm (max {max_diff}mm)',
         'T4',
@@ -296,7 +326,12 @@ def _build_t4_diff_incidents(events: list[MachineEvent]) -> list[DiagnosticIncid
             "Verifier le declenchement de C6 pendant la mesure.",
         ],
         confidence='possible',
-    )]
+    )
+    incident.metrics = {'t4_diff_metrics_version': 1, 'max_abs_diff_mm': max_diff}
+    incident.examples = [{'line': event.line_num, 'time_str': event.timestamp_str,
+                          'box': '', 'barcode': '',
+                          'detail': f'{event.title} · {event.detail}'} for event in group[:10]]
+    return [incident]
 
 
 def _build_missing_c6_incidents(events: list[MachineEvent]) -> list[DiagnosticIncident]:
@@ -358,14 +393,15 @@ def _missing_c6_incident(start: MachineEvent, end: MachineEvent) -> DiagnosticIn
 
 def _build_missing_t5_creation_incidents(events: list[MachineEvent]) -> list[DiagnosticIncident]:
     incidents: list[DiagnosticIncident] = []
-    creation_lines = [
+    creation_lines = sorted(
         event.line_num for event in events
         if event.kind == 'BOITE' and event.title.startswith('T4->T5')
-    ]
+    )
     for event in events:
         if event.kind != 'TRANSFERT' or not event.title.startswith('T4 vers T5'):
             continue
-        has_creation = any(0 <= line - event.line_num <= 20 for line in creation_lines)
+        position = bisect_left(creation_lines, event.line_num)
+        has_creation = position < len(creation_lines) and creation_lines[position] <= event.line_num + 20
         if has_creation:
             continue
         incidents.append(DiagnosticIncident(
@@ -394,6 +430,51 @@ def _build_missing_t5_creation_incidents(events: list[MachineEvent]) -> list[Dia
             event_lines=[event.line_num],
         ))
     return incidents
+
+
+class StateIncidentCollector:
+    """Suit les attentes et blocages pendant le parcours commun des frames."""
+
+    def __init__(self):
+        self._waits = {belt: [None, None, '', []] for belt in ('T4', 'T5')}
+        self._blocked = [None, None]
+        self._blocks = []
+
+    def consume(self, frame):
+        for belt, current, sensor in (('T4', frame.state_tT3_T4, frame.C6),
+                                      ('T5', frame.state_T5, frame.C9)):
+            item = self._waits[belt]
+            suspicious = current.startswith('WAIT-') and current != 'WAIT-COND' and sensor == 0
+            if not suspicious or (item[0] is not None and current != item[2]):
+                self._close_wait(belt)
+            if suspicious:
+                if item[0] is None:
+                    item[0], item[2] = frame, current
+                item[1] = frame
+        if (frame.state_T2 in ('WAIT-COND-TRSF', 'WAIT-FIN-TRSF')
+                and frame.C2 == 1 and frame.C3 == 1 and frame.C4 == 0):
+            self._blocked[0] = self._blocked[0] or frame
+            self._blocked[1] = frame
+        else:
+            self._close_block()
+
+    def _close_wait(self, belt):
+        first, last, name, incidents = self._waits[belt]
+        if first is not None and last.timestamp - first.timestamp >= 120.0:
+            incidents.append(_wait_incident(belt, name, first, last))
+        self._waits[belt][:3] = [None, None, '']
+
+    def _close_block(self):
+        first, last = self._blocked
+        if first is not None and last.timestamp - first.timestamp >= 8.0:
+            self._blocks.extend(_build_t2_blocked_before_ea_incidents((first, last)))
+        self._blocked[:] = [None, None]
+
+    def finish(self):
+        for belt in self._waits:
+            self._close_wait(belt)
+        self._close_block()
+        return self._waits['T4'][3] + self._waits['T5'][3] + self._blocks
 
 
 def _build_wait_incidents(frames: list[MachineState]) -> list[DiagnosticIncident]:
@@ -728,9 +809,16 @@ def _t4_repeated_init_incident(
     sequence: list[tuple[int, MachineState]],
     line_states: list[tuple[int, str, MachineState]],
     events: list[MachineEvent],
+    line_numbers=None,
+    event_numbers=None,
 ) -> DiagnosticIncident:
     first_line, first_state = sequence[0]
     last_line, last_state = sequence[-1]
+    if line_numbers is not None:
+        left, right = bisect_left(line_numbers, first_line), bisect_right(line_numbers, last_line)
+        line_states = line_states[left:right]
+    if event_numbers is not None:
+        events = events[bisect_left(event_numbers, first_line):bisect_right(event_numbers, last_line)]
     active_count, sample_count = _c6_stats_for_lines(line_states, first_line, last_line)
     c6_stuck_active = sample_count > 0 and active_count == sample_count
     rule_id = 't4_init_repeated_c6_active' if c6_stuck_active else 't4_init_repeated_index_missing'
@@ -780,6 +868,9 @@ def _build_t4_init_loop_incidents(
     events: list[MachineEvent],
 ) -> list[DiagnosticIncident]:
     incidents: list[DiagnosticIncident] = []
+    line_numbers = [row[0] for row in line_states]
+    events = sorted(events, key=lambda event: event.line_num)
+    event_numbers = [event.line_num for event in events]
     markers: list[tuple[int, str, MachineState | MachineEvent]] = []
     for line_num, text, state in line_states:
         if _TRACE_T4_INIT_REQUEST.search(text):
@@ -792,21 +883,24 @@ def _build_t4_init_loop_incidents(
     for line_num, marker, payload in sorted(markers, key=lambda item: (item[0], 0 if item[1] == 'reset' else 1)):
         if marker == 'reset':
             if len(sequence) >= _T4_INIT_MIN_REPEAT:
-                incidents.append(_t4_repeated_init_incident(sequence, line_states, events))
+                incidents.append(_t4_repeated_init_incident(sequence, line_states, events, line_numbers, event_numbers))
             sequence = []
             continue
-        if isinstance(payload, MachineState):
+        if isinstance(payload, (MachineState, DiagnosticState)):
             sequence.append((line_num, payload))
 
     if len(sequence) >= _T4_INIT_MIN_REPEAT:
-        incidents.append(_t4_repeated_init_incident(sequence, line_states, events))
+        incidents.append(_t4_repeated_init_incident(sequence, line_states, events, line_numbers, event_numbers))
     return incidents
 
 
 def _build_text_pattern_incidents(
     line_states: list[tuple[int, str, MachineState]],
+    trace_origin=None, trace_bounds=None, trace_metadata_output=None,
+    robot_box_analysis=None,
 ) -> list[DiagnosticIncident]:
-    incidents: list[DiagnosticIncident] = _build_robot_drain_incidents(line_states)
+    incidents: list[DiagnosticIncident] = _build_robot_drain_incidents(
+        line_states, trace_origin, trace_bounds, trace_metadata_output, robot_box_analysis)
     patterns = [
         (
             'C4 - Boite coincee apres ejects',
@@ -816,16 +910,6 @@ def _build_text_pattern_incidents(
             'code_017_c4_eject',
             'warning',
             "La trace signale une boite coincee sur C4 apres plusieurs ejects.",
-            1,
-        ),
-        (
-            'Carte moteurs - Defaut communication',
-            'MOTOR',
-            '028-Avt',
-            _TRACE_028,
-            'code_028_motor_comm',
-            'error',
-            "La trace remonte un defaut de communication carte moteurs.",
             1,
         ),
         (
@@ -873,18 +957,36 @@ def _build_text_pattern_incidents(
     return incidents
 
 
-def _build_robot_drain_incidents(line_states):
+def _build_robot_drain_incidents(line_states, trace_origin=None, trace_bounds=None, trace_metadata_output=None,
+                                robot_box_analysis=None):
     matched = []
+    dated = []
     seen = set()
+    calendar = TraceCalendar(trace_origin) if trace_origin is not None else None
+    bounds = trace_bounds or ((line_states[0][2].timestamp, line_states[-1][2].timestamp) if line_states else (0, 0))
+    trace_start = calendar.at(bounds[0]) if calendar else None
     for line, text, state in line_states:
+        if calendar:
+            calendar.observe(state.timestamp)
         if line in seen or not _TRACE_T5_DEM_VIDAGE.search(text):
             continue
         seen.add(line)
-        date = re.search(r'(\d+\|\d{2}:\d{2}:\d{2}(?:\.\d+)?)', text)
-        matched.append((line, state.timestamp, date[1] if date else state.timestamp_str))
+        if calendar:
+            date = calendar.at(state.timestamp)
+            dated.append((line, date))
+            matched.append((line, (date - trace_origin).total_seconds(), date.strftime('%d/%m/%Y à %H:%M:%S')))
+        else:
+            matched.append((line, state.timestamp, state.timestamp_str))
+    if trace_metadata_output is not None:
+        trace_metadata_output.update(trace_period(trace_start, calendar.at(bounds[1])) if calendar else {'available': False})
     if not matched:
         return []
-    metrics = drain_metrics(matched, trace_calendar(line_states))
+    metrics = drain_metrics(matched)
+    if calendar:
+        date_drain_metrics(metrics, dated, trace_start, calendar.at(bounds[1]))
+    from Models.robot_drain import analyze_robot_boxes, attach_robot_box_metrics
+    attach_robot_box_metrics(metrics, robot_box_analysis if robot_box_analysis is not None else
+                             analyze_robot_boxes(line_states, trace_origin))
     rule = knowledge('t5_dem_vidage_complet')
     first, last = matched[0], matched[-1]
     return [DiagnosticIncident(
@@ -892,7 +994,7 @@ def _build_robot_drain_incidents(line_states):
         title='T5 - Vidage complet demande par le robot', belt='T5', code='DemVidageComplet',
         first_line=first[0], last_line=last[0], start_time=first[1], end_time=last[1],
         start_time_str=first[2], end_time_str=last[2], count=len(matched),
-        summary=drain_summary(metrics),
+        summary=drain_metric_text(metrics),
         symptom=str(rule['symptom']), probable_causes=list(rule['causes']),
         checks=list(rule['checks']), confidence=str(rule['confidence']),
         event_lines=[item[0] for item in matched], metrics=metrics)]
@@ -929,14 +1031,126 @@ def _build_signal_incidents(line_states, sensor):
         event_lines=[example['line'] for example in examples], examples=examples, metrics=metrics)]
 
 
+def _build_c5_incidents(line_states, trace_origin=None):
+    analysis = analyze_c5(line_states, trace_origin)
+    if not analysis:
+        return []
+    metrics, examples = analysis
+    first, last = metrics['episodes'][0], metrics['episodes'][-1]
+    rule = knowledge('c5_signal_anomaly')
+    return [DiagnosticIncident(
+        severity='error' if metrics['suspect_cycle_count'] else 'warning',
+        title='Capteur C5 — signal anormal', belt='T3', code='C5_SIGNAL_ANOMALY',
+        first_line=first['first_line'], last_line=last['last_line'],
+        start_time=first['start_time'], end_time=last['end_time'],
+        start_time_str=first['start_time_str'], end_time_str=last['end_time_str'],
+        count=metrics['episode_count'], summary=c5_metric_text(metrics),
+        symptom=rule['symptom'], probable_causes=list(rule['causes']), checks=list(rule['checks']),
+        confidence=rule['confidence'], event_lines=[row['line'] for row in examples],
+        examples=examples, metrics=metrics)]
+
+
+def _observation_incident(code, title, belt, severity, count, metrics, rule_id):
+    episodes=metrics['episodes']
+    if not episodes:return []
+    episodes.sort(key=lambda row:row['first_line'])
+    first,last=episodes[0],max(episodes,key=lambda row:row['last_line'])
+    rule=knowledge(rule_id)
+    examples=[]
+    for number,episode in enumerate(episodes,1):
+        examples.append({'line':episode['first_line'],'time_str':episode['start_time_str'],
+            'display_time_str':episode['start_time_str'],'box':episode.get('box',''),
+            'barcode':episode.get('barcode',''),'detail':episode['detail'],
+            'sources':dict(list(episode['sources'].items())[:10]),'episode':number})
+    return [DiagnosticIncident(severity,title,belt,code,first_line=first['first_line'],last_line=last['last_line'],
+        start_time=first['start_time'],end_time=last['end_time'],start_time_str=first['start_time_str'],
+        end_time_str=last['end_time_str'],count=count,summary=observation_metric_text(code,metrics),
+        symptom=rule['symptom'],probable_causes=list(rule['causes']),checks=list(rule['checks']),
+        confidence=rule['confidence'],event_lines=[row['line'] for row in examples],examples=examples,metrics=metrics)]
+
+
+def _build_communication_and_mode_incidents(line_states, origin=None):
+    episodes=[row for row in analyze_motor_communication(line_states,origin) if row['severity']=='error']
+    critical=sum(row['severity']=='error' for row in episodes)
+    metrics=motor_metrics(episodes)
+    incidents=_observation_incident('MOTOR_COMM','Communication moteurs perturbée','MOTOR',
+        'error' if critical else 'info',critical or len(episodes),metrics,'motor_comm')
+    periods=analyze_code_modes(line_states,origin)
+    metrics={'observation_metrics_version':1,'episode_count':len(periods),'episodes':periods,
+             'request_count':sum(row['request_count'] for row in periods)}
+    return incidents+_observation_incident('CAMERA_CODE_MODE','Lecture de codes-barres autorisée','IDENTIF',
+        'warning',len(periods),metrics,'camera_code_mode')
+
+
+def _build_dp_incidents(stats,line_states,origin=None):
+    candidates=[cycle for cycle in stats['cycles'] if cycle.dp_final or cycle.dp_recoveries]
+    signals=stats.get('dp_unattributed',[])
+    wanted={row['line'] for cycle in candidates for row in cycle.dp_final+cycle.dp_recoveries+cycle.dp_attempts+cycle.raw_codes}
+    wanted.update(cycle.first_line for cycle in candidates)
+    wanted.update(row['line'] for row in signals)
+    dated={obs['line']:obs for _,obs in observations(line_states,origin,wanted=wanted)}
+    episodes=[]
+    confirmed=recovered=0
+    for cycle in candidates:
+        final=bool(cycle.dp_final)
+        confirmed+=final
+        recovered+=not final
+        proofs=cycle.dp_final or cycle.dp_recoveries
+        first=dated.get(cycle.first_line) or dated[proofs[0]['line']]
+        last=dated[max(row['line'] for row in proofs)]
+        sources={'début du cycle':first['line']}
+        for row in cycle.dp_attempts[:1]:sources['demande de relecture DP']=row['line']
+        for index,row in enumerate(proofs[:3],1):sources[f'constat final {index}' if final else f'DP retrouvée {index}']=row['line']
+        barcode=proofs[-1]['barcode']
+        raw=next((row for row in cycle.raw_codes if row['code']==barcode),None)
+        if raw:sources['code brut limité au CIP']=raw['line']
+        detail=('Péremption absente confirmée après identification. ' if final else 'Péremption retrouvée par relecture, sans rejet final observé. ')
+        if raw:detail+='Code brut limité au CIP observé ; présence physique du DataMatrix à vérifier. '
+        detail+='Les valeurs génériques/BdD ne constituent pas une confirmation caméra.'
+        episodes.append(dict(first_line=first['line'],last_line=last['line'],start_time=first['time'],end_time=last['time'],
+            start_time_str=first['time_str'],end_time_str=last['time_str'],duration_seconds=max(0,last['time']-first['time']),
+            confirmed=final,barcode=barcode,box=f'IdB:{cycle.id_b or "?"} · IdA:{cycle.id_alpha or "?"}',
+            sources=sources,detail=detail))
+    for row in signals:
+        obs=dated[row['line']]
+        episodes.append(dict(first_line=obs['line'],last_line=obs['line'],start_time=obs['time'],end_time=obs['time'],
+            start_time_str=obs['time_str'],end_time_str=obs['time_str'],duration_seconds=0,
+            barcode=row['barcode'],sources={'signalement non attribuable':obs['line']},
+            detail='Signalement DP sans attribution fiable à un cycle ; non compté comme boîte supplémentaire.'))
+    metrics={'observation_metrics_version':1,'confirmed_count':confirmed,'recovered_count':recovered,
+        'unattributed_signal_count':len(signals),'episode_count':len(episodes),'episodes':episodes}
+    return _observation_incident('DP_MISSING','Péremption absente après identification','REFERENCES',
+        'warning' if confirmed else 'info',confirmed or recovered,metrics,'dp_missing')
+
+
+def alpha_reset_severity(count: int, metrics: dict) -> str:
+    if not count:
+        return 'info'
+    return 'error' if metrics.get('max_daily_count', 0) >= 3 else 'warning'
+
+
 def _build_alpha_card_reset_incident(
     line_states: list[tuple[int, str, MachineState]],
 ) -> list[DiagnosticIncident]:
     readings: list[tuple[int, int, MachineState]] = []
+    reading_days: dict[int, int] = {}
+    elapsed = 0.0
+    previous = None
     for line_num, text, state in line_states:
+        seconds = clock_seconds(state.timestamp_str)
+        if seconds is not None:
+            if previous is None:
+                elapsed = seconds
+            else:
+                delta = state.timestamp - previous[0]
+                # Le compteur firmware revient a 1 au changement de mois.
+                elapsed += delta if delta > -86400 else (seconds - previous[1]) % 86400
+            previous = (state.timestamp, seconds)
         match = _ALPHA_RESET_UPTIME.search(text)
         if match:
             readings.append((line_num, int(match.group(1)), state))
+            if seconds is not None:
+                reading_days[line_num] = int(elapsed // 86400)
     if not readings:
         return []
 
@@ -989,13 +1203,19 @@ def _build_alpha_card_reset_incident(
         )
     first_reset = resets[0][1]
     last_reset = resets[-1][1]
+    daily_counts: dict[int, int] = {}
+    for _, current, _ in resets:
+        day = reading_days.get(current[0])
+        if day is not None:
+            daily_counts[day] = daily_counts.get(day, 0) + 1
+    metrics = {'trace_duration': trace_duration, 'max_daily_count': max(daily_counts.values(), default=0)}
     summary = (
         f"{len(resets)} reset(s) carte Alpha detecte(s) sur {trace_duration} de trace. "
         + " ; ".join(evidence[:4])
         + "."
     )
     return [DiagnosticIncident(
-        severity='error',
+        severity=alpha_reset_severity(len(resets), metrics),
         title='Carte Alpha - Reset inattendu detecte',
         belt='ALPHA',
         code='ALPHA_CARD_RESET',
@@ -1012,7 +1232,7 @@ def _build_alpha_card_reset_incident(
         checks=list(rule.get('checks', [])),
         confidence=str(rule.get('confidence', 'forte')),
         event_lines=list(dict.fromkeys(event_lines)),
-        metrics={'trace_duration': trace_duration},
+        metrics=metrics,
     )]
 
 
@@ -1216,6 +1436,7 @@ def _build_stale_unmeasured_t5_incidents(
     line_states: list[tuple[int, str, MachineState]],
 ) -> list[DiagnosticIncident]:
     boxes: dict[int, dict[str, object]] = {}
+    previous_cycles = []
     no_space_lines: list[tuple[int, float, str]] = []
     recent_vidage_line = 0
 
@@ -1252,6 +1473,8 @@ def _build_stale_unmeasured_t5_incidents(
         return info
 
     for line_num, text, state in line_states:
+        if not _T5_STALE_RELEVANT.search(text):
+            continue
         if _T5_NO_SPACE.search(text):
             no_space_lines.append((line_num, state.timestamp, state.timestamp_str))
         if _T5_VIDAGE.search(text):
@@ -1260,6 +1483,8 @@ def _build_stale_unmeasured_t5_incidents(
         mo = _T5_BOX_CREATE.search(text)
         if mo:
             id_a = int(mo.group(7))
+            if id_a in boxes and (boxes[id_a]['created_line'] or boxes[id_a]['removed_line']):
+                previous_cycles.append((id_a, boxes.pop(id_a)))
             info = ensure_box(id_a, line_num, state)
             info['created_line'] = line_num
             info['barcode'] = mo.group(1)
@@ -1305,7 +1530,8 @@ def _build_stale_unmeasured_t5_incidents(
             info['removed_by_vidage'] = recent_vidage_line and line_num - recent_vidage_line <= 20
 
     incidents: list[DiagnosticIncident] = []
-    for id_a, info in sorted(boxes.items()):
+    all_cycles = previous_cycles + list(boxes.items())
+    for id_a, info in sorted(all_cycles, key=lambda row: row[1]['first_line']):
         if info.get('measured_line'):
             continue
         if not info.get('width_zero_seen'):
@@ -1323,8 +1549,8 @@ def _build_stale_unmeasured_t5_incidents(
             if first_line <= item[0] <= last_line
         ]
         following = [
-            other for other_id, other in boxes.items()
-            if other_id != id_a
+            other for other_id, other in all_cycles
+            if other is not info
             and int(other['first_line']) > first_line
             and int(other['first_line']) <= last_line
             and not other.get('measured_line')
@@ -1391,6 +1617,8 @@ def _build_stale_unmeasured_t5_incidents(
             ],
             confidence='forte',
             event_lines=useful_lines,
+            metrics={'priority_impact_version': 1, 'blocked_cycle': {
+                'id_alpha': id_a, 'first_line': first_line, 'start_time': first_time, 'end_time': last_time}},
         ))
 
     return incidents
@@ -1467,7 +1695,8 @@ def _camera_unknown_bucket(readers: set[str] | frozenset[str]) -> str:
 def _camera_stats(
     line_states: list[tuple[int, str, MachineState]],
 ) -> dict[str, object]:
-    cycles = identification_cycles(line_states)
+    dp_output={}
+    cycles = identification_cycles(line_states,dp_output=dp_output)
     all_hist_boxes = {cycle.first_line for cycle in cycles}
     reader_boxes = {'CB1': set(), 'CB2': set()}
     reader_zero_boxes = {'CB1': set(), 'CB2': set()}
@@ -1476,6 +1705,8 @@ def _camera_stats(
     hist_samples: list[tuple[int, float, str]] = []
 
     for line_num, text, state in line_states:
+        if 'cb' not in text.lower():
+            continue
         match = _CAMERA_HIST.search(text)
         if match:
             hist_samples.append((line_num, state.timestamp, state.timestamp_str))
@@ -1495,7 +1726,7 @@ def _camera_stats(
             reader_boxes[reader].add(cycle.first_line)
             if not any(codes):
                 reader_zero_boxes[reader].add(cycle.first_line)
-        if cycle.creation and not cycle.refusals:
+        if cycle.creation and not cycle.refusals and not cycle.dp_final:
             line, ref, timestamp, time_str, name = cycle.creation
             if unknown_reference(ref) and 'unknow' in name.lower():
                 created_unknown.append((line, ref, timestamp, time_str, frozenset(cycle.unknown_readers)))
@@ -1509,6 +1740,7 @@ def _camera_stats(
         'created_unknown': created_unknown,
         'hist_samples': hist_samples,
         'cycles': cycles,
+        'dp_unattributed': dp_output.get('unattributed',[]),
     }
 
 
@@ -1794,28 +2026,56 @@ def build_diagnostics(
     events: list[MachineEvent],
     measurement_analysis=None,
     camera_report_output=None,
+    trace_origin=None,
+    trace_metadata_output=None,
+    line_states=None,
+    camera_stats_output=None,
+    state_incidents=None,
+    robot_box_analysis=None,
 ) -> list[DiagnosticIncident]:
     incidents: list[DiagnosticIncident] = []
-    line_states = _frame_line_states(frames)
+    if line_states is None:
+        line_states = _frame_line_states(frames)
     incidents.extend(_build_motor_error_incidents(events))
-    incidents.extend(_build_t4_diff_incidents(events))
+    t4_incidents = _build_t4_diff_incidents(events)
+    if t4_incidents:
+        wanted = {line for incident in t4_incidents for line in
+                  [incident.first_line, incident.last_line, *[sample['line'] for sample in incident.examples]]}
+        dated = {row['line']: row['time_str'] for _, row in observations(line_states, trace_origin,wanted=wanted)
+                 if row['line'] in wanted}
+        for incident in t4_incidents:
+            incident.start_time_str = dated.get(incident.first_line, incident.start_time_str)
+            incident.end_time_str = dated.get(incident.last_line, incident.end_time_str)
+            for sample in incident.examples:
+                sample['time_str'] = dated.get(sample['line'], sample['time_str'])
+    incidents.extend(t4_incidents)
     incidents.extend(_build_missing_c6_incidents(events))
     incidents.extend(_build_missing_t5_creation_incidents(events))
-    incidents.extend(_build_wait_incidents(frames))
-    incidents.extend(_build_t2_blocked_before_ea_incidents(frames))
+    if state_incidents is None:
+        incidents.extend(_build_wait_incidents(frames))
+        incidents.extend(_build_t2_blocked_before_ea_incidents(frames))
+    else:
+        incidents.extend(state_incidents)
     for sensor in ('C2', 'C3'):
         incidents.extend(_build_signal_incidents(line_states, sensor))
+    incidents.extend(_build_c5_incidents(line_states, trace_origin))
+    incidents.extend(_build_communication_and_mode_incidents(line_states, trace_origin))
     incidents.extend(_build_cubestop_c4_blocked_incidents(line_states))
     incidents.extend(_build_t4_init_loop_incidents(line_states, events))
-    incidents.extend(_build_text_pattern_incidents(line_states))
+    incidents.extend(_build_text_pattern_incidents(line_states, trace_origin,
+                     (frames[0].timestamp, frames[-1].timestamp) if frames else None, trace_metadata_output,
+                     robot_box_analysis))
     incidents.extend(_build_alpha_card_reset_incident(line_states))
     incidents.extend(_build_stale_unmeasured_t5_incidents(line_states))
     incidents.extend(_build_c9_invalid_width_incidents(line_states))
     incidents.extend(_build_dimension_incidents(frames, line_states, measurement_analysis))
     camera_stats = _camera_stats(line_states)
+    incidents.extend(_build_dp_incidents(camera_stats,line_states,trace_origin))
     if camera_report_output is not None:
         camera_stats['trace'] = trace_calendar(line_states)
         camera_report_output.update(camera_report_stats(frames, stats=camera_stats))
+    if camera_stats_output is not None:
+        camera_stats_output.update(camera_stats)
     incidents.extend(_build_reference_absent_incident(camera_stats))
     incidents.extend(_build_reference_rejection_incident(camera_stats, 'non_alphatisable'))
     incidents.extend(_build_unknown_camera_incident(camera_stats))
@@ -1823,7 +2083,7 @@ def build_diagnostics(
 
     severity_order = {'error': 0, 'warning': 1, 'info': 2}
     return sorted(
-        incidents,
+        normalize_summary_incidents(incidents),
         key=lambda incident: (
             severity_order.get(incident.severity, 9),
             incident.first_line,

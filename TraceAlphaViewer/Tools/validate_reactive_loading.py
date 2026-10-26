@@ -20,6 +20,8 @@ sys.path.insert(0, str(ROOT / 'TraceAlphaViewer'))
 import customtkinter as ctk
 from Main import TraceAlphaViewer
 from Models.diagnostic import build_diagnostics
+from Models.folder_catalog import read_source_identity
+from Models.robot_drain import read_trace_origin
 from Models.diagnostic_report import build_report_payload
 from Models.event_cycles import build_business_events
 from Models.folder_report import _collect_events
@@ -30,6 +32,7 @@ from Models.state import BoxInfo, MachineEvent, MachineState
 from Parser.trace_parser import parse_file
 from Views.BaseView import BaseView
 from Views.folderTraceView import FolderTraceView
+from Views.alphaFolderView import AlphaFolderView
 from Views.traceView import TraceView
 from Widgets.event_panel import EventPanel
 
@@ -203,7 +206,7 @@ class WorkerTests(unittest.TestCase):
             self.skipTest('Trace Domineuc absente')
         expected = parse_file(str(path), min_dt=0.0)
         events = _collect_events(expected)
-        diagnostics = build_diagnostics(expected, events)
+        diagnostics = build_diagnostics(expected, events, trace_origin=read_trace_origin(path))
         references = build_reference_records(expected, events)
         session = LoadingSession()
         try:
@@ -227,7 +230,11 @@ class WorkerTests(unittest.TestCase):
             report_path = next(value for kind, value in messages if kind == 'result')
             self.assertTrue(Path(report_path).is_file())
             actual = json.loads(next(output.glob('report_data_*.json')).read_text(encoding='utf-8'))
-            wanted = build_report_payload(diagnostics, frames=expected)
+            wanted = build_report_payload(diagnostics, frames=expected, trace_period=store.trace_period)
+            identity = read_source_identity(path)
+            self.assertEqual(store.source_metadata.get('identity'), identity)
+            if identity:
+                wanted['source']['identity'] = identity
             actual.pop('generated_at')
             wanted.pop('generated_at')
             self.assertEqual(actual, wanted)
@@ -273,26 +280,34 @@ class UiTests(unittest.TestCase):
     def fixture(self, session):
         path = session.directory / 'test.old'
         path.write_text('\n'.join(
-            f'24|08:00:{i:02d} ALPHA:T5-LIST-PACK IdA:{i} X:942 CIP:3400931234567'
+            f'24|08:00:{i:02d}.0 ALPHA:T5-LIST-PACK IdA:{i} X:942 CIP:3400931234567'
             for i in range(20)), encoding='latin-1')
         return path
 
-    def test_real_home_folder_popup_and_cleanup(self):
+    def test_real_home_folder_viewer_and_cleanup(self):
         session = LoadingSession()
         path = self.fixture(session)
         try:
             home = self.app.main_view
             home._load_folder(str(path.parent))
             owner = home._load_session
-            self.pump(lambda: isinstance(self.app.main_view, FolderTraceView))
+            self.pump(lambda: isinstance(self.app.main_view, AlphaFolderView))
             view = self.app.main_view
-            self.assertFalse(view._event_panel.loading)
-            view._open_selected_trace()
-            borrowed = view._viewer_view
-            self.assertIsNotNone(borrowed)
-            self.assertIs(borrowed._frames, view._selected_entry.frames)
-            view._close_viewer_window()
+            self.assertFalse(view._cache)
+            self.assertIsNone(view._task)
+            view._selected = 0
+            view._open_selected()
+            self.pump(lambda: isinstance(self.app.main_view, TraceView))
+            borrowed = self.app.main_view
+            self.assertIs(borrowed._frames, view._cache[0]['frames'])
+            self.assertFalse(borrowed._owns_load_session)
+            borrowed._close()
+            self.assertIs(self.app.main_view, view)
             self.assertFalse(owner.closed.is_set())
+            with patch.object(owner, 'start', side_effect=AssertionError('Une selection deja analysee relance le worker')):
+                view._open_selected()
+                self.pump(lambda: isinstance(self.app.main_view, TraceView))
+                self.app.main_view._close()
             view._close()
             close_session(owner)
         finally:

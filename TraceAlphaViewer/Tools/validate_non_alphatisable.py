@@ -188,8 +188,9 @@ class NonAlphatisableTests(unittest.TestCase):
                     download.value.save_as(pdf)
                     document = pdfium.PdfDocument(pdf)
                     content = ' '.join(' '.join(p.get_textpage().get_text_range() for p in document).split())
-                    for text in ('Références non alphatisables', CIP, 'PRODUIT FICTIF', '(user)', 'refus_2', 'IdA:102'):
+                    for text in ('Références non alphatisables', 'Synthèse terrain', 'Lecture et exploitation'):
                         self.assertIn(text, content)
+                    self.assertNotIn('refus_2', content)
                     document.close()
                 self.assertFalse(errors, errors)
                 browser.close()

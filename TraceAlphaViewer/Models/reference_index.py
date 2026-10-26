@@ -182,15 +182,29 @@ def _mark_robot_take(
     record.event_count += 1
 
 
-def build_reference_records(
-    frames: list[MachineState],
-    events: list[MachineEvent],
-) -> list[ReferenceRecord]:
-    records: dict[str, ReferenceRecord] = {}
-    alias_to_key: dict[str, set[str]] = {}
-    active_keys: set[str] = set()
+class ReferenceCollector:
+    """Indexe les cycles pendant le parcours commun du segment."""
 
-    for frame in frames:
+    def __init__(self):
+        self.records, self.alias_to_key, self.active_keys = {}, {}, set()
+        self._previous_values = None
+        self._repeat_records = None
+
+    def consume(self, frame):
+        boxes = [(stage, box) for stage, box in (
+            ('EA', frame.box_in_EA), ('T3', frame.box_on_T3), ('T4', frame.box_on_T4),
+            *(('T5', box) for box in frame.boxes_on_T5))
+            if box is not None and (box.id_alpha or box.id_b or box.barcode or box.source_ref)]
+        values = tuple((stage, box.id_alpha, box.id_b, box.barcode, box.source_ref, box.name)
+                       for stage, box in boxes)
+        if self._repeat_records is not None and values == self._previous_values:
+            for record in self._repeat_records:
+                if frame.line_num and (not record.first_line or frame.line_num < record.first_line):
+                    record.first_line, record.first_time_str = frame.line_num, frame.timestamp_str
+                if frame.line_num and frame.line_num >= record.last_line:
+                    record.last_line, record.last_time_str = frame.line_num, frame.timestamp_str
+            return
+        records, alias_to_key, active_keys = self.records, self.alias_to_key, self.active_keys
         current_keys: set[str] = set()
         for stage, box in (
             ('EA', frame.box_in_EA),
@@ -211,18 +225,35 @@ def build_reference_records(
             current_keys.add(record.key)
         active_keys = current_keys
 
-    for event in events:
-        if event.kind == 'BOITE' and (
-            event.title.startswith('Robot prend')
-            or event.title.startswith('Robot supprime')
-            or event.title.startswith('Boite retiree de T5')
-            or event.title.startswith('Suppression boite IdA')
-        ):
-            _mark_robot_take(records, alias_to_key, event)
+        self.active_keys = active_keys
+        self._previous_values = values
+        primary = [f'A:{box.id_alpha}' if box.id_alpha else f'B:{box.id_b}' if box.id_b else ''
+                   for _, box in boxes]
+        stable = all(primary) and len(set(primary)) == len(primary) and all(
+            len(alias_to_key.get(key, ())) == 1 for key in primary)
+        self._repeat_records = [records[key] for key in active_keys] if stable else None
 
-    unique_records = list({id(record): record for record in records.values()}.values())
-    unique_records = [
-        record for record in unique_records
-        if record.key.split('#', 1)[0] != 'UNKNOWN' and (record.first_line or record.last_line)
-    ]
-    return sorted(unique_records, key=lambda r: (r.first_line or r.last_line, r.main_ref()))
+    def finish(self, events):
+        records, alias_to_key = self.records, self.alias_to_key
+        for event in events:
+            if event.kind == 'BOITE' and (
+                event.title.startswith('Robot prend')
+                or event.title.startswith('Robot supprime')
+                or event.title.startswith('Boite retiree de T5')
+                or event.title.startswith('Suppression boite IdA')
+            ):
+                _mark_robot_take(records, alias_to_key, event)
+
+        unique_records = list({id(record): record for record in records.values()}.values())
+        unique_records = [
+            record for record in unique_records
+            if record.key.split('#', 1)[0] != 'UNKNOWN' and (record.first_line or record.last_line)
+        ]
+        return sorted(unique_records, key=lambda r: (r.first_line or r.last_line, r.main_ref()))
+
+
+def build_reference_records(frames: list[MachineState], events: list[MachineEvent]) -> list[ReferenceRecord]:
+    collector = ReferenceCollector()
+    for frame in frames:
+        collector.consume(frame)
+    return collector.finish(events)

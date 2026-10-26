@@ -65,6 +65,7 @@ class BoxInfo:
     t5_footprint_mm: int = 0  # largeur occupee sur T5/goulotte (mm)
     id_b: int = 0        # identifiant de cheminement Alpha (Nboite / idB)
     id_alpha: int = 0    # identifiant BdD alpha
+    t5_transfer_id: int = 0  # ligne du transfert provisoire, avant attribution IdA
     x_pos: int = 0       # position stable Alpha sur T5 (mm, source trace/BdD)
     t5_visual_x_pos: int = 0  # base de rendu continue, separee de la verite Alpha
     t5_entry_aligned: bool = False  # arrivee T4->T5 encore alignee sous T4
@@ -121,6 +122,7 @@ class BoxInfo:
         box.t5_footprint_mm = self.t5_footprint_mm
         box.id_b = self.id_b
         box.id_alpha = self.id_alpha
+        box.t5_transfer_id = self.t5_transfer_id
         box.x_pos = self.x_pos
         box.t5_visual_x_pos = self.t5_visual_x_pos
         box.t5_entry_aligned = self.t5_entry_aligned

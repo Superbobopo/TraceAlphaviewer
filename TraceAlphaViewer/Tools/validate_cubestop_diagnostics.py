@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import sys
+import re
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -34,20 +36,65 @@ def _diagnostics_for(path: Path):
     return frames, build_diagnostics(frames, events)
 
 
-def main() -> None:
-    nominal_path = ROOT / "TraceAlphaViewer" / "TracAlpha1.txt"
-    if nominal_path.exists():
-        frames, incidents = _diagnostics_for(nominal_path)
-        positions = {frame.cubestop_position for frame in frames if frame.cubestop_present}
-        _check("BAS" in positions, "CubeStop BAS absent sur trace nominale")
-        _check("HAUT" in positions, "CubeStop HAUT absent sur trace nominale")
-        _check(
-            not any(incident.code == "CUBESTOP_C4_BLOCKED" for incident in incidents),
-            "faux positif CUBESTOP_C4_BLOCKED sur trace nominale",
-        )
+def _validate_fixtures() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        path = Path(temporary) / 'fictive.old'
+        prefix = [
+            'CubeStop:Y',
+            'mvt CubeStop vers le BAS',
+            'mvt CubeStop vers le HAUT',
+            'tEA-T3: DEM-TRSF C4:1 C5:0 fgBfinT3:0 eT3:49 pT3:-210mm',
+            'tEA-T3: WAIT-FIN-TRSF C4:1 C5:0 fgBfinT3:0 eT3:44 pT3:-300mm',
+        ]
 
-    blocked_path = ROOT / "TraceAlphaViewer" / "TracAlpha1_017.old"
-    if blocked_path.exists():
+        def run(rows):
+            path.write_text(''.join(f'  01|09:00:{i:02d}.0 {text}\n'
+                                    for i, text in enumerate(rows)), encoding='latin-1')
+            return _diagnostics_for(path)
+
+        frames, incidents = run(prefix + [
+            'tEA-T3: WAIT-FIN-TRSF C4:0 C5:1 fgBfinT3:0 eT3:44 pT3:-468mm',
+            'le transfert (EA->T3) est termine',
+        ])
+        positions = {frame.cubestop_position for frame in frames if frame.cubestop_present}
+        _check({'BAS', 'HAUT'} <= positions, 'Positions CubeStop fictives absentes')
+        _check(not any(i.code == 'CUBESTOP_C4_BLOCKED' for i in incidents),
+               'Faux positif sur transfert fictif reussi')
+
+        _, incidents = run(prefix + [
+            'tEA-T3: WAIT-FIN-TRSF C4:1 C5:0 fgBfinT3:0 eT3:44 pT3:-468mm',
+            'tEA-T3: ERREUR transfert EA->T3 -43',
+            "tEA-T3: boite coincée sur C4 après x éjections d'EA",
+        ])
+        blocked = [i for i in incidents if i.code == 'CUBESTOP_C4_BLOCKED']
+        _check(len(blocked) == 1 and blocked[0].severity == 'error',
+               'Blocage fictif absent ou non critique')
+        _check(8 in blocked[0].event_lines, 'Preuve explicite fictive absente')
+
+        frames, incidents = run([
+            'CubeStop:N',
+            'tEA-T3: DEM-TRSF C4:1 C5:0 fgBfinT3:0 eT3:49 pT3:-210mm',
+            'tEA-T3: WAIT-FIN-TRSF C4:1 C5:0 fgBfinT3:0 eT3:44 pT3:-468mm',
+            'tEA-T3: ERREUR transfert EA->T3 -43',
+            "tEA-T3: boite coincée sur C4 après x éjections d'EA",
+        ])
+        _check(not any(f.cubestop_present for f in frames), 'CubeStop fictif affiche malgre N')
+        _check(not any(i.code == 'CUBESTOP_C4_BLOCKED' for i in incidents),
+               'Diagnostic CubeStop fictif present malgre N')
+
+
+def main() -> None:
+    _validate_fixtures()
+
+    for name in ('TracAlpha1.txt', 'TracAlpha1_017.old'):
+        blocked_path = ROOT / 'TraceAlphaViewer' / name
+        if not blocked_path.exists():
+            print(f'Controle terrain ignore : {name} absent')
+            continue
+        with blocked_path.open(encoding='latin-1') as source:
+            proof_lines = {n for n, text in enumerate(source, 1)
+                           if re.search(r'boite\s+coinc\S*\s+sur\s+C4\s+apr\S*s.*ject', text, re.I)}
+        _check(proof_lines, f'Preuve explicite absente de {name} : revoir le controle terrain')
         _, incidents = _diagnostics_for(blocked_path)
         cubestop = [
             incident for incident in incidents
@@ -65,7 +112,7 @@ def main() -> None:
         ])
         for token in ("CubeStop", "C4", "C5", "EA->T3"):
             _check(token in joined, f"diagnostic CubeStop incomplet: {token}")
-        _check(any(line >= 235970 for line in incident.event_lines), "preuve ligne blocage C4 absente")
+        _check(bool(proof_lines.intersection(incident.event_lines)), "preuve ligne blocage C4 absente")
 
     no_cubestop_path = ROOT / "TraceAlphaViewer" / "TracAlpha1_005.old"
     if no_cubestop_path.exists():
@@ -78,6 +125,8 @@ def main() -> None:
             not any(incident.code == "CUBESTOP_C4_BLOCKED" for incident in incidents),
             "diagnostic CubeStop present sur trace CubeStop:N",
         )
+    else:
+        print('Controle terrain ignore : TracAlpha1_005.old absent')
 
     print("Diagnostic CubeStop: validation OK")
 

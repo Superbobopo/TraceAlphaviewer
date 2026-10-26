@@ -12,10 +12,13 @@ from queue import Empty
 import time
 
 from Models.event_cycles import BusinessEvent, build_business_events
+from Models.et_codes import et_description
 from Models.state import MachineEvent
 from Models.frame_store import FrameStore
 from Models.loading_client import LoadingSession
 from Widgets.text_renderer import TextRenderer
+from Widgets.pagination import Pagination
+from Models.list_navigation import LineIndex, PAGE_SIZE
 
 
 _SEVERITY_TAGS = {
@@ -25,6 +28,10 @@ _SEVERITY_TAGS = {
 }
 _BELT_FILTERS = ('Tous', 'T0', 'T1', 'T2', 'T3', 'T4', 'T5')
 _BELT_RE = re.compile(r'\bT[0-5]\b', re.IGNORECASE)
+_ERROR_CODE_RE = re.compile(
+    r'\b(?:(T[0-5])\s+(?:en erreur\s+)?eT|eT([0-5])?)\s*[:=]\s*(-?\d+)\b',
+    re.IGNORECASE,
+)
 _TOKEN_BELTS = {
     'C0': 'T1',
     'C1': 'T1',
@@ -45,6 +52,28 @@ _TOKEN_BELTS = {
     'BUTEE': 'T5',
     'POUBELLE': 'T5',
 }
+
+
+def _error_meanings(event: MachineEvent) -> str:
+    hint = _BELT_RE.match(event.title) or _BELT_RE.fullmatch(event.kind)
+    default_belt = hint[0].upper() if hint else ''
+    meanings = []
+    seen = set()
+    for text in (event.title, event.detail):
+        for match in _ERROR_CODE_RE.finditer(text):
+            belt = (match[1] or ('T' + match[2] if match[2] else default_belt)).upper()
+            code = int(match[3])
+            description = et_description(belt, code)
+            if not belt or (code >= -1 and not description.startswith('Err:')):
+                continue
+            if (belt, code) in seen:
+                continue
+            seen.add((belt, code))
+            if description and description.casefold() in event.title.casefold():
+                continue
+            label = description.removeprefix('Err:').strip() if description else f'Code eT:{code} non documente'
+            meanings.append(f'{belt} : {label}')
+    return ' ; '.join(meanings)
 
 
 def _event_belts(event: MachineEvent) -> set[str]:
@@ -77,6 +106,9 @@ class EventPanel(ctk.CTkFrame):
         empty_text: str = 'Aucun evenement detecte',
         show_belt_filters: bool = False,
         load_session=None,
+        show_error_descriptions: bool = False,
+        line_label=None,
+        navigation=None,
         **kwargs,
     ):
         kwargs.setdefault('fg_color', '#12121f')
@@ -89,6 +121,8 @@ class EventPanel(ctk.CTkFrame):
         self._panel_title = title
         self._empty_text = empty_text
         self._show_belt_filters = show_belt_filters
+        self._show_error_descriptions = show_error_descriptions
+        self._line_label = line_label or (lambda line: f'L.{line:<7}')
         self._active_belt_filter = 'Tous'
         self._filter_buttons: dict[str, ctk.CTkButton] = {}
         self._line_to_event: dict[int, MachineEvent | BusinessEvent] = {}
@@ -97,6 +131,9 @@ class EventPanel(ctk.CTkFrame):
         self._filter_task = None
         self._filter_job = None
         self._highlight_line = None
+        self._navigation = navigation
+        self._page = 0
+        self._page_navigation = None
         self._build()
         self._renderer = TextRenderer(self, self._text,
             on_row=lambda line, item: self._line_to_event.__setitem__(line, item),
@@ -132,6 +169,8 @@ class EventPanel(ctk.CTkFrame):
                 self._filter_buttons[belt] = btn
             self._refresh_filter_buttons()
 
+        self._pagination = Pagination(self, self._set_page)
+        self._pagination.pack(side='bottom', fill='x')
         vscroll = tk.Scrollbar(self, orient='vertical')
         vscroll.pack(side='right', fill='y')
 
@@ -162,10 +201,14 @@ class EventPanel(ctk.CTkFrame):
         self._text.bind('<Button-1>', self._on_click)
 
     def set_events(self, events: list[MachineEvent]) -> None:
+        if events is not self._events:
+            self._navigation = None
         self._events = events
+        self._page = 0
         self._render_events()
 
     def _set_belt_filter(self, belt: str) -> None:
+        self._page = 0
         self._active_belt_filter = belt if belt in _BELT_FILTERS else 'Tous'
         self._refresh_filter_buttons()
         self._render_events()
@@ -196,6 +239,7 @@ class EventPanel(ctk.CTkFrame):
                     self._own_session = self._own_session or LoadingSession()
                     self._load_session = self._own_session
                 self._filter_items = []
+                self._filter_navigation = None
                 self._filter_task = self._load_session.start(
                     'business', store=str(self._frames.directory), belt=self._active_belt_filter)
             except Exception as exc:
@@ -205,7 +249,7 @@ class EventPanel(ctk.CTkFrame):
             self._filter_job = self.after(10, self._poll_filter)
             return
         events = self._filtered_events()
-        self._display_events(events)
+        self._display_events(events, self._navigation if self._active_belt_filter == 'Tous' else None)
 
     def _cancel_filter(self):
         if self._filter_job is not None:
@@ -226,12 +270,14 @@ class EventPanel(ctk.CTkFrame):
                     self._filter_items.extend(payload)
                 elif kind == 'done':
                     self._filter_task = None
-                    self._display_events(self._filter_items)
+                    self._display_events(self._filter_items, self._filter_navigation)
                     return
                 elif kind == 'error':
                     self._cancel_filter()
                     self._title.configure(text=f'Erreur filtre : {payload}')
                     return
+                elif kind == 'navigation':
+                    self._filter_navigation = payload
         except Empty:
             pass
         self._filter_job = self.after(10, self._poll_filter)
@@ -240,8 +286,16 @@ class EventPanel(ctk.CTkFrame):
     def loading(self):
         return self._renderer.loading or self._filter_task is not None
 
-    def _display_events(self, events):
+    def _display_events(self, events, navigation=None):
         self._visible_events = events
+        self._page_navigation = navigation if navigation is not None else LineIndex(events)
+        self._set_page(self._page)
+
+    def _set_page(self, page, restore=False):
+        events = self._visible_events
+        self._page = self._pagination.update_page(len(events), page)
+        if not restore:
+            self._highlight_line = None
         self._line_to_event = {}
         if self._active_belt_filter == 'Tous':
             self._title.configure(text=f'{self._panel_title} ({len(events)})')
@@ -251,23 +305,28 @@ class EventPanel(ctk.CTkFrame):
         def rows():
             if not events:
                 yield f'{self._empty_text}\n', ('line',), None
-            for event in events:
+            for event in events[self._page * PAGE_SIZE:(self._page + 1) * PAGE_SIZE]:
                 severity = event.severity if event.severity in _SEVERITY_TAGS else 'info'
                 indent = '  ' * int(getattr(event, 'indent', 0))
                 if getattr(event, 'header', False):
                     text = (
                         f'\n{event.timestamp_str:<8} '
                         f'{event.kind:<9} '
-                        f'L.{event.line_num:<7} '
+                        f'{self._line_label(event.line_num)} '
                         f'{event.title}\n'
                     )
                     yield text, ('header', severity), event
                 else:
+                    title = f'{indent}{event.title}'
+                    if self._show_error_descriptions:
+                        meanings = _error_meanings(event)
+                        if meanings:
+                            title = f'{title:<42}  {meanings}'
                     text = (
                         f'{event.timestamp_str:<8} '
                         f'{event.kind:<9} '
-                        f'L.{event.line_num:<7} '
-                        f'{indent}{event.title}\n'
+                        f'{self._line_label(event.line_num)} '
+                        f'{title}\n'
                     )
                     yield text, (severity,), event
                     detail = getattr(event, 'detail', '')
@@ -288,6 +347,10 @@ class EventPanel(ctk.CTkFrame):
 
     def highlight_for_line(self, file_line: int) -> None:
         self._highlight_line = file_line
+        position = self._page_navigation.position_for_line(file_line) if self._page_navigation is not None else None
+        if position is not None and position // PAGE_SIZE != self._page:
+            self._set_page(position // PAGE_SIZE, restore=True)
+            return
         self._text.tag_remove('current', '1.0', 'end')
         for severity in _SEVERITY_TAGS:
             self._text.tag_remove(f'{severity}_current', '1.0', 'end')

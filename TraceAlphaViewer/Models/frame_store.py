@@ -16,8 +16,47 @@ BLOCK_SIZE = 500
 CACHE_BLOCKS = 2
 
 
+def write_frame_store_iter(frames, directory: Path, *, measurement_summary=None,
+                           trace_period=None, source_metadata=None) -> int:
+    """Ecrit un flux de frames avec un seul bloc en memoire."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    lines = array('Q')
+    offsets = array('Q')
+    batch = []
+    start_time = end_time = '--:--:--'
+    previous_line = -1
+    with (directory / 'frames.bin').open('wb') as output:
+        for frame in frames:
+            if frame.line_num < previous_line:
+                raise ValueError('Les frames doivent suivre les lignes sources')
+            previous_line = frame.line_num
+            if not lines:
+                start_time = frame.timestamp_str
+            end_time = frame.timestamp_str
+            lines.append(frame.line_num)
+            batch.append(frame)
+            if len(batch) == BLOCK_SIZE:
+                offsets.append(output.tell())
+                pickle.dump(batch, output, protocol=pickle.HIGHEST_PROTOCOL)
+                batch = []
+        if batch:
+            offsets.append(output.tell())
+            pickle.dump(batch, output, protocol=pickle.HIGHEST_PROTOCOL)
+    metadata = {'version': 1, 'block_size': BLOCK_SIZE, 'lines': lines, 'offsets': offsets,
+                'start_time': start_time, 'end_time': end_time,
+                'measurement_summary': measurement_summary or {}, 'trace_period': trace_period or {},
+                'source_metadata': source_metadata or {}}
+    temporary = directory / 'index.tmp'
+    with temporary.open('wb') as output:
+        pickle.dump(metadata, output, protocol=pickle.HIGHEST_PROTOCOL)
+    temporary.replace(directory / 'index.pkl')
+    return len(lines)
+
+
 def write_frame_store(frames: Sequence[MachineState], directory: Path,
-                      release: bool = False, measurement_summary=None) -> None:
+                      release: bool = False, measurement_summary=None, trace_period=None,
+                      source_metadata=None) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     lines = array('Q', (frame.line_num for frame in frames))
     start_time = frames[0].timestamp_str if frames else '--:--:--'
@@ -32,7 +71,8 @@ def write_frame_store(frames: Sequence[MachineState], directory: Path,
                 frames[start:start + len(batch)] = [None] * len(batch)
     metadata = {'version': 1, 'block_size': BLOCK_SIZE, 'lines': lines, 'offsets': offsets,
                 'start_time': start_time, 'end_time': end_time,
-                'measurement_summary': measurement_summary or {}}
+                'measurement_summary': measurement_summary or {}, 'trace_period': trace_period or {},
+                'source_metadata': source_metadata or {}}
     temporary = directory / 'index.tmp'
     with temporary.open('wb') as output:
         pickle.dump(metadata, output, protocol=pickle.HIGHEST_PROTOCOL)
@@ -57,6 +97,10 @@ class FrameStore(Sequence[MachineState]):
         self.start_time_str = metadata['start_time']
         self.end_time_str = metadata['end_time']
         self.measurement_summary = metadata.get('measurement_summary', {})
+        self.trace_period = metadata.get('trace_period', {})
+        self.source_metadata = metadata.get('source_metadata', {})
+        self._source_starts = tuple(item['first_line'] for item in self.source_metadata.get('sources', []))
+        self._segment_starts = tuple(item['first_frame'] for item in self.source_metadata.get('segments', []))
         self._offsets = metadata['offsets']
         if len(self._offsets) != (len(self) + BLOCK_SIZE - 1) // BLOCK_SIZE:
             raise OSError('Index de frames incomplet')
@@ -93,7 +137,30 @@ class FrameStore(Sequence[MachineState]):
         return self._cache[block][index % BLOCK_SIZE]
 
     def frame_index_for_line(self, line: int) -> int:
+        from Parser.trace_source import canonical_line
+        line = canonical_line(line, self.source_metadata.get('duplicate_ranges', []))
         return max(0, bisect_right(self.line_numbers, line) - 1)
+
+    def source_location(self, line: int) -> dict:
+        """Retrouve le fichier et la ligne originale d'une session de dossier."""
+        from Parser.trace_source import canonical_line
+        line = canonical_line(line, self.source_metadata.get('duplicate_ranges', []))
+        sources = self.source_metadata.get('sources', [])
+        if not sources:
+            return {'line': line, 'source_line': line, 'filepath': '', 'name': ''}
+        index = bisect_right(self._source_starts, line) - 1
+        if index < 0 or line > sources[index]['last_line']:
+            return {'line': line, 'source_line': line, 'filepath': '', 'name': ''}
+        source = sources[index]
+        return {'line': line, 'source_line': line - source['line_offset'],
+                'filepath': source['filepath'], 'name': source['name'],
+                'segment': source.get('segment', index)}
+
+    def segment_index_for_frame(self, index: int) -> int:
+        segments = self.source_metadata.get('segments', [])
+        if not segments:
+            return 0
+        return max(0, bisect_right(self._segment_starts, index) - 1)
 
     def read_events(self):
         with (self.directory / 'events.pkl').open('rb') as source:

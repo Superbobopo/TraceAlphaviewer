@@ -52,8 +52,8 @@
     "height": 270
   },
   "decalages": {
-    "width": 291,
-    "height": 406
+    "width": 1026,
+    "height": 1130
   },
   "compteur-unknown": {
     "width": 1026,
@@ -65,7 +65,7 @@
   },
   "orientations": {
     "width": 1080,
-    "height": 917
+    "height": 895
   },
   "references-absentes": {
     "width": 1080,
@@ -76,14 +76,34 @@
     "height": 1000
   },
   "vidage-robot": {
-    "width": 1091,
-    "height": 210
+    "width": 1144,
+    "height": 193
+  },
+  "priorite-robot": {
+    "width": 890,
+    "height": 215
   },
   "capteur-c2": {
     "width": 1139,
     "height": 212
   },
   "capteur-c3": {
+    "width": 1139,
+    "height": 212
+  },
+  "capteur-c5": {
+    "width": 1139,
+    "height": 212
+  },
+  "communication-moteurs": {
+    "width": 1139,
+    "height": 158
+  },
+  "peremption-absente": {
+    "width": 1139,
+    "height": 212
+  },
+  "mode-lecture": {
     "width": 1139,
     "height": 212
   }

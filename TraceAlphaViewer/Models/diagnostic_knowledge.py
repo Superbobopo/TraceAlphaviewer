@@ -2,6 +2,46 @@ from __future__ import annotations
 
 
 DIAGNOSTIC_KNOWLEDGE: dict[str, dict[str, object]] = {
+    'motor_comm': {
+        'symptom': 'L’Alpha a signalé un défaut de communication avec la carte qui commande les tapis.',
+        'causes': ['Liaison reseau ou serie, alimentation ou carte moteurs a verifier.',
+                   'Une reconnexion du socket ne prouve pas que toutes les commandes ont recu une reponse.'],
+        'checks': ['Verifier le cablage, les connexions et l’alimentation de la carte moteurs.',
+                   'Comparer defauts, reponses, reconnexions et initialisations T0 a T5 dans le meme episode.'],
+        'confidence': 'forte pour les messages observes ; cause a confirmer',
+    },
+    'dp_missing': {
+        'symptom': 'Un CIP est identifie, mais la boite termine explicitement sans date de peremption.',
+        'causes': ['Code-barres seul lu alors que le DataMatrix est attendu.',
+                   'DataMatrix absent, abime ou mal presente ; la trace seule ne prouve pas son absence physique.',
+                   'Lecture de codes-barres autorisee dans la configuration Alpha.'],
+        'checks': ['Verifier la presence et la presentation du DataMatrix sur les boites concernees.',
+                   'Controler le mode 1 DataMatrix seul sur CB1 et CB2.',
+                   'Distinguer les DP retrouvees par CB2 des rejets finaux MqDP.'],
+        'confidence': 'forte pour le constat final ; cause a confirmer',
+    },
+    'camera_code_mode': {
+        'symptom': 'Le mode 123 autorise DataMatrix et codes-barres, alors que seul le DataMatrix est attendu.',
+        'causes': ['Configuration de lecture CB1/CB2 autorisant plusieurs types de codes.'],
+        'checks': ['Verifier le parametrage de lecture CB1 et CB2 : mode 1 DataMatrix seul attendu.',
+                   'Comparer les periodes observees et les boites sans DP ; ne pas attribuer automatiquement chaque rejet au mode.'],
+        'confidence': 'forte ; correspondance des modes confirmee par l’utilisateur',
+    },
+    'c5_signal_anomaly': {
+        'symptom': "C5 alterne de façon répétée entre deux transferts EA→T3 confirmés. Des cycles non mesurés peuvent suivre.",
+        'causes': [
+            "Obstacle, propreté, alignement ou câblage de C5 à contrôler.",
+            "Détection intermittente d'une boîte réelle ou signal parasite possible.",
+            "Création virtuelle par le logiciel après une anomalie de pesée, si la trace l'indique explicitement.",
+        ],
+        'checks': [
+            "Contrôler un obstacle devant C5, sa propreté, son alignement et son câblage.",
+            "Suivre chaque IdB/IdA : transfert de longueur nulle, absence signalée sur C6 et suppression T5 avec C9=0.",
+            "Comparer les créations virtuelles aux écarts de poids et vérifier la balance.",
+            "Vérifier physiquement la présence des boîtes ; une boîte fantôme reste une hypothèse probable.",
+        ],
+        'confidence': 'probable',
+    },
     'alpha_card_reset': {
         'symptom': "Le compteur 'Temps depuis RESET carte ALPHA' chute et repart pres de zero pendant la trace.",
         'causes': [
@@ -188,8 +228,9 @@ DIAGNOSTIC_KNOWLEDGE: dict[str, dict[str, object]] = {
         'confidence': 'constat confirmé ; cause à vérifier',
     },
     't5_dem_vidage_complet': {
-        'symptom': "Le robot demande de vider tout T5 apres un incident de prise, pas seulement la boite concernee.",
+        'symptom': "Le robot demande de vider tout T5, pas seulement une boite. Un incident de prise peut expliquer cette demande ; la cause reste a confirmer.",
         'causes': [
+            "Prise robot ayant touche ou deplace une boite sur T5 ; hypothese a confirmer dans les preuves et sur la machine.",
             "Deplacement reel T5 different de la consigne : entrainement, patinage, moteur ou rouleau.",
             "Boite retournee ou destabilisee pendant le tassage sur T5.",
             "Alpha deplace apres intervention, sans retour exact a sa position par rapport au robot.",

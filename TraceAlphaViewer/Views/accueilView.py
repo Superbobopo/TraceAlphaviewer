@@ -209,7 +209,7 @@ class AccueilView(BaseView):
         self._start_loading('file', path)
 
     def _load_folder(self, path: str) -> None:
-        self._start_loading('folder', path)
+        self._start_loading('folder_catalog', path)
 
     def _start_loading(self, mode: str, path: str) -> None:
         if getattr(self, '_load_busy', False):
@@ -228,6 +228,7 @@ class AccueilView(BaseView):
         self._load_path = path
         self._loaded_entries = []
         self._load_data = None
+        self._folder_catalog = None
         self._prepared_view = None
         try:
             self._load_session = LoadingSession()
@@ -254,6 +255,8 @@ class AccueilView(BaseView):
                     self._load_data['frames'] = (
                         self._load_session.open_store(payload['store']) if payload['store'] else []
                     )
+                elif kind == 'catalog':
+                    self._folder_catalog = payload
                 elif kind in ('events', 'diagnostics', 'references'):
                     self._load_data[kind].extend(payload)
                 elif kind == 'entry_done':
@@ -281,12 +284,17 @@ class AccueilView(BaseView):
     def _prepare_loaded_view(self) -> None:
         self._progress_bar.set(1.0)
         self._set_progress_text('Preparation du viewer', "Preparation de l'affichage...", 'display')
-        if self._load_mode == 'file':
+        if self._load_mode == 'folder_catalog':
+            from Views.alphaFolderView import AlphaFolderView
+            view = AlphaFolderView(self.master, self._load_path, self._folder_catalog,
+                                   load_session=self._load_session)
+        elif self._load_mode == 'file':
             data = self._loaded_entries[0]
             from Views.traceView import TraceView
             view = TraceView(self.master, data['filepath'], data['frames'],
                              events=data['events'], diagnostics=data['diagnostics'],
-                             references=data['references'], load_session=self._load_session)
+                             references=data['references'], load_session=self._load_session,
+                             navigation=data.get('navigation'))
         else:
             from Views.folderTraceView import FolderTraceView
             entries = [TraceReportEntry(

@@ -11,14 +11,19 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from Models.diagnostic import DiagnosticIncident, camera_report_stats
+from Models.diagnostic import DiagnosticIncident, camera_report_stats, alpha_reset_severity, t2_c4_error_severity
 from Models.state import MachineState
-from Models.measurement_analysis import (analyze_measurements, representative_samples,
-                                         categorize_orientations, ORIENTATION_CATEGORIES)
-from Models.robot_drain import (t5_priority_score, drain_metric_text, drain_metrics,
-                                drain_is_critical, normalize_robot_incidents)
+from Models.measurement_analysis import analyze_measurements, representative_samples
+from Models.robot_drain import t5_priority_score, drain_metric_text, drain_period_text, format_trace_duration
+from Models.dimension_check import ORIENTATION_CATEGORIES
+from Models.robot_drain import drain_is_critical, normalize_robot_incidents
+from Models.robot_drain import drain_box_text
 from Models.c2_analysis import signal_metric_text
-from Models.trace_calendar import trace_calendar, display_time
+from Models.c5_analysis import c5_metric_text
+from Models.priority_impact import order_impact, prepare_impact, IMPACT_CODES
+from Models.trace_observations import OBSERVATION_CODES, observation_metric_text, observation_is_priority
+from Models.diagnostic_summary import normalize_summary_incidents, t4_metric_text, T4_CHECK, T4_SYMPTOM
+from Models.robot_drain import drain_compact_box_text, drain_box_ratio
 
 
 _SEVERITY_LABELS = {
@@ -30,9 +35,10 @@ _SEVERITY_LABELS = {
 _SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
 _REFERENCE_REJECTION_CODES = {'REFERENCE_ABSENT', 'REFERENCE_NON_ALPHATISABLE'}
 _SIGNAL_CODES = {'C2_SIGNAL_ANOMALY', 'C3_SIGNAL_ANOMALY'}
-_STRUCTURED_PROOF_CODES = _REFERENCE_REJECTION_CODES | _SIGNAL_CODES
+_STRUCTURED_PROOF_CODES = _REFERENCE_REJECTION_CODES | _SIGNAL_CODES | {'C5_SIGNAL_ANOMALY'} | OBSERVATION_CODES
 
 _FAMILY_LABELS = {
+    "motors": "Communication moteurs",
     "all": "Tout",
     "critical": "Critique",
     "t2": "T2/C4/T3",
@@ -80,10 +86,16 @@ def _duration_label(start: float, end: float) -> str:
 
 def _metric_from_summary(summary: str, code: str, occurrence_count: int, metrics=None) -> str:
     metrics = metrics or {}
+    if code == 'diffT4':
+        return t4_metric_text(metrics, occurrence_count)
+    if code in OBSERVATION_CODES and metrics.get('observation_metrics_version'):
+        return observation_metric_text(code,metrics)
     if code == 'DemVidageComplet' and metrics.get('day'):
         return drain_metric_text(metrics)
     if code in _SIGNAL_CODES and metrics:
         return signal_metric_text(metrics, code.split('_', 1)[0])
+    if code == 'C5_SIGNAL_ANOMALY' and metrics.get('c5_metrics_version'):
+        return c5_metric_text(metrics)
     if code == 'ALPHA_CARD_RESET' and 'trace_duration' in metrics:
         return f"{occurrence_count} reset(s) sur {metrics['trace_duration']} de trace"
     if code == 'UNKNOWN' and metrics.get('total_boxes'):
@@ -119,11 +131,15 @@ def _metric_from_summary(summary: str, code: str, occurrence_count: int, metrics
 
 
 def _family_for(belt: str, code: str, title: str) -> str:
+    if code=='MOTOR_COMM':return 'motors'
+    if code=='DP_MISSING':return 'references'
     text = f"{belt} {code} {title}".upper()
     if code == 'DemVidageComplet':
         return 'robot'
     if code == "ALPHA_CARD_RESET":
         return "system"
+    if code == 'C5_SIGNAL_ANOMALY':
+        return 't2'
     if code in _REFERENCE_REJECTION_CODES:
         return 'references'
     if code in _DIMENSION_CODES:
@@ -142,7 +158,9 @@ def _family_for(belt: str, code: str, title: str) -> str:
 
 
 def _action_label(code: str, belt: str, title: str) -> str:
-    if code in _SIGNAL_CODES:
+    if code == 'diffT4':
+        return T4_CHECK
+    if code in _SIGNAL_CODES | {'C5_SIGNAL_ANOMALY'}:
         return f"Contrôler un obstacle devant {code.split('_', 1)[0]}, sa propreté, son alignement et son câblage."
     if code == 'REFERENCE_NON_ALPHATISABLE':
         return 'Vérifier la fiche du produit et la raison de son exclusion Alpha.'
@@ -175,6 +193,10 @@ def _action_label(code: str, belt: str, title: str) -> str:
 
 
 def _impact_label(code: str, belt: str) -> str:
+    if code == 'diffT4':
+        return T4_SYMPTOM
+    if code == 'C5_SIGNAL_ANOMALY':
+        return 'Instabilité C5 et cycles non mesurés ; boîte fantôme probable si la chaîne C6/T5 est établie.'
     if code in _SIGNAL_CODES:
         return f"Instabilité {code.split('_', 1)[0]} ou blocage du vidage confirmé par un état complet des capteurs."
     if code == 'REFERENCE_NON_ALPHATISABLE':
@@ -224,7 +246,7 @@ def _business_lines(summary: str, code: str) -> list[str]:
     if code == "CUBESTOP_C4_BLOCKED":
         return ["CubeStop commande HAUT, transfert EA->T3 demande, mais C4 reste actif et C5 ne voit pas la boite."]
     if code == 'DemVidageComplet':
-        return [summary]
+        return []
     if code == "T5_STALE_UNMEASURED_BOX":
         return ["Boite T5 non mesuree reste en base et provoque des manques de place."]
     if code == "ORIENTATION":
@@ -284,6 +306,10 @@ def _stale_t5_business_lines(group: dict[str, object]) -> list[str]:
 def _field_zone_label(group: dict[str, object]) -> str:
     belt = str(group["belt"])
     code = str(group["code"])
+    if code == 'diffT4':
+        return 'T4/C6'
+    if code == 'C5_SIGNAL_ANOMALY':
+        return 'T3/C5'
     if code == "ALPHA_CARD_RESET":
         return "Carte Alpha"
     if belt == "T2" and code == "-88":
@@ -305,10 +331,18 @@ def _field_zone_label(group: dict[str, object]) -> str:
 
 def _field_explanation(group: dict[str, object], total_boxes: int, c9_massive: bool) -> tuple[str, str, str]:
     code = str(group["code"])
+    if code == 'diffT4':
+        return str(group['metric']), T4_SYMPTOM, T4_CHECK
+    if code in OBSERVATION_CODES:
+        return str(group['metric']),str(group['symptom']),str(group['checks'][0])
     if code == 'DemVidageComplet':
-        return (str(group['summary']),
+        return (str(group['summary']) + ' · ' + str(group.get('trace_period', 'Dates indisponibles')) + ' · ' + drain_box_text(group['metrics']),
                 "Le robot demande de vider tout T5 apres un incident de prise ; la cause reste a confirmer.",
                 "Comparer deplacement commande/reel T5, presentation des boites et position physique de l'Alpha.")
+    if code == 'C5_SIGNAL_ANOMALY':
+        return (c5_metric_text(group['metrics']) if group['metrics'].get('c5_metrics_version') else str(group['summary']),
+                "Des cycles incohérents peuvent suivre l'instabilité ; leur présence physique reste à vérifier.",
+                str(group['action']))
     belt = str(group["belt"])
     count = int(group["occurrence_count"])
     ratio = _ratio(count, total_boxes)
@@ -392,7 +426,7 @@ def _field_explanation(group: dict[str, object], total_boxes: int, c9_massive: b
         return (
             "Le transfert signale une boîte déjà présente au niveau du capteur C4.",
             "Boite bloquee sur C4, ejecteur qui n'ejecte pas, C4 faux actif ou cubestop qui ne laisse pas passer.",
-            "Verifier C4, l'ejecteur, le capteur C4 et le cubestop. Critique seulement si le defaut se repete ou bloque le flux.",
+            "Verifier C4, l'ejecteur, le capteur C4 et le cubestop. Critique a partir de 10 occurrences sur 24 h glissantes.",
         )
     if belt == "T3" and code == "-43":
         return (
@@ -432,7 +466,7 @@ def _field_severity_for(group: dict[str, object], total_boxes: int, c9_massive: 
     ratio = _ratio(count, total_boxes)
 
     if code == "ALPHA_CARD_RESET":
-        return "error" if count > 0 else "info"
+        return alpha_reset_severity(count, group.get('metrics') or {})
     if code == 'DemVidageComplet':
         return 'error' if drain_is_critical(group.get('metrics')) else 'info'
 
@@ -446,7 +480,7 @@ def _field_severity_for(group: dict[str, object], total_boxes: int, c9_massive: 
         comparable = int(group.get("measurement_stats", {}).get("comparable_count", 0))
         return "error" if count >= 10 and comparable > 0 and count * 10 >= comparable else "warning"
     if belt == "T2" and code == "-88":
-        return "error" if count >= 3 else "warning"
+        return t2_c4_error_severity(group.get('metrics') or {})
     if belt == "T3" and code == "-43":
         return "error" if count >= 2 else "warning"
     if belt == "T3" and code == "-48":
@@ -505,6 +539,10 @@ def _apply_field_severity(grouped: list[dict[str, object]], total_boxes: int) ->
         count = int(group["occurrence_count"])
         severity = _field_severity_for(group, total_boxes, c9_massive)
         explanation, impact, action = _field_explanation(group, total_boxes, c9_massive)
+        if group['code'] in IMPACT_CODES:
+            group['priority_impact'] = prepare_impact(group['incidents'])
+            if not group['priority_impact']['available']:
+                explanation += ' · ' + group['priority_impact']['note']
         group["field_severity"] = severity
         group["field_severity_label"] = _SEVERITY_LABELS.get(severity, severity.upper())
         group["field_zone_label"] = _field_zone_label(group)
@@ -640,6 +678,18 @@ def _group_incidents(incidents: list[DiagnosticIncident]) -> list[dict[str, obje
     for group in grouped:
         code = str(group["code"])
         belt = str(group["belt"])
+        if code == 'DemVidageComplet':
+            group['metrics'] = dict(group['metrics'], total=group['occurrence_count'])
+            group['summary'] = drain_metric_text(group['metrics'])
+            group['trace_period'] = drain_period_text(group['metrics'])
+            group['box_summary'] = drain_box_text(group['metrics'])
+            group['evacuated_ratio'] = drain_box_ratio(group['metrics'])
+            group['compact_box_summary'] = drain_compact_box_text(group['metrics'])
+            group['priority_lines'] = [group['summary'].replace(' de trace', ''),
+                                       group['compact_box_summary']]
+            group['ratio_explanation'] = ('Part des boîtes évacuées parmi les sorties comptabilisées : '
+                'évacuées / (évacuées + prises confirmées). Les prises confirmées excluent les vidages. '
+                "Ce ratio ne mesure pas les tentatives de prise ratées ; les bilans incomplets restent dans le détail.")
         group["duration"] = _duration_label(float(group["start_time"]), float(group["end_time"]))
         group["metric"] = _metric_from_summary(str(group["summary"]), code, int(group["occurrence_count"]), group['metrics'])
         if code == "T5_STALE_UNMEASURED_BOX":
@@ -671,11 +721,11 @@ def _group_incidents(incidents: list[DiagnosticIncident]) -> list[dict[str, obje
 
 
 def _priority_groups(grouped: list[dict[str, object]]) -> list[dict[str, object]]:
-    priority = sorted(
-        [group for group in grouped if group['code'] != 'DemVidageComplet'
-         or drain_is_critical(group.get('metrics'))],
+    priority = order_impact(sorted(
+        [group for group in grouped if observation_is_priority(group) and (group['code'] != 'DemVidageComplet'
+         or drain_is_critical(group.get('metrics')))],
         key=lambda group: (-int(group.get("field_priority", group["priority_score"])), int(group["first_line"])),
-    )[:5]
+    ))[:5]
     keys = {(str(g["severity"]), str(g["belt"]), str(g["code"]), str(g["title"])) for g in priority}
     for group in grouped:
         key = (str(group["severity"]), str(group["belt"]), str(group["code"]), str(group["title"]))
@@ -691,7 +741,7 @@ def _priority_groups(grouped: list[dict[str, object]]) -> list[dict[str, object]
 
 
 def _zone_summary(grouped: list[dict[str, object]]) -> list[dict[str, object]]:
-    order = ["system", "references", "camera", "t2", "t4", "t5", "dimensions", "robot", "other"]
+    order = ["system", "motors", "references", "camera", "t2", "t4", "t5", "dimensions", "robot", "other"]
     summaries: dict[str, dict[str, object]] = {
         family: {
             "family": family,
@@ -789,12 +839,57 @@ def _sample_box_details(frame, belt, text):
     return details
 
 
+def _evidence_selection(group):
+    """Choisit les preuves avant toute lecture de contexte, sur toute la periode."""
+    if group['code'] == 'DemVidageComplet' and group['metrics'].get('daily'):
+        lines = {sample['line'] for day in group['metrics']['daily']
+                 for sample in day.get('examples', []) + day.get('pick_examples', [])}
+    else:
+        rows = group['metrics']['segments'] if group['code'] == 'diffT4' else group['incidents']
+        lines = set()
+        for row in rows:
+            if group['code'] in _STRUCTURED_PROOF_CODES | {'diffT4'} and row.get('examples'):
+                lines.update(sample['line'] for sample in row['examples'])
+            else:
+                lines.update(row.get('event_lines') or [row['first_line']])
+    ordered = sorted(lines)
+    selected = ordered if len(ordered) <= 10 else [ordered[round(i * (len(ordered) - 1) / 9)] for i in range(10)]
+    group['evidence_total'] = len(ordered)
+    group['example_limit'] = 10
+    return set(selected)
+
+
+def _compact_evidence_payload(group):
+    """Les analyses originales restent completes ; l'export porte les seuls exemples retenus."""
+    examples = group['examples'] + group.get('pick_examples', [])
+    selected = {sample.get('incident_line') for sample in examples}
+
+    def metrics_summary(metrics):
+        result = {key: value for key, value in metrics.items() if key not in {'episodes', 'segments', 'daily'}}
+        if group['code'] == 'CAMERA_CODE_MODE':
+            result['readers'] = sorted({row['reader'] for row in metrics.get('episodes', [])})
+        if 'daily' in metrics:
+            result['daily'] = [{key: value for key, value in day.items()
+                                if key not in {'examples', 'pick_examples'}} for day in metrics['daily']]
+        return result
+
+    group['metrics'] = metrics_summary(group['metrics'])
+    group['incidents'] = [dict(row, metrics=metrics_summary(row['metrics']),
+        event_lines=[sample['line'] for sample in examples if sample.get('incident_line') == row['first_line']],
+        examples=[]) for row in group['incidents'] if row['first_line'] in selected]
+    group['displayed_example_count'] = len(examples)
+    group['omitted_example_count'] = max(0, group['evidence_total'] - len(examples))
+
+
 def build_report_payload(
     incidents: list[DiagnosticIncident],
     frames: list[MachineState] | None = None,
     source_name: str = '',
+    trace_period=None,
 ) -> dict[str, object]:
-    incidents = normalize_robot_incidents(incidents)
+    metadata = getattr(frames, 'source_metadata', {})
+    incidents = normalize_summary_incidents(normalize_robot_incidents(incidents),
+                                            len(metadata.get('sources', [])) or None)
     camera_stats = (frames.read_camera_report() if hasattr(frames, 'read_camera_report') else
                     camera_report_stats(frames) if frames is not None else _empty_camera_stats())
     unknown = dict(camera_stats.get('unknown', {}))
@@ -804,11 +899,6 @@ def build_report_payload(
     grouped = _group_incidents(incidents)
     analysis = (frames.read_measurements() if hasattr(frames, 'read_measurements') else
                 analyze_measurements(frames if frames is not None else []))
-    period = camera_stats.get('trace') or trace_calendar(
-        [(line, text, frame) for frame in (frames or []) for line, text, *_ in frame.raw_lines])
-    if frames and not period.get('start'):
-        period = dict(period, start=frames[0].timestamp_str, end=frames[-1].timestamp_str,
-                      duration=_duration_label(frames[0].timestamp, frames[-1].timestamp))
     wanted = set()
     targets = {}
     reference_samples = {}
@@ -838,7 +928,7 @@ def build_report_payload(
                                                        navigation_sample_id=ids[0] if ids and side in ('under', 'over') else '',
                                                        display_primary=row['count'] * 10 >= row['total'] if side in ('under', 'over') else True))
     orientation_lists = {}
-    for kind, rows in categorize_orientations(analysis.get('orientation_references', {})).items():
+    for kind, rows in analysis.get('orientation_references', {}).items():
         orientation_lists[kind] = []
         for row in rows:
             ids = []
@@ -852,63 +942,94 @@ def build_report_payload(
                 sample_ids=ids, navigation_sample_id=ids[0]))
     for group in grouped:
         group['id'] = f"{group['code']}:{group['first_line']}:{group['belt']}"
+        selected_lines = _evidence_selection(group) if group['code'] not in _DIMENSION_CODES else None
+        prepared_lines = set()
+
+        def selected(sample):
+            line = sample['line']
+            if line not in selected_lines or line in prepared_lines:
+                return False
+            prepared_lines.add(line)
+            return True
         if group['code'] in _DIMENSION_CODES:
             examples = [dict(sample) for sample in analysis['samples'] if sample['code'] == group['code']]
+        elif group['code'] == 'DemVidageComplet' and group['metrics'].get('daily'):
+            examples = []
+            group['daily'] = []
+            for day in group['metrics']['daily']:
+                start = len(examples)
+                examples.extend(dict(sample, box='', barcode='', detail=sample.get('detail', ''), incident_line=group['first_line'])
+                                for sample in day['examples'] if selected(sample))
+                group['daily'].append(dict({key: value for key, value in day.items() if key != 'examples'},
+                                           example_start=start, example_count=len(examples) - start))
+            group['pick_examples'] = [dict(proof, id=f"robot-pick:{proof['line']}", box=f"IdA:{proof['id_alpha']}",
+                barcode='', detail='Prise confirmée par OMEGA:T5-DEL-PACK@Ok', incident_line=group['first_line'])
+                for day in group['daily'] for proof in day.get('pick_examples', []) if selected(proof)]
+            for day in group['daily']:
+                day.pop('pick_examples', None)
+            for proof in group['pick_examples']:
+                proof['sources'] = {'confirmation robot': proof['line']}
+                wanted.add(proof['line'])
+            for incident in group['incidents']:
+                incident['event_lines'] = [sample['line'] for sample in examples]
+        elif group['code'] in {'C5_SIGNAL_ANOMALY'} | OBSERVATION_CODES:
+            examples = []
+            group['series'] = []
+            for incident in group['incidents']:
+                by_episode = {}
+                for sample in incident['examples']:
+                    if sample['line'] in selected_lines:
+                        by_episode.setdefault(sample.get('episode'), []).append(sample)
+                for number, episode in enumerate(incident['metrics'].get('episodes', []), 1):
+                    start = len(examples)
+                    proofs = [sample for sample in by_episode.get(number, []) if selected(sample)]
+                    if not proofs:
+                        continue
+                    examples.extend(dict(sample, incident_line=incident['first_line']) for sample in proofs)
+                    group['series'].append({key: episode[key] for key in (
+                        'first_line', 'last_line', 'start_time_str', 'end_time_str')})
+                    group['series'][-1].update(duration=_duration_label(episode['start_time'], episode['end_time']),
+                        summary=episode['detail'], count=1, evidence_count=1,
+                        example_start=start, example_count=len(examples) - start)
         else:
             examples = []
             group['series'] = []
-            robot_occurrences = []
-            for incident in sorted(group['incidents'], key=lambda item: item['first_line']):
+            series_incidents = (group['metrics']['segments'] if group['code'] == 'diffT4'
+                                else group['incidents'])
+            for incident in sorted(series_incidents, key=lambda item: item['first_line']):
+                if group['code'] == 'diffT4':
+                    incident = dict(incident, duration=_duration_label(incident['start_time'], incident['end_time']))
                 lines = list(dict.fromkeys(incident['event_lines'] or [incident['first_line']]))
                 lines.sort()
-                if group['code'] == 'DemVidageComplet' and 'daily' not in group['metrics']:
-                    event_lines = set(lines)
-                    selected = frames.frames_for_lines(lines) if hasattr(frames, 'frames_for_lines') else (frames or [])
-                    times = {line: (frame.timestamp, frame.timestamp_str) for frame in selected
-                             for line, *_ in frame.raw_lines if line in event_lines}
-                    robot_occurrences.extend((line, *times.get(line, (group['start_time'], incident['start_time_str'])))
-                                             for line in lines)
                 start = len(examples)
                 evidence_count = len(lines)
-                if group['code'] in _STRUCTURED_PROOF_CODES and incident['examples']:
+                if (group['code'] in _STRUCTURED_PROOF_CODES or group['code'] == 'diffT4') and incident['examples']:
                     proofs = sorted(incident['examples'], key=lambda sample: sample['line'])
                     evidence_count = incident['count'] if group['code'] in _SIGNAL_CODES else len(proofs)
-                    examples.extend(dict(sample, incident_line=incident['first_line']) for sample in proofs[:10])
+                    examples.extend(dict(sample, incident_line=incident['first_line']) for sample in proofs if selected(sample))
                 else:
-                    for line in lines[:10]:
+                    for line in lines:
+                        if not selected({'line': line}):
+                            continue
                         examples.append({'line': line, 'time_str': incident['start_time_str'],
                                          'box': '', 'barcode': '', 'detail': incident['summary'],
                                          'incident_line': incident['first_line']})
+                if len(examples) == start:
+                    continue
                 group['series'].append({key: incident[key] for key in (
                     'first_line', 'last_line', 'start_time_str', 'end_time_str', 'duration', 'summary', 'count')})
                 group['series'][-1].update(example_start=start, example_count=len(examples) - start,
                                           evidence_count=evidence_count,
                                           distinct_events=group['code'] == 'DemVidageComplet')
+                if group['code'] == 'diffT4':
+                    group['series'][-1]['duration'] = 'période des observations, sans panne continue établie'
                 # Le total reste complet ; seules les preuves exportees sont bornees.
                 incident['event_lines'] = lines[:10]
                 incident['examples'] = incident['examples'][:10]
-            if group['code'] == 'DemVidageComplet':
-                metrics = group['metrics']
-                # Les anciens caches gardent les lignes, mais pas encore le calendrier.
-                if 'daily' not in metrics:
-                    daily_metrics = drain_metrics(robot_occurrences, period)
-                    metrics = dict(metrics, **{key: value for key, value in daily_metrics.items()
-                                               if key in ('trace', 'daily', 'requests_start', 'requests_end')})
-                    group['metrics'] = metrics
-                group['daily'] = []
-                if metrics.get('trace', {}).get('available'):
-                    examples = []
-                    for day in metrics.get('daily', []):
-                        start = len(examples)
-                        examples.extend(dict(sample, incident_line=group['first_line'], detail=group['summary'],
-                                             barcode='', box='') for sample in day.get('examples', [])[:10])
-                        group['daily'].append(dict({key: value for key, value in day.items() if key != 'examples'},
-                                                  example_start=start, example_count=len(examples) - start))
-                    group['trace_period'] = f"Trace analysée du {period['start']} au {period['end']}"
         group['examples'] = examples
         for index, sample in enumerate(examples):
             sample.update(id=f"{group['id']}:{index}", group_id=group['id'])
-            if 'measured' not in sample and group['code'] not in _STRUCTURED_PROOF_CODES:
+            if 'measured' not in sample and group['code'] not in _STRUCTURED_PROOF_CODES | {'DemVidageComplet'}:
                 targets.setdefault(sample['line'], []).append((group['belt'], sample))
             wanted.update(range(max(1, sample['line'] - 2), sample['line'] + 3))
             for line in set(sample.get('sources', {}).values()) - {0}:
@@ -925,6 +1046,8 @@ def build_report_payload(
                     for belt, sample in targets.pop(line, []):
                         sample.update(_sample_box_details(frame, belt, text))
     for group in grouped:
+        for sample in group.get('pick_examples', []):
+            sample['context'] = [{'line': sample['line'], 'text': raw[sample['line']][0]}] if sample['line'] in raw else []
         for sample in group['examples']:
             sample['context'] = [{'line': n, 'text': raw[n][0]} for n in range(max(1, sample['line'] - 2), sample['line'] + 3) if n in raw]
             present = {row['line'] for row in sample['context']}
@@ -945,10 +1068,9 @@ def build_report_payload(
         sample['context'] = [{'line': n, 'text': raw[n][0]} for n in
                              range(max(1, sample['line'] - 2), sample['line'] + 3) if n in raw]
     all_samples = [sample for group in grouped for sample in group['examples']]
+    all_samples += [sample for group in grouped for sample in group.get('pick_examples', [])]
     all_samples += list(reference_samples.values()) + unknown['examples']
     for sample in all_samples:
-        sample['display_time_str'] = display_time(period, sample.get('display_line') or sample['line'],
-                                                  sample.get('display_time_str') or sample.get('time_str', ''))
         for row in sample['context']:
             key = f'source:{row["line"]}'
             row['navigation_id'] = key
@@ -972,19 +1094,63 @@ def build_report_payload(
         "total_boxes": total_boxes,
         "analyzed_boxes": max(total_boxes, analysis['summary'].get('cycle_count', 0)),
     }
+    period = trace_period or getattr(frames, 'trace_period', {}) or next((incident.metrics.get('trace', {}) for incident in incidents
+                 if incident.code == 'DemVidageComplet' and incident.metrics.get('trace', {}).get('available')), {})
+    source = {'name': source_name,
+              'start': period['start'] if period.get('available') else 'Dates indisponibles',
+              'end': period['end'] if period.get('available') else 'Rechargez la trace',
+              'dates_available': bool(period.get('available')),
+              'duration': period.get('duration') or (format_trace_duration(frames[-1].timestamp - frames[0].timestamp) if frames else '')}
+    metadata = getattr(frames, 'source_metadata', {})
+    if metadata.get('identity'):
+        source['identity'] = metadata['identity']
+    if metadata.get('sources'):
+        source['files'] = [{'name': item['name'], 'start': item.get('start'), 'end': item.get('end')}
+                           for item in metadata['sources']]
+        source['identity'] = metadata.get('identity', {})
+        source['gaps'] = period.get('gaps', [])
+        for group in grouped:
+            for series in group.get('series', []):
+                location = frames.source_location(series['first_line'])
+                series['source_name'] = location['name']
+                series['source_first_line'] = location['source_line']
+                series['source_last_line'] = frames.source_location(series['last_line'])['source_line']
+        if source['gaps']:
+            observed = format_trace_duration(period.get('observed_duration_seconds', 0))
+            source['duration'] = f'{observed} observées · {len(source["gaps"])} interruption(s) de couverture'
+        samples = list(reference_samples.values()) + unknown['examples']
+        samples += [sample for group in grouped for sample in group['examples']]
+        samples += [sample for group in grouped for sample in group.get('pick_examples', [])]
+        for sample in samples:
+            location = frames.source_location(sample['line'])
+            sample['source_label'] = f"{location['name']} · L.{location['source_line']}"
+            display = frames.source_location(sample.get('display_line') or sample['line'])
+            sample['display_source_label'] = f"{display['name']} · L.{display['source_line']}"
+            sample['source_labels'] = {}
+            for axis, line in sample.get('sources', {}).items():
+                item = frames.source_location(line)
+                sample['source_labels'][axis] = f"{item['name']} · L.{item['source_line']}" if line else '—'
+            sample['context'] = [row for row in sample.get('context', [])
+                                 if frames.source_location(row['line']).get('segment') == location.get('segment')]
+            for row in sample['context']:
+                item = frames.source_location(row['line'])
+                row['source_label'] = f"{item['name']} · L.{item['source_line']}"
+    priority = _priority_groups([group for group in grouped if group['code'] != 'ORIENTATION'])
+    for group in grouped:
+        if group['code'] not in _DIMENSION_CODES:
+            _compact_evidence_payload(group)
     return {
         "generated_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
-        "source": {'name': source_name, 'start': period.get('start', ''), 'end': period.get('end', ''),
-                   'dates_available': period.get('available', False), 'duration': period.get('duration', '')},
+        "source": source,
         "measurements": analysis['summary'],
         "measurement_references": reference_lists,
         "orientation_references": orientation_lists,
-        "orientation_categories": ORIENTATION_CATEGORIES,
+        "orientation_categories": list(ORIENTATION_CATEGORIES) if 'flat_rotation' in orientation_lists else [],
         "measurement_examples": list(reference_samples.values()),
         "counts": counts,
         "verdict": _verdict(counts),
         "groups": grouped,
-        "priority": _priority_groups([group for group in grouped if group['code'] != 'ORIENTATION']),
+        "priority": priority,
         "zones": _zone_summary(grouped),
         "camera": camera_stats,
         "unknown": unknown,
@@ -992,6 +1158,7 @@ def build_report_payload(
             {"id": "all", "label": _FAMILY_LABELS["all"]},
             {"id": "critical", "label": _FAMILY_LABELS["critical"]},
             {"id": "system", "label": _FAMILY_LABELS["system"]},
+            {"id": "motors", "label": _FAMILY_LABELS["motors"]},
             {"id": "t2", "label": _FAMILY_LABELS["t2"]},
             {"id": "t4", "label": _FAMILY_LABELS["t4"]},
             {"id": "t5", "label": _FAMILY_LABELS["t5"]},
@@ -1044,11 +1211,12 @@ def write_diagnostic_report(
     output_dir: Path | None = None,
     frames: list[MachineState] | None = None,
     source_name: str = '',
+    trace_period=None,
 ) -> Path:
     output_dir = output_dir or reports_dir()
     output_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    payload = build_report_payload(incidents, frames=frames, source_name=source_name)
+    payload = build_report_payload(incidents, frames=frames, source_name=source_name, trace_period=trace_period)
     data_path = output_dir / f"report_data_{stamp}.json"
     data_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -1063,8 +1231,8 @@ def write_diagnostic_report(
     return output_path
 
 
-def build_diagnostic_report_html(incidents, frames=None, payload=None) -> str:
-    payload = payload if payload is not None else build_report_payload(incidents, frames=frames)
+def build_diagnostic_report_html(incidents, frames=None, payload=None, trace_period=None) -> str:
+    payload = payload if payload is not None else build_report_payload(incidents, frames=frames, trace_period=trace_period)
     public = _REPORT_APP_DIR / 'public'
     script = (public / 'report-ui.js').read_text(encoding='utf-8')
     styles = (public / 'report-ui.css').read_text(encoding='utf-8')

@@ -2,6 +2,27 @@
 
 TraceAlphaViewer est un viewer local Python/customtkinter pour traces Alpha `.old`.
 
+Le rapport web et son PDF affichent la pharmacie et le numero Alpha lorsque la
+paire de bases est identifiee sans contradiction. Cette identification fonctionne
+pour une trace seule comme pour un dossier, avec les zeros initiaux du numero.
+
+Les bilans distinguent les communications moteurs perturbees (`MOTOR_COMM`),
+les peremptions explicitement absentes apres identification (`DP_MISSING`) et
+les periodes de lecture en mode 123 (`CAMERA_CODE_MODE`, DataMatrix et
+codes-barres, au lieu du mode 1 DataMatrix seul attendu). Les relectures DP
+recuperees restent informatives ; seuls les episodes moteurs critiques apparaissent
+dans les diagnostics (les reessais recuperes restent dans la trace brute). Les rejets DP
+confirmes sont exclus des UNKNOWN de decodage, sans reduire le total des passages.
+Les episodes et leurs preuves ne traversent pas les limites des fichiers.
+
+Les ecarts internes T4C/T4T partagent une seule carte par Alpha : total des
+controles, maximum absolu et fichiers concernes. Ils ne prouvent pas un ecart
+avec la longueur du produit en base. Les details restent separes par fichier.
+Le PDF terrain vise quatre a cinq pages : priorites, mesures, lecture/exploitation,
+puis autres controles. Il conserve tous les types de problemes critiques/en alerte,
+avec trois reperes au maximum et sans listes de preuves ni bilans quotidiens.
+Les tableaux peuvent continuer sur une page supplementaire pour rester lisibles.
+
 Il parse les lignes de trace en frames `MachineState`, puis affiche :
 
 - le schema machine et les convoyeurs ;
@@ -53,6 +74,7 @@ Comportement UI/runtime actuel :
 - Windows
 - Python 3.13+
 - `customtkinter`
+- `msgpack` uniquement pour les essais du moteur Rust facultatif
 
 Tkinter est fourni par l'installation Python standard.
 
@@ -62,6 +84,50 @@ Depuis la racine du depot :
 
 ```powershell
 python TraceAlphaViewer\Main.py
+```
+
+## Dossiers de traces par Alpha
+
+`Ouvrir un dossier de traces` parcourt les sous-dossiers et presente les groupes
+Alpha/pharmacie avant leur analyse. L'identite vient des noms complets des bases
+`BASEALPHA_...MDB` et `BASEFIC...MDB` releves dans chaque fichier, sans utiliser
+son nom ni sa date Windows. Par exemple, `BASEALPHA_#2025.031.MDB` avec
+`BASEFIC1560LAHLOU.MDB` donne `Alpha 031 — Pharmacie Lahlou`.
+
+Une identite incomplete ou contradictoire, un calendrier absent ou un
+recouvrement ambigu garde le fichier isole sous `Identite a verifier`.
+Les copies entieres strictement identiques, avec leurs en-tetes dates, sont
+exclues du calcul et restent mentionnees dans le catalogue.
+
+Selectionner un groupe prepare son viewer complet et son rapport commun.
+Chaque fichier garde son propre cycle machine ; les boites et attentes ne
+traversent pas les limites des fichiers. La navigation conserve le fichier et
+la ligne d'origine. Fermer le viewer retrouve le catalogue et ses bilans deja
+prepares. `Exporter CSV complet` analyse les groupes restants avant l'export.
+
+Le catalogue et le parsing des dossiers utilisent Python, comme une trace seule.
+Le moteur Rust reste disponible pour les comparaisons de performance, sans etre
+requis au lancement. Pour preparer ce moteur experimental depuis les sources :
+
+```powershell
+python -m pip install msgpack
+python TraceAlphaViewer\Tools\build_folder_engine.py --bootstrap --test
+```
+
+La chaine Windows GNU autonome reste dans `build/rust-toolchain`, sans modifier
+le PATH utilisateur. Le binaire release est copie dans `TraceAlphaViewer/bin`.
+Ces artefacts restent locaux et sont ignores par Git. Pour un essai explicite,
+definir `TRACE_ALPHA_FOLDER_ENGINE=rust` dans le processus de lancement ; un moteur
+absent ou incompatible produit alors une erreur. La valeur par defaut est `python`.
+
+Essai local du 22 octobre 2026 sur les deux traces du groupe Martin : preparation
+complete du bilan en 159,2 s avec Python, contre 164,4 s avec Rust (parsing,
+conversion, stockage et analyses compris, hors affichage). Cette passe unique ne
+demontre pas un gain global et ne constitue pas une garantie de performance.
+Python reste donc le moteur par defaut. Comparaison reproductible :
+
+```powershell
+python TraceAlphaViewer\Tools\benchmark_folder_loading.py TraceAlphaViewer --group Martin --runs 3 --output build\folder-benchmark.json
 ```
 
 ## Executable Windows
@@ -78,7 +144,8 @@ Le .exe peut etre copie seul sur un autre poste Windows 64 bits.
 Pour reconstruire sous Windows, avec le rapport React deja construit :
 
 ```powershell
-python -m pip install customtkinter pillow pyinstaller
+python -m pip install customtkinter pillow pyinstaller msgpack
+python TraceAlphaViewer\Tools\build_folder_engine.py --bootstrap
 python TraceAlphaViewer\Tools\build_exe.py
 ```
 
@@ -177,12 +244,11 @@ Les autres produits restent dans Cas rares (< 10 %), avec detail et navigation ;
 toutes leurs mesures restent incluses dans les totaux et distributions.
 La repartition affiche les cinq ecarts les plus frequents sous les observations ;
 Afficher toute la repartition deroule toutes les lignes et Reduire la liste
-revient a la synthese. Les calculs et le PDF incluent toujours toutes les mesures. Moyennes et variantes
-restent dans Statistiques et explications, avec Comment les repetitions sont calculees. Chaque
+revient a la synthese. Les calculs et le PDF incluent toujours toutes les mesures. Les depliants Statistiques et explications sont retires du web et du PDF. Les variantes restent accessibles dans le detail produit. Chaque
 boite presente un tableau BdD/Mesure Alpha/Ecart ; les lignes brutes sont dans
-Sources et contexte technique. Le PDF reprend cette hierarchie avec des tableaux.
+Sources et contexte technique. Le PDF presente une synthese visuelle ; ces details restent dans le web.
 Les observations courtes sont visibles directement, separees en moins et en
-trop ; Comment les repetitions sont calculees conserve les frequences et calculs complets. Chaque groupe est centre sur l'ecart hors tolerance le plus frequent de
+trop. Les calculs restent inchanges. Chaque groupe est centre sur l'ecart hors tolerance le plus frequent de
 son cote (en cas d'egalite, le plus proche de zero). Il inclut les mesures a
 +/-1 mm, meme conformes : le bilan distingue defauts, bonnes mesures voisines
 et part du groupe sur toutes les comparables. La repartition complete est dans
@@ -227,6 +293,8 @@ Les controles de navigateur et PDF necessitent `playwright`, Microsoft Edge et
 `validate_all.py` reste en arriere-plan ; ajouter `--visual` seulement pour
 autoriser les controles avec fenetres visibles. Les benchmarks restent aussi
 masques sauf avec `--show`, y compris avec `--exercise-window`.
+Le controle du binaire est exclu par defaut ; ajouter `--exe` apres une
+reconstruction explicitement demandee, pour valider le binaire courant.
 
 ## Validation rapide
 
@@ -334,10 +402,27 @@ jusqu'a la fin du chargement du texte brut :
 Les diagnostics et references ont ete compares integralement et sont identiques
 sur les trois traces. Ces durees correspondent a la machine de validation.
 
+Pour comparer un dossier sans perdre les modifications locales preexistantes,
+conserver une copie des sources et des resultats dans `build` :
+
+```powershell
+python TraceAlphaViewer\Tools\benchmark_group_pipeline.py C:\Traces\Dossier --output build\dossier-avant --snapshot --filters
+python TraceAlphaViewer\Tools\benchmark_group_pipeline.py C:\Traces\Dossier --output build\dossier-apres --compare build\dossier-avant --reuse-filter-checks
+```
+
+La comparaison relit toutes les frames et verifie les evenements, diagnostics,
+references, mesures et cameras. Les six filtres deja controles sont reutilises
+seulement si toutes les frames, evenements et le code de leur moteur sont
+identiques ; sinon employer `--filters`. `benchmark_group_view.py` mesure
+separement la preparation masquee des panneaux depuis ces resultats.
+Pour une trace seule, `benchmark_loading.py --source-tree <copie-des-sources>`
+permet d'utiliser cette reference locale a la place d'une revision Git.
+
 ## Garder la fenetre reactive pendant le chargement
 
-L'ouverture depuis l'accueil, pour un fichier ou un dossier, execute le parser
-et les analyses dans un processus Python separe sans interface graphique.
+L'ouverture depuis l'accueil execute les analyses dans un processus Python
+separe sans interface graphique. Pour un dossier, ce worker appelle le moteur
+Python pour le catalogue et le parsing ; Rust reste un mode experimental explicite.
 L'accueil affiche la progression jusqu'a la preparation des analyses et des
 listes du viewer. La precision reste `min_dt=0.0`.
 
@@ -354,6 +439,14 @@ Les files de reception sont bornees a quatre messages. La reception et le texte
 brut rendent la main apres un budget d'environ 8 ms ; chaque insertion brute
 porte sur 500 lignes au maximum. Les listes sont remplies progressivement avec
 un appel Tk groupe par bloc et la construction des widgets est decoupee.
+Les onglets Evenements, Erreur et References affichent des pages de 500 elements.
+Recherches et filtres portent sur toutes les donnees ; une navigation vers une
+ligne ouvre automatiquement la page correspondante. Les premieres pages et les
+analyses sont preparees avant l'ouverture du viewer. Les analyses de dossier
+partagent un parcours des frames et un calendrier par segment.
+Sous Windows, deux segments au maximum sont analyses en parallele, puis reunis
+dans l'ordre des fichiers. L'annulation ferme aussi les sous-workers et leurs
+lecteurs ; aucun resultat de groupe partiel n'est affiche.
 Un appel Tk individuel ne peut pas etre interrompu : la mesure des intervalles
 reste donc le controle effectif de la reactivite.
 
@@ -401,14 +494,16 @@ le nettoyage, les vues de retour et le viewer de dossier.
 ## Rapport : UNKNOWN, series et navigation
 
 Le compteur UNKNOWN en tete du rapport affiche les boites finales inconnues apres
-CB1 et CB2 sur le total des boites passees. Il ouvre leur detail, meme sous le seuil
-d'alerte. Au-dessus de 7 %, un encart dedie accompagne les trois priorites sans
-modifier leur classement. Les UNKNOWN temporaires reconnues ensuite sont exclues.
+CB1 et CB2 sur le total des boites passees. Compact et non cliquable, il est vert
+sous 8 %, jaune de 8 a 12 % inclus, rouge au-dela de 12 % et neutre si le taux est
+indisponible. Il remplace l'encart et le detail UNKNOWN dedies. Le diagnostic
+habituel reste dans la liste au-dessus de 7 % strictement. Les UNKNOWN temporaires
+reconnues ensuite sont exclues.
 
 Les vidages T5 demandes par le robot restent en Information sous 10 demandes sur
 24 heures glissantes, sans bandeau ni presence dans les priorites. Ils deviennent
 Critiques des 10, bornes incluses. Le detail garde les journees sans demande et
-jusqu'a dix preuves par journee. Les anciens seuils horaires et le renforcement
+jusqu'a dix preuves sur toute la periode. Les anciens seuils horaires et le renforcement
 a 15 ne s'appliquent plus ; regenerer les anciens rapports exportes.
 
 La carte `C2_SIGNAL_ANOMALY`, famille T2, distingue les episodes, bascules C2,
@@ -430,11 +525,67 @@ partage avec C2, dont les regles restent identiques. Les deux capteurs conserven
 leurs propres episodes, compteurs et preuves ; les bascules n'amplifient pas la
 priorite. Les exemples C3 du manuel sont fictifs.
 
+`C5_SIGNAL_ANOMALY`, zone T3/C5, utilise une analyse distincte : dix bascules
+dans cinq minutes glissantes entre deux transferts EA->T3 confirmes declenchent
+une alerte. Un cycle lie par IdB/IdA devient critique si sa longueur T3->T4 est
+nulle, si la trace signale explicitement l'absence sur C6 et si T5 le supprime
+pour largeur < 2 mm avec C9=0. Les creations virtuelles apres pesee sont
+comptees separement ; une boite fantome reste probable, sans modifier UNKNOWN.
+Chaque episode garde ses limites et dix preuves au maximum. Aucune attribution
+ne traverse un redemarrage, une interruption de plus de 120 s ou un fichier.
+
+A criticite egale, C5 et les boites T5 bloquantes se departagent par cycles de
+boites touches, episodes distincts puis duree cumulee observee. Les messages
+repetes et bascules ne gonflent pas ce classement. Les intervalles T5 qui se
+chevauchent dans un segment comptent une seule duree et un seul episode ; un
+IdA reutilise dans une nouvelle creation compte un autre cycle. Seules les
+positions de ces deux diagnostics sont permutees avant de retenir les priorites.
+Les anciens resultats sans impact fiable conservent leur ordre et invitent a
+regenerer le rapport. Viewer, web et PDF partagent cette regle.
+
+La priorite robot garde seulement le nombre de demandes sur la periode, les
+boites evacuees, les prises confirmees et leur part evacuee, puis Premier
+controle. Les prises confirmees excluent les vidages. Le ratio utilise
+evacuees / (evacuees + prises confirmees), apres sommation des segments ; il
+ne mesure pas les tentatives de prise ratees. Dates et bilans incomplets
+restent consultables dans le detail.
+
 Les repetitions d'un meme incident sont rassemblees en une carte avec son total
-et sa periode. Le detail prepare au plus les dix premieres occurrences de chaque
-serie. Les mesures conservent toutes leurs preuves et leur pagination habituelle.
+et sa periode. Le detail prepare au plus dix preuves distinctes par type de
+probleme hors dimensions, reparties sur toute la periode, premiere et derniere
+comprises. Les compteurs et gravites utilisent toutes les occurrences ; seules
+les preuves selectionnees et leurs incidents sont exportes. Les series retenues
+gardent leurs limites et fichiers sources. Les mesures et orientations conservent
+toutes leurs preuves et leur pagination habituelle.
 Un numero de ligne dans les preuves rejoint cette ligne dans le viewer ; le
 bouton de boite mesuree rejoint toujours l'etat complet apres les trois mesures.
+
+Le bilan des vidages T5 robot indique le total sur les jours calendaires de toute
+la trace et distingue les boites evacuees dans les blocs complets attribues au
+robot des prises confirmees par `OMEGA:T5-DEL-PACK@Ok` sur toute la periode.
+Les preuves conservent les IdA et les lignes sources ; les suppressions seules,
+les vidages sans origine certaine et les demandes tronquees ne deviennent pas
+des prises reussies ni des boites evacuees attribuees. Regenerer les anciens rapports.
+
+Le calendrier des vidages T5 robot couvre les jours calendaires de toute
+la trace et sa periode datee. Son detail regroupe les demandes par jour, y compris
+les jours a zero, avec dix preuves navigables maximum sur toute la periode, prises
+confirmees comprises. Les dates viennent
+de l'en-tete et de l'origine horodatee ; une ancienne session sans origine invite
+a recharger la trace. Les seuils restent utilises pour le classement.
+
+Sur grand ecran, les cameras occupent une colonne compacte a droite ; sur petit
+ecran, elles passent sous les priorites. Les orientations montrent quatre
+references puis un detail depliable avec la liste complete. Le bandeau robot
+n'est pas duplique lorsque le diagnostic figure deja parmi les trois priorites.
+
+La periode observee indique les dates completes et la duree totale en heures,
+meme sans incident robot, depuis les metadonnees compactes de la session.
+Les orientations distinguent longueur/largeur inversees (rotation a plat probable)
+et largeur/hauteur inversees (boite sur la tranche probable). Les controles de ce
+second cas portent sur la presentation a plat et la hauteur de restitution du
+robot pour le retraitement. Les autres permutations et egalites restent a part ;
+les denominateurs par produit et les exclusions des bilans ne changent pas.
 
 Les statistiques camera sont preparees une fois par session ; les contextes sont
 lus par blocs indexes. La reouverture reutilise le rapport de la vue. Apres un

@@ -1,13 +1,26 @@
 """Mesures par cycle boite et ecarts a la BdD, independants du rendu."""
 from collections import Counter
 from statistics import mean, median
+from operator import attrgetter
 
 from Models.dimension_check import (DIMENSION_TOLERANCE_MM, DIMENSION_TOLERANCES_MM,
-    dimension_tolerance, dimension_finding_code, measurement_orientation, best_orientation_dimensions)
+    dimension_tolerance, dimension_finding_code, measurement_orientation, best_orientation_dimensions,
+    orientation_category)
 from Models.measurement_identity import measurement_exclusion, EXCLUSION_LABELS
 
 AXES = (('length', 'Longueur T4/C6 (T4C)', 2), ('width', 'Largeur T5/C9', 0),
         ('height', 'Hauteur T5/LzB', 1))
+
+_MEASUREMENT_FIELDS = (
+    'id_alpha', 'id_b', 't5_transfer_id', 'barcode', 'source_ref', 'name',
+    'identified_barcode', 'identified_name', 'identity_line', 'identity_source', 'identity_conflict',
+    'camera_identity_line', 'camera_identity_source', 'bdd_reference', 'bdd_source_line',
+    'bdd_width_mm', 'bdd_height_mm', 'bdd_length_mm', 'measurement_status',
+    'measured_t5_width_mm', 'measured_t5_height_mm', 'measured_t4_length_mm',
+    'measured_t4t_length_mm', 'measured_t4_diff_mm', 'measured_t4_line',
+    'measured_t5_line', 'measured_height_line',
+)
+_measurement_values = attrgetter(*_MEASUREMENT_FIELDS)
 
 
 def _stats(samples, index):
@@ -273,18 +286,27 @@ def summarize(samples, excluded=None):
     return _analyze_comparable(samples, excluded)[0]
 
 
-def analyze_measurements(frames):
-    """Conserve la derniere mesure complete et les preuves distinctes de chaque cycle T5."""
-    active = {}
-    cycles = {}
-    samples = []
-    serial = 0
-    ambiguous_previous = Counter()
-    ambiguous_count = 0
-    for frame_index, frame in enumerate(frames):
+class MeasurementCollector:
+    """Accumule les mesures d'un segment sans relire ses frames."""
+
+    def __init__(self):
+        self.active, self.cycles, self.samples = {}, {}, []
+        self.serial = self.ambiguous_count = 0
+        self.ambiguous_previous = Counter()
+        self._previous_values = None
+        self._repeat_safe = False
+
+    def consume(self, frame_index, frame):
+        values = tuple(_measurement_values(box) for box in frame.boxes_on_T5)
+        if self._repeat_safe and values == self._previous_values:
+            return
+        active, cycles, samples = self.active, self.cycles, self.samples
+        serial, ambiguous_count = self.serial, self.ambiguous_count
+        ambiguous_previous = self.ambiguous_previous
         boxes = frame.boxes_on_T5
         barcode_counts = Counter(b.barcode or b.source_ref for b in boxes)
         counts = Counter(('A', b.id_alpha) if b.id_alpha else ('B', b.id_b) if b.id_b
+                         else ('P', b.t5_transfer_id) if b.t5_transfer_id
                          else ('C', b.barcode or b.source_ref) for b in boxes)
         current = {}
         ambiguous_now = Counter()
@@ -295,11 +317,14 @@ def analyze_measurements(frames):
             for alias in item['aliases']:
                 aliases.setdefault(alias, set()).add(key)
         for box in boxes:
-            identity = ('A', box.id_alpha) if box.id_alpha else ('B', box.id_b) if box.id_b else ('C', box.barcode or box.source_ref)
+            identity = (('A', box.id_alpha) if box.id_alpha else ('B', box.id_b) if box.id_b
+                        else ('P', box.t5_transfer_id) if box.t5_transfer_id
+                        else ('C', box.barcode or box.source_ref))
             if not identity[1] or counts[identity] > 1:
                 ambiguous_now[identity] += 1
                 continue
-            box_aliases = [('A', box.id_alpha), ('B', box.id_b), ('C', box.barcode or box.source_ref)]
+            box_aliases = [('A', box.id_alpha), ('B', box.id_b), ('P', box.t5_transfer_id),
+                           ('C', box.barcode or box.source_ref)]
             box_aliases = [a for a in box_aliases if a[1]]
             key = None
             for alias in box_aliases:
@@ -379,66 +404,50 @@ def analyze_measurements(frames):
         ambiguous_count += sum((ambiguous_now - ambiguous_previous).values())
         ambiguous_previous = ambiguous_now
         active = current
-    excluded = Counter({'ambiguous': ambiguous_count})
-    comparable = []
-    finals = []
-    for item in cycles.values():
-        last = item['last']
-        if item['exclusion']:
-            excluded[item['exclusion']] += 1
-        elif item['c9_error']:
-            excluded['invalid'] += 1
-        elif last is None:
-            excluded[item['missing']] += 1
-        elif last['code'] == 'ORIENTATION':
-            excluded[last['orientation_state']] += 1
-            finals.append(last)
-        else:
-            comparable.append(last)
-            finals.append(last)
-    summary, products = _analyze_comparable(comparable, excluded)
-    summary['cycle_count'] = serial + ambiguous_count
-    return {'summary': summary, 'samples': samples, 'finals': finals,
-            'references': build_reference_lists(comparable, products, summary),
-            'orientation_references': build_orientation_lists(finals)}
+        self.active, self.serial = active, serial
+        self.ambiguous_previous, self.ambiguous_count = ambiguous_previous, ambiguous_count
+        self._previous_values = values
+        primary = [('A', box.id_alpha) if box.id_alpha else ('B', box.id_b) if box.id_b
+                   else ('P', box.t5_transfer_id) for box in boxes]
+        strong_counts = Counter(alias for item in active.values() for alias in item['aliases']
+                                if alias[0] in ('A', 'B', 'P'))
+        self._repeat_safe = (all(key[1] for key in primary) and len(set(primary)) == len(primary)
+            and all(strong_counts[key] == 1 for key in primary))
+
+    def finish(self):
+        cycles, samples = self.cycles, self.samples
+        serial, ambiguous_count = self.serial, self.ambiguous_count
+        excluded = Counter({'ambiguous': ambiguous_count})
+        comparable = []
+        finals = []
+        for item in cycles.values():
+            last = item['last']
+            if item['exclusion']:
+                excluded[item['exclusion']] += 1
+            elif item['c9_error']:
+                excluded['invalid'] += 1
+            elif last is None:
+                excluded[item['missing']] += 1
+            elif last['code'] == 'ORIENTATION':
+                excluded[last['orientation_state']] += 1
+                finals.append(last)
+            else:
+                comparable.append(last)
+                finals.append(last)
+        summary, products = _analyze_comparable(comparable, excluded)
+        summary['cycle_count'] = serial + ambiguous_count
+        return {'summary': summary, 'samples': samples, 'finals': finals,
+                'references': build_reference_lists(comparable, products, summary),
+                'orientation_references': build_orientation_lists(finals)}
 
 
-ORIENTATION_CATEGORIES = [
-    {'id': 'flat_rotation', 'label': 'Longueur / largeur inversées',
-     'hypothesis': "Rotation à plat probable. La boîte a pu tourner pendant son passage dans l'Alpha, au guidage ou au tassage ; les dimensions seules ne datent pas cette rotation.",
-     'checks': ["Examiner la présentation des boîtes, le guidage et le tassage pendant leur passage dans l'Alpha."]},
-    {'id': 'on_edge', 'label': 'Largeur / hauteur inversées',
-     'hypothesis': 'Boîte sur la tranche probable ; présentation physique à confirmer.',
-     'checks': ["Demander au client de présenter les boîtes bien à plat lorsqu'il les verse sur l'Alpha.",
-                "Vérifier la hauteur de restitution du robot en haut de l'Alpha lors du retraitement. Trop basse, elle peut laisser la boîte retomber sur la tranche ; une hauteur adaptée favorise son retournement au rebond, sans le garantir."]},
-    {'id': 'other', 'label': 'Autres permutations et cas à confirmer',
-     'hypothesis': "Les dimensions ne permettent pas d'isoler l'un des deux échanges simples.",
-     'checks': ["Examiner les permutations proposées et la présentation physique, notamment en cas de dimensions égales."]},
-]
 
-
-def orientation_category(sample):
-    width, height, length = sample['expected']
-    matches = sample.get('orientation_matches') or best_orientation_dimensions(sample['measured'], sample['expected'])
-    candidates = {tuple(match['dimensions']) for match in matches}
-    simple = {'flat_rotation': (length, height, width), 'on_edge': (height, width, length)}
-    categories = [kind for kind, dimensions in simple.items() if candidates == {dimensions}]
-    return categories[0] if len(categories) == 1 else 'other'
-
-
-def categorize_orientations(lists):
-    """Enrichir aussi les analyses mises en cache par les anciennes versions."""
-    result = dict(lists)
-    for category in ORIENTATION_CATEGORIES:
-        rows = []
-        for row in lists.get('probable', []):
-            proofs = [dict(sample, orientation_category=category['id']) for sample in row['samples']
-                      if orientation_category(sample) == category['id']]
-            if proofs:
-                rows.append(dict(row, samples=proofs, count=len(proofs),
-                                 percent=100 * len(proofs) / row['total'], orientation_category=category['id']))
-        result[category['id']] = sorted(rows, key=lambda row: (-row['count'], -row['percent'], row['barcode']))
-    return result
+def analyze_measurements(frames):
+    """Conserve la derniere mesure complete et les preuves de chaque cycle T5."""
+    collector = MeasurementCollector()
+    for index, frame in enumerate(frames):
+        collector.consume(index, frame)
+    return collector.finish()
 
 
 def build_orientation_lists(finals):
@@ -450,21 +459,31 @@ def build_orientation_lists(finals):
     for sample in eligible:
         variants.setdefault(sample['barcode'], set()).add(tuple(sample['expected']))
     result = {}
-    for kind, state in (('probable', 'orientation'), ('uncertain', 'orientation_uncertain')):
+    proofs_by_kind = {kind: [] for kind in ('probable', 'uncertain', 'flat_rotation', 'on_edge', 'other')}
+    for sample in eligible:
+        state = sample.get('orientation_state')
+        if state not in ('orientation', 'orientation_uncertain'):
+            continue
+        matches = best_orientation_dimensions(sample['measured'], sample['expected'])
+        category = orientation_category(sample['measured'], sample['expected'], matches) if state == 'orientation' else 'uncertain'
+        proof = dict(sample, orientation_matches=matches, orientation_category=category)
+        proofs_by_kind['probable' if state == 'orientation' else 'uncertain'].append(proof)
+        if state == 'orientation':
+            proofs_by_kind[category].append(proof)
+    for kind, proofs_in_kind in proofs_by_kind.items():
         groups = {}
-        for sample in eligible:
-            if sample.get('orientation_state') == state:
-                proof = dict(sample, orientation_matches=best_orientation_dimensions(sample['measured'], sample['expected']))
-                groups.setdefault(sample['barcode'], []).append(proof)
+        for proof in proofs_in_kind:
+            groups.setdefault(proof['barcode'], []).append(proof)
         rows = []
         for barcode, proofs in groups.items():
             proofs.sort(key=lambda sample: (sample['display_frame_index'], sample['display_line'], sample['cycle']))
             count, total = len(proofs), totals[barcode]
             rows.append({'barcode': barcode, 'name': proofs[0].get('name', ''), 'count': count,
                          'total': total, 'percent': 100 * count / total, 'samples': proofs,
+                         'orientation_category': kind,
                          'variant_count': len(variants[barcode])})
         result[kind] = sorted(rows, key=lambda row: (-row['count'], -row['percent'], row['barcode']))
-    return categorize_orientations(result)
+    return result
 
 
 def build_reference_lists(samples, products=None, summary=None):

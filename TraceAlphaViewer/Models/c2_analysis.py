@@ -70,25 +70,37 @@ def _analyze_signal(line_states, sensor):
         current = None
 
     for line, text, state in line_states:
-        obs = observation(line, text, state)
-        if current and obs['time'] - current['last']['time'] > 120:
+        if current and state.timestamp - current['last']['time'] > 120:
             close_episode('Interruption des observations supérieure à deux minutes')
-        if pending and (line - pending['line'] > 3 or obs['time'] - pending['time'] > 2):
+        if pending and (line - pending['line'] > 3 or state.timestamp - pending['time'] > 2):
             pending = None
         if _RESTART.search(text):
             close_episode('Redémarrage logiciel')
             pending = None
             continue
-        sensors = {key: int(value) for key, value in _SENSOR.findall(text)}
-        if any(sensors.get(key) == 1 for key in idle_sensors):
-            if sensor == 'C3' and sensors.get('C4') != 1 and not _PROGRESS.search(text):
+        lower = text.lower()
+        sensors = ({key: int(value) for key, value in _SENSOR.findall(text)}
+                   if 'C2:' in text or 'C3:' in text or 'C4:' in text else {})
+        idle_active = any(sensors.get(key) == 1 for key in idle_sensors)
+        progress = 't2:' in lower and bool(_PROGRESS.search(text))
+        t2 = 't2:' in lower and bool(_T2.search(text))
+        relaunch = 'vidage' in lower and bool(_RELAUNCH.search(text))
+        initialization = 'initmachine:' in lower and bool(_INIT.search(text))
+        drain_end = 'vid:' in lower and bool(_DRAIN_END.search(text))
+        complete = all(key in sensors for key in ('C2', 'C3', 'C4'))
+        if not (idle_active or progress or relaunch or ('Capteurs ' in text and pending)
+                or (t2 and complete) or (current and (initialization or drain_end))):
+            continue
+        obs = observation(line, text, state)
+        if idle_active:
+            if sensor == 'C3' and sensors.get('C4') != 1 and not progress:
                 close_episode(f"Activation de C2 à {obs['display_time']} : contexte de surveillance terminé, "
                               "reprise T2 non attestée", boundary=obs)
             else:
                 close_episode(f"Activation {'/'.join(idle_sensors)} : progression observée", obs)
-        elif _PROGRESS.search(text):
+        elif progress:
             close_episode('Progression T2 confirmée', obs)
-        if _RELAUNCH.search(text):
+        if relaunch:
             pending = obs
         if 'Capteurs ' in text and pending and 0 < line - pending['line'] <= 3:
             if set(sensors) == {'C2', 'C3', 'C4', 'C5', 'C6', 'C9'}:
@@ -98,8 +110,8 @@ def _analyze_signal(line_states, sensor):
                     current['blocks'].append({'request': pending, 'state': obs})
                     current['last'] = obs
                 pending = None
-        if _T2.search(text) and all(key in sensors for key in ('C2', 'C3', 'C4')):
-            if any(sensors[key] for key in idle_sensors) or _PROGRESS.search(text):
+        if t2 and complete:
+            if idle_active or progress:
                 continue
             if current is None:
                 current = open_episode(obs)
@@ -112,9 +124,9 @@ def _analyze_signal(line_states, sensor):
             current['first_t2'] = current['first_t2'] or obs
             current['last_t2'] = obs
             current['last'] = obs
-        if current and _INIT.search(text):
+        if current and initialization:
             current['initializations'].append(obs)
-        if current and _DRAIN_END.search(text):
+        if current and drain_end:
             current['drain_end'] = obs
     close_episode('Fin de trace : résolution non observée')
     if not episodes:

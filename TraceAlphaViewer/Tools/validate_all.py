@@ -9,11 +9,15 @@ import sys
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--visual', action='store_true', help='Autoriser les controles avec fenetres visibles')
+    parser.add_argument('--exe', action='store_true', help='Valider aussi un executable explicitement construit pour ces sources')
     args = parser.parse_args()
     directory = Path(__file__).resolve().parent
     failures = []
     for script in sorted(directory.glob('validate_*.py')):
         if script.name == Path(__file__).name:
+            continue
+        if script.name == 'validate_exe.py' and not args.exe:
+            print('Executable exclu : validation uniquement sur demande explicite avec --exe',flush=True)
             continue
         if script.name == 'validate_diagnostic_layout.py' and not args.visual:
             print('Controle visuel separe : validate_diagnostic_layout.py (option --visual)', flush=True)

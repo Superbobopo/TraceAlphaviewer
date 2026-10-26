@@ -23,12 +23,13 @@ class TracePanel(ctk.CTkFrame):
 
     def __init__(self, master,
                  on_line_click: Optional[Callable[[int], None]] = None,
-                 search_visible: bool = True,
+                 line_label: Optional[Callable[[int], str]] = None,
                  **kwargs):
         kwargs.setdefault('fg_color', '#12121f')
         kwargs.setdefault('corner_radius', 0)
         super().__init__(master, **kwargs)
         self._on_line_click = on_line_click
+        self._line_label = line_label
         self._total_lines = 0
         self._hi_start: int = 0
         self._hi_end:   int = 0
@@ -44,28 +45,35 @@ class TracePanel(ctk.CTkFrame):
         self._search_matches = []
         self._search_index = -1
         self._search_pending_direction = None
-        self.search_visible = search_visible
         self._build()
         self._poll_job = self.after(30, self._poll_results)
 
     # ── Construction ─────────────────────────────────────────────────────────
     def _build(self) -> None:
-        header = ctk.CTkFrame(self, fg_color='#1e1e30', corner_radius=0)
-        self._search_header = header
-        if self.search_visible:
-            header.pack(fill='x')
-        ctk.CTkLabel(header, text='CIP / texte', font=('Consolas', 10)).pack(side='left', padx=8)
-        search = ctk.CTkEntry(header, textvariable=self._search_var, height=26)
-        self._search_entry = search
-        search.pack(side='left', fill='x', expand=True, padx=4, pady=4)
+        self._search_visible = False
+        header = self._search_header = ctk.CTkFrame(
+            self, fg_color='#1b293a', corner_radius=10, border_width=1,
+            border_color='#344c66')
+        ctk.CTkLabel(header, text='CIP / texte', text_color='#a8c4e4',
+                     font=('Segoe UI', 11)).pack(side='left', padx=(10, 2))
+        search = self._search_entry = ctk.CTkEntry(
+            header, textvariable=self._search_var, height=32, corner_radius=7,
+            border_width=0, fg_color='#23354b', text_color='#edf5ff',
+            placeholder_text='Rechercher un CIP ou du texte…', font=('Segoe UI', 12))
+        search.pack(side='left', fill='x', expand=True, padx=(8, 6), pady=7)
         search.bind('<Return>', lambda e: self._navigate_search(1))
         search.bind('<F3>', lambda e: self._navigate_search(1))
         search.bind('<Shift-F3>', lambda e: self._navigate_search(-1))
+        search.bind('<Escape>', lambda e: self.set_search_visible(False))
+        search.bind('<Control-f>', lambda e: self.set_search_visible(True))
         for label, direction in (('<', -1), ('>', 1)):
             ctk.CTkButton(header, text=label, width=30, height=26,
                           command=lambda d=direction: self._navigate_search(d)).pack(side='left', padx=2)
-        self._search_label = ctk.CTkLabel(header, text='', width=120, font=('Consolas', 10))
-        self._search_label.pack(side='left', padx=8)
+        self._search_label = ctk.CTkLabel(header, text='', width=72, font=('Segoe UI', 11))
+        self._search_label.pack(side='left', padx=6)
+        ctk.CTkButton(header, text='×', width=28, height=28,
+                      fg_color='transparent', hover_color='#344c66',
+                      command=lambda: self.set_search_visible(False)).pack(side='left', padx=(0, 6))
         self._search_var.trace_add('write', lambda *_: self._queue_search())
         # Scrollbars
         vscroll = tk.Scrollbar(self, orient='vertical',
@@ -116,6 +124,16 @@ class TracePanel(ctk.CTkFrame):
         self._text.bind('<Button-1>', self._on_click)
 
     # ── Chargement du fichier ─────────────────────────────────────────────────
+    def set_search_visible(self, visible: bool) -> str:
+        self._search_visible = visible
+        if visible:
+            self._search_header.pack(fill='x', padx=6, pady=(4, 5), before=self._text)
+            self._search_entry.focus_set()
+        else:
+            self._search_header.pack_forget()
+            self._text.focus_set()
+        return 'break'
+
     def load_file(self, filepath: str) -> None:
         """Charge le fichier en arrière-plan et insère les lignes dans le widget."""
         self._load_cancel.set()
@@ -198,7 +216,8 @@ class TracePanel(ctk.CTkFrame):
     def _append_lines(self, lines):
         segments = []
         for num, text in lines:
-            segments.extend((f'L.{num:<7} ', ('linenum',), text + '\n', ('known',)))
+            label = self._line_label(num) + '  ' if self._line_label else f'L.{num:<7} '
+            segments.extend((label, ('linenum',), text + '\n', ('known',)))
         if segments:
             self._text.configure(state='normal')
             self._text.insert('end', *segments)
@@ -230,15 +249,6 @@ class TracePanel(ctk.CTkFrame):
         else:
             self._finish_insert()
 
-    def set_search_visible(self, visible: bool) -> None:
-        self.search_visible = visible
-        if visible:
-            self._search_header.pack(fill='x', before=self._text)
-            self._search_entry.focus_set()
-        else:
-            self._search_header.pack_forget()
-            self._text.focus_set()
-
     def _queue_search(self) -> None:
         if self._search_job:
             self.after_cancel(self._search_job)
@@ -251,7 +261,7 @@ class TracePanel(ctk.CTkFrame):
         query = self._search_var.get().strip()
         self._search_label.configure(text='Chargement...' if query and self._loading else '')
         if query and not self._loading:
-            self._search_job = self.after(180, lambda: self._search_chunk(query, '1.10'))
+            self._search_job = self.after(180, lambda: self._search_chunk(query, '1.0'))
 
     def _search_chunk(self, query: str, start: str) -> None:
         self._search_job = None
@@ -267,7 +277,7 @@ class TracePanel(ctk.CTkFrame):
                 return
             end = self._text.index(f'{found}+{count.get()}c')
             # Exclut les numeros de ligne ajoutes par le viewer.
-            if int(found.split('.')[1]) >= 10:
+            if 'linenum' not in self._text.tag_names(found):
                 self._search_matches.append((found, end))
                 self._text.tag_add('search', found, end)
             start = end
