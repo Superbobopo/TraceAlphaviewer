@@ -8,6 +8,7 @@ Deux sections :
 from __future__ import annotations
 
 import customtkinter as ctk
+from Widgets.ui_theme import ui_color, scrollable_colors
 import tkinter as tk
 from typing import Optional
 
@@ -38,7 +39,7 @@ class StateTable(ctk.CTkFrame):
     """Affiche l'Ã©tat courant des capteurs et des tapis en temps rÃ©el."""
 
     def __init__(self, master, **kwargs):
-        kwargs.setdefault('fg_color', '#161625')
+        kwargs.setdefault('fg_color', ui_color(master, 'panel', '#161625'))
         kwargs.setdefault('corner_radius', 6)
         super().__init__(master, **kwargs)
         self._build()
@@ -46,14 +47,14 @@ class StateTable(ctk.CTkFrame):
     # â”€â”€ Construction â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _build(self) -> None:
         # â”€â”€ En-tÃªte â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        hdr = ctk.CTkFrame(self, fg_color='#1e1e30', corner_radius=0)
+        hdr = ctk.CTkFrame(self, fg_color=ui_color(self, 'surface', '#1e1e30'), corner_radius=0)
         hdr.pack(fill='x')
         ctk.CTkLabel(hdr, text='CAPTEURS & TAPIS',
                      font=('Consolas', 10, 'bold'),
-                     text_color='#445566').pack(pady=4)
+                     text_color=ui_color(self, 'dim', '#445566')).pack(pady=4)
 
         # â”€â”€ Zone scrollable â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        scroll_frame = ctk.CTkScrollableFrame(self, fg_color='#161625',
+        scroll_frame = ctk.CTkScrollableFrame(self, fg_color=ui_color(self, 'panel', '#161625'), **scrollable_colors(self),
                                                corner_radius=0)
         scroll_frame.pack(fill='both', expand=True, padx=2, pady=2)
         inner = scroll_frame
@@ -61,7 +62,7 @@ class StateTable(ctk.CTkFrame):
         # â”€â”€ Section Capteurs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         ctk.CTkLabel(inner, text='â”€â”€ Capteurs â”€â”€',
                      font=('Consolas', 9, 'bold'),
-                     text_color='#445566').pack(anchor='w', padx=8, pady=(6, 2))
+                     text_color=ui_color(self, 'dim', '#445566')).pack(anchor='w', padx=8, pady=(6, 2))
 
         self._sensor_rows: dict[str, ctk.CTkLabel] = {}
         sensors = [
@@ -83,18 +84,18 @@ class StateTable(ctk.CTkFrame):
                                 text_color=_OFF_COLOR, width=24)
             dot.pack(side='left', padx=2)
             ctk.CTkLabel(row, text=f'{name}', font=('Consolas', 10, 'bold'),
-                          text_color='#667788', width=70,
+                          text_color=ui_color(self, 'muted', '#667788'), width=70,
                           anchor='w').pack(side='left')
             ctk.CTkLabel(row, text=desc, font=('Consolas', 9),
-                          text_color='#445566', anchor='w').pack(side='left', padx=4)
+                          text_color=ui_color(self, 'dim', '#445566'), anchor='w').pack(side='left', padx=4)
             self._sensor_rows[name] = dot
 
         # â”€â”€ Section Tapis â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        ctk.CTkFrame(inner, fg_color='#2a2a3e', height=1).pack(
+        ctk.CTkFrame(inner, fg_color=ui_color(self, 'control', '#2a2a3e'), height=1).pack(
             fill='x', padx=8, pady=6)
         ctk.CTkLabel(inner, text='â”€â”€ Tapis â”€â”€',
                      font=('Consolas', 9, 'bold'),
-                     text_color='#445566').pack(anchor='w', padx=8, pady=(0, 2))
+                     text_color=ui_color(self, 'dim', '#445566')).pack(anchor='w', padx=8, pady=(0, 2))
 
         self._belt_et_labels: dict[str, ctk.CTkLabel] = {}
         self._belt_st_labels: dict[str, ctk.CTkLabel] = {}
@@ -108,18 +109,18 @@ class StateTable(ctk.CTkFrame):
             ('T3', '#557799'), ('T4', '#557799'), ('T5', '#557799'),
         ]
         for name, color in belt_names:
-            row = ctk.CTkFrame(inner, fg_color='#1a1a2e', corner_radius=4)
+            row = ctk.CTkFrame(inner, fg_color=ui_color(self, 'surface', '#1a1a2e'), corner_radius=4)
             row.pack(fill='x', padx=6, pady=2)
             ctk.CTkLabel(row, text=name, font=('Consolas', 10, 'bold'),
                           text_color=color, width=36).pack(side='left', padx=4)
             et_lbl = ctk.CTkLabel(row, text='eT:â€”', font=('Consolas', 9, 'bold'),
-                                   text_color='#556677', width=52)
+                                   text_color=ui_color(self, 'dim', '#556677'), width=52)
             et_lbl.pack(side='left')
             st_lbl = ctk.CTkLabel(row, text='â€”', font=('Consolas', 8),
                                    text_color='#4477aa', width=100, anchor='w')
             st_lbl.pack(side='left', padx=2)
             desc_lbl = ctk.CTkLabel(row, text='', font=('Consolas', 9),
-                                     text_color='#445566', anchor='w',
+                                     text_color=ui_color(self, 'dim', '#445566'), anchor='w',
                                      wraplength=300)
             desc_lbl.pack(side='left', padx=4, fill='x', expand=True)
             self._belt_et_labels[name] = et_lbl
@@ -158,7 +159,7 @@ class StateTable(ctk.CTkFrame):
             if et is not None and et < 0 and et != -1 and not desc:
                 desc = 'Err: code eT non documentÃ©'
             if et is None:
-                self._belt_et_labels[name].configure(text='tÃ¢che', text_color='#445566')
+                self._belt_et_labels[name].configure(text='tÃ¢che', text_color=ui_color(self, 'dim', '#445566'))
             else:
                 self._belt_et_labels[name].configure(
                     text=f'eT:{et}', text_color=_et_color(et))

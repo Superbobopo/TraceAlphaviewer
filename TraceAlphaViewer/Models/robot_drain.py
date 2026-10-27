@@ -21,11 +21,14 @@ def analyze_robot_boxes(line_states, trace_origin=None, absolute_origin=False):
     result = {'box_metrics_version': 1, 'rejected_boxes_count': 0, 'robot_picked_boxes_count': 0,
               'unattributed_removed_boxes_count': 0, 'drain_episodes': [], 'box_daily': {}, 'undated_requests': []}
     calendar = TraceCalendar(trace_origin) if trace_origin and not absolute_origin else None
+    from Models.trace_calendar import TraceLines, observation_clock
+    axis = observation_clock(line_states, trace_origin) if calendar and isinstance(line_states, TraceLines) else None
     pending, active = [], None
     picked, versions, seen, requests = set(), {}, set(), set()
 
     def observation(line, state):
-        moment = (trace_origin + timedelta(seconds=state.timestamp) if absolute_origin and trace_origin else
+        moment = (trace_origin + timedelta(seconds=clock) if axis is not None else
+                  trace_origin + timedelta(seconds=state.timestamp) if absolute_origin and trace_origin else
                   calendar.at(state.timestamp) if calendar else None)
         return {'line': line, 'time_str': state.timestamp_str, 'date': moment.date().isoformat() if moment else '',
                 'display_time_str': moment.strftime('%d/%m/%Y à %H:%M:%S') if moment else state.timestamp_str}
@@ -48,13 +51,14 @@ def analyze_robot_boxes(line_states, trace_origin=None, absolute_origin=False):
         result['drain_episodes'].append(active)
         active = None
 
-    for line, text, state in line_states:
+    for index, (line, text, state) in enumerate(line_states):
         if line in seen:
             continue
         seen.add(line)
-        if calendar:
+        if calendar and axis is None:
             calendar.observe(state.timestamp)
-        clock = ((calendar.at(state.timestamp) - trace_origin).total_seconds() if calendar else state.timestamp)
+        clock = (axis.times[index] if axis is not None else
+                 (calendar.at(state.timestamp) - trace_origin).total_seconds() if calendar else state.timestamp)
         if 'version logiciel VBalpha:' in text:
             finish()
             pending, picked, versions = [], set(), {}
@@ -63,6 +67,11 @@ def analyze_robot_boxes(line_states, trace_origin=None, absolute_origin=False):
             pending = []
         if active and not 0 <= clock - active['last_time'] <= 120:
             finish()
+        lower = text.lower()
+        if text.isascii() and not any(token in lower for token in (
+                'omega:t5-', 'supp. de t5 la boite id:', 't5v:', 'suppression de toutes les boites',
+                'envoi en udp la liste des boites valides sur t5.', 'ation de la boite', 'version logiciel vbalpha:')):
+            continue
         if not _BOX_RELEVANT.search(text):
             continue
         if _ROBOT_REQUEST.search(text):

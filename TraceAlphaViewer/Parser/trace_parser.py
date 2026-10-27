@@ -4,7 +4,7 @@ Parser pour les fichiers de trace AlphaV2 (.old).
 Format d'une ligne :
     [* |L |  ] DD|HH:MM:SS.t  texte…
 
-Le parser construit une liste de MachineState : un état complet de la machine
+Le parser produit des snapshots MachineState : un état complet de la machine
 par timestamp unique (granularité 0,1 s). Chaque état est obtenu en appliquant
 les mises à jour successives sur le précédent (état incrémental).
 """
@@ -13,7 +13,8 @@ from __future__ import annotations
 import os
 import re
 from contextlib import closing
-from typing import Callable, List, Optional
+from functools import lru_cache
+from typing import Callable, Iterator, List, Optional
 
 from Models.dimension_check import dimension_finding_code, measurement_status_from_code
 from Models.measurement_identity import is_unknown_reference, record_identification, measurement_exclusion
@@ -1357,14 +1358,14 @@ def _is_significant(prev: MachineState, curr: MachineState) -> bool:
 
 
 # ── Fonction principale ───────────────────────────────────────────────────────
-def parse_file(
+def iter_frames(
     filepath: str,
     progress_cb: Optional[Callable[[int, int], None]] = None,
     min_dt: float = 2.0,
     source_metadata_output: Optional[dict] = None,
-) -> List[MachineState]:
+) -> Iterator[MachineState]:
     """
-    Parse un fichier .old et retourne la liste des frames.
+    Parse un fichier .old en produisant des snapshots independants.
 
     min_dt   : intervalle minimal entre deux frames conservés (secondes).
                 Défaut 2.0 s → ~1 frame/2 s + tous les événements clés.
@@ -1376,7 +1377,6 @@ def parse_file(
     done  = 0
     chunk = 1024 * 1024   # callback tous les 1 Mo
 
-    frames: List[MachineState] = []
     current       = MachineState()
     prev_saved:    Optional[MachineState] = None
     current_ts:    Optional[float] = None
@@ -1392,6 +1392,11 @@ def parse_file(
                 'ALPHA:T5-LIST-PACK', 'Cr\xe9ation',
                 'AjoutBtT5', 'DeplBtSurT5', 'capteurC1', 'FlagPoubelle', 'LzB', 'longueur boite',
                 'mesure de longueur', 'tassement', 'diffT4', 'CubeStop', 'version logiciel VBalpha:')
+
+    @lru_cache(maxsize=2048)
+    def is_known_text(text: str) -> bool:
+        # Ce cache propre au fichier ne contient aucun etat de la machine.
+        return any(keyword in text for keyword in KEYWORDS)
 
     file_line = 0
     with closing(canonical_lines(filepath, source_metadata_output)) as source:
@@ -1424,13 +1429,13 @@ def parse_file(
                 # -- Sauvegarde conditionnelle du frame courant ---------------
                 dt = current.timestamp - last_saved_ts
                 if prev_saved is None:
-                    frames.append(current.deep_copy())
-                    prev_saved    = frames[-1]
+                    prev_saved    = current.deep_copy()
                     last_saved_ts = current.timestamp
+                    yield prev_saved
                 elif min_dt <= 0 or dt >= min_dt or _is_significant(prev_saved, current):
-                    frames.append(current.deep_copy())
-                    prev_saved    = frames[-1]
+                    prev_saved    = current.deep_copy()
                     last_saved_ts = current.timestamp
+                    yield prev_saved
 
                 # -- Mise à jour timestamp (in-place, sans copie) -------------
                 current.timestamp     = ts - first_ts
@@ -1440,16 +1445,24 @@ def parse_file(
                 current.events        = []
                 current_ts = ts
 
-            is_known = any(k in text for k in KEYWORDS)
+            is_known = is_known_text(text)
             current.raw_lines.append((file_line, text.rstrip(), is_known))
             if is_known:
                 _update(current, text, ctx, file_line)
 
     # Dernier frame
     if current_ts is not None:
-        frames.append(current.deep_copy())
+        yield current.deep_copy()
 
     if progress_cb:
         progress_cb(total, total)
 
-    return frames
+
+def parse_file(
+    filepath: str,
+    progress_cb: Optional[Callable[[int, int], None]] = None,
+    min_dt: float = 2.0,
+    source_metadata_output: Optional[dict] = None,
+) -> List[MachineState]:
+    """Retourne la liste des frames, avec les memes options que iter_frames."""
+    return list(iter_frames(filepath, progress_cb, min_dt, source_metadata_output))

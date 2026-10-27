@@ -24,10 +24,11 @@ from Models.robot_drain import (
 )
 from Models.state import BoxInfo
 from Models.robot_drain import analyze_robot_boxes, attach_robot_box_metrics, merge_robot_box_metrics
-from Models.c5_analysis import merge_c5_metrics, c5_metric_text
+from Models.c5_analysis import merge_c5_metrics, c5_metric_text, c5_is_critical
 from Models.trace_observations import OBSERVATION_CODES
 from Models.diagnostic_summary import normalize_summary_incidents
 from Models.trace_calendar import TraceLines
+from Models.segment_collector import SegmentCollector
 
 
 _BOX_LINES = tuple(item.name for item in fields(BoxInfo)
@@ -115,7 +116,7 @@ def _copy_sources(sources, raw_path):
     return metadata
 
 
-def _group_frames(sources, metadata, origin, progress):
+def _group_frames(sources, metadata, origin, progress, *, progress_detail=None):
     segments = metadata['segments']
     date_segments = metadata['date_segments']
     frame_index = 0
@@ -127,6 +128,8 @@ def _group_frames(sources, metadata, origin, progress):
         first_frame = frame_index
         start = end = None
         with FrameStore(source['store']) as frames:
+            if progress_detail:
+                progress_detail('read', location['filepath'], 0.8, 1, 'Regroupement des frames')
             duplicate_ranges = frames.source_metadata.get('duplicate_ranges', [])
             metadata['duplicate_ranges'].extend({
                 'first_line': row['first_line'] + offset,
@@ -163,6 +166,10 @@ def _group_frames(sources, metadata, origin, progress):
                 yield frame
                 if progress and local_index % 500 == 0:
                     progress('merge', index, len(sources), location['name'])
+                if progress_detail and (local_index + 1) % 500 == 0:
+                    progress_detail('read', location['filepath'],
+                                    0.8 + 0.2 * (local_index + 1) / max(len(frames), 1),
+                                    1, 'Regroupement des frames')
             segments.append({'source': index, 'first_frame': first_frame,
                              'frame_count': frame_index - first_frame,
                              'last_frame': frame_index - 1,
@@ -171,6 +178,8 @@ def _group_frames(sources, metadata, origin, progress):
                              'end': end.isoformat() if end else ''})
             location.update(start=start.isoformat() if start else '',
                             end=end.isoformat() if end else '')
+            if progress_detail:
+                progress_detail('read', location['filepath'], 1, 1, 'Frames regroupees')
 
 
 def _group_period(metadata):
@@ -223,6 +232,19 @@ def _measurement_union(analyses):
 
 
 def _merge_camera(target, source):
+    left, right = target.get('decoding_distribution', {}), source.get('decoding_distribution', {})
+    if left.get('available') and right.get('available') and left.get('version') == right.get('version') == 1:
+        target['decoding_distribution'] = {'version': 1, 'available': True, **{
+            key: left[key] + right[key] for key in ('total', 'CB1', 'CB2')}}
+    else:
+        target['decoding_distribution'] = {'available': False}
+    left, right = target.get('recovery', {}), source.get('recovery', {})
+    if left.get('available') and right.get('available'):
+        target['recovery'] = {'version': 1, 'available': True, **{
+            key: left[key] + right[key] for key in ('cb1_zero_count', 'cb2_recovered_count',
+                'cb2_zero_count', 'cb2_not_observed_count', 'chronology_unconfirmed_count')}}
+    else:
+        target['recovery'] = {'available': False}
     for key in ('all_hist_boxes',):
         target[key].update(source[key])
     for key in ('reader_boxes', 'reader_zero_boxes'):
@@ -300,7 +322,7 @@ def _combine_signal(incidents):
         return [replace(first, last_line=last.last_line, end_time=last.end_time,
                         end_time_str=last.end_time_str, count=metrics['episode_count'],
                         metrics=metrics, examples=examples, summary=c5_metric_text(metrics),
-                        severity='error' if metrics['suspect_cycle_count'] else 'warning',
+                        severity='error' if c5_is_critical(metrics) else 'warning',
                         event_lines=[line for row in incidents for line in row.event_lines])]
     metrics = {key: sum(row.metrics.get(key, 0) for row in incidents)
                for key in ('episode_count', 'transitions', 'drain_relaunches', 'initialization_requests',
@@ -343,7 +365,8 @@ def _combine_observations(incidents):
     return diagnostic_model._observation_incident(code,first.title,first.belt,severity,count,metrics,rule)
 
 
-def analyze_segment(store_dir, segment, origin, index, total, name='', progress_cb=None):
+def analyze_segment(store_dir, segment, origin, index, total, name='', progress_cb=None,
+                    *, progress_detail=None):
     """Analyse un seul fichier, avec son lecteur et ses accumulateurs independants."""
     timings = {}
     with FrameStore(store_dir) as frames:
@@ -351,27 +374,18 @@ def analyze_segment(store_dir, segment, origin, index, total, name='', progress_
         view = _SegmentFrames(frames, segment['first_frame'], segment['frame_count'])
         if progress_cb:
             progress_cb('analysis', index, total, name)
-        measures, reference_index = MeasurementCollector(), ReferenceCollector()
-        state_index = diagnostic_model.StateIncidentCollector()
-        events, seen_events, line_states, seen_lines = [], set(), TraceLines(), set()
+        if progress_detail:
+            progress_detail('diagnostic', 0, 1, 'Collecte du segment')
+        collector = SegmentCollector()
         for local_index, frame in enumerate(view):
-            measures.consume(local_index, frame)
-            reference_index.consume(frame)
-            state_index.consume(frame)
-            for event in frame.events:
-                key = (event.line_num, event.kind, event.title)
-                if key not in seen_events:
-                    events.append(event)
-                    seen_events.add(key)
-            state = diagnostic_model.DiagnosticState(frame.timestamp, frame.timestamp_str, frame.C6)
-            for line, text, *_ in frame.raw_lines:
-                if line not in seen_lines:
-                    line_states.append((line, text, state))
-                    seen_lines.add(line)
+            collector.consume(frame)
             if progress_cb and local_index % 500 == 0:
                 progress_cb('analysis', index, total, name)
-        events.sort(key=lambda event: (event.line_num, event.kind, event.title))
-        analysis = measures.finish()
+            if progress_detail and (local_index + 1) % 500 == 0:
+                progress_detail('diagnostic', 0.2 * (local_index + 1) / max(len(view), 1),
+                                1, 'Collecte du segment')
+        analysis = collector.finish()
+        events, line_states = collector.events, collector.lines
         timings[f'segment_{index + 1}_collecte'] = time.perf_counter() - tick
         # L'index de preuve appartient au viewer commun, pas a la vue du segment.
         for sample in analysis['samples']:
@@ -379,23 +393,34 @@ def analyze_segment(store_dir, segment, origin, index, total, name='', progress_
         stats = {}
         if progress_cb:
             progress_cb('diagnostic', index, total, name)
+        if progress_detail:
+            progress_detail('diagnostic', 0.2, 1, 'Analyse du segment')
+
+        def diagnostic_progress(task, done, work):
+            progress_detail('diagnostic', 0.2 + 0.8 * min(1.0, done / max(work, 1)), 1, task)
+
         tick = time.perf_counter()
         robot_analysis = analyze_robot_boxes(line_states, origin, absolute_origin=total > 1)
         analyses = diagnostic_model.build_diagnostics(view, events, analysis, trace_origin=origin,
-            line_states=line_states, camera_stats_output=stats, state_incidents=state_index.finish(),
-            robot_box_analysis=robot_analysis)
+            line_states=line_states, camera_stats_output=stats, state_incidents=collector.states.finish(),
+            robot_box_analysis=robot_analysis,
+            progress_cb=diagnostic_progress if progress_detail else None)
         timings[f'segment_{index + 1}_diagnostic'] = time.perf_counter() - tick
         if total > 1:
             for incident in analyses:
                 incident.metrics = dict(incident.metrics, source_segment=index)
         if progress_cb:
             progress_cb('references', index, total, name)
+        if progress_detail:
+            progress_detail('references', 0, 1, 'Finalisation des references')
         tick = time.perf_counter()
-        rows = reference_index.finish(events)
+        rows = collector.references.finish(events)
         timings[f'segment_{index + 1}_references'] = time.perf_counter() - tick
         if total > 1:
             for row in rows:
                 row.key = f'S{index + 1}:{row.key}'
+        if progress_detail:
+            progress_detail('references', 1, 1, 'References finalisees')
         resets = _reset_observations(line_states, origin)
         drains = [(line, frame.timestamp, frame.timestamp_str) for line, text, frame in line_states
                   if diagnostic_model._TRACE_T5_DEM_VIDAGE.search(text)]
@@ -403,12 +428,21 @@ def analyze_segment(store_dir, segment, origin, index, total, name='', progress_
                     camera=stats, resets=resets, drains=drains, boxes=robot_analysis, timings=timings)
 
 
-def _segment_results(store_dir, metadata, origin, progress_cb, parallel):
+def _segment_results(store_dir, metadata, origin, progress_cb, parallel, *, progress_detail=None,
+                     resource_policy=None):
     segments = metadata['segments']
+    if resource_policy and resource_policy.get('max_workers', 1) <= 1:
+        parallel = False
     if not parallel or len(segments) < 2:
         for index, segment in enumerate(segments):
+            source_id = str(Path(metadata['sources'][index]['filepath']).resolve())
+
+            def detail(phase, done, work, task, source_id=source_id):
+                progress_detail(phase, source_id, done, work, task)
+
             yield analyze_segment(store_dir, segment, origin, index, len(segments),
-                                  metadata['sources'][index]['name'], progress_cb)
+                                  metadata['sources'][index]['name'], progress_cb,
+                                  progress_detail=detail if progress_detail else None)
         return
     from Models.loading_client import WorkerTask
     from Models.worker_process_tree import own_process_tree
@@ -416,45 +450,64 @@ def _segment_results(store_dir, metadata, origin, progress_cb, parallel):
     import uuid
     own_process_tree()
     child_root = Path(store_dir).parent / 'analysis-workers'
-    for first in range(0, len(segments), 2):
+    first = 0
+    while first < len(segments):
+        capacity = min(4, resource_policy.get('max_workers', 2)) if resource_policy else 2
+        if resource_policy:
+            from Models.resource_policy import launch_capacity
+            capacity = launch_capacity(resource_policy)
         tasks = []
         try:
-            for index in range(first, min(first + 2, len(segments))):
+            for index in range(first, min(first + capacity, len(segments))):
                 tasks.append(WorkerTask(child_root / uuid.uuid4().hex, dict(
                     mode='segment_analysis', session=str(child_root), store=str(store_dir),
                     segment=segments[index], origin=origin, index=index, total=len(segments),
-                    name=metadata['sources'][index]['name'])))
-            for task in tasks:
-                result = None
-                while True:
+                    name=metadata['sources'][index]['name'],
+                    source_id=str(Path(metadata['sources'][index]['filepath']).resolve()),
+                    detail_enabled=bool(progress_detail))))
+            results = [None] * len(tasks)
+            pending = set(range(len(tasks)))
+            while pending:
+                received = False
+                # Vider toutes les files sans bloquer les autres segments.
+                for position in sorted(pending):
+                    task = tasks[position]
                     try:
-                        kind, payload = task.results.get(timeout=0.1)
+                        kind, payload = task.results.get_nowait()
                     except Empty:
                         if task.finished.is_set():
                             raise OSError('Sous-worker termine sans resultat de segment')
                         continue
+                    received = True
                     if kind == 'segment_progress' and progress_cb:
                         progress_cb(*payload)
+                    elif kind == 'segment_detail' and progress_detail:
+                        progress_detail(*payload)
                     elif kind == 'segment_result':
-                        result = payload
+                        results[position] = payload
                     elif kind == 'error':
                         raise OSError(payload)
                     elif kind == 'done':
-                        if result is None:
+                        if results[position] is None:
                             raise OSError('Analyse de segment incomplete')
-                        if not task.finished.wait(10):
-                            raise OSError('Le sous-worker ne se ferme pas')
-                        yield result
-                        break
+                        pending.remove(position)
+                if pending and not received:
+                    time.sleep(0.005)
+            for position, task in enumerate(tasks):
+                if not task.finished.wait(10):
+                    raise OSError('Le sous-worker ne se ferme pas')
+                yield results[position]
         finally:
             for task in tasks:
                 if not task.finished.is_set():
                     task.cancel()
             for task in tasks:
                 task.finished.wait(10)
+        first += capacity
 
 
-def analyze_group(sources, session_dir, progress_cb=None, *, timings=None, parallel=False):
+def analyze_group(sources, session_dir, progress_cb=None, *, timings=None, parallel=False,
+                  progress_detail=None, resource_policy=None):
     """Prepare le viewer d'un groupe dans le worker, sans liste globale de frames."""
     if not sources:
         raise ValueError('Le groupe ne contient aucun fichier')
@@ -475,7 +528,8 @@ def analyze_group(sources, session_dir, progress_cb=None, *, timings=None, paral
     store_dir = directory / 'frames'
     timings = timings if timings is not None else {}
     tick = time.perf_counter()
-    count = write_frame_store_iter(_group_frames(sources, metadata, origin, progress_cb),
+    count = write_frame_store_iter(_group_frames(sources, metadata, origin, progress_cb,
+                                                progress_detail=progress_detail),
                                    store_dir, source_metadata=metadata)
     timings['regroupement'] = time.perf_counter() - tick
     period = _group_period(metadata)
@@ -484,7 +538,8 @@ def analyze_group(sources, session_dir, progress_cb=None, *, timings=None, paral
     drains = []
     box_analyses = []
     with FrameStore(store_dir) as frames:
-        for result in _segment_results(store_dir, metadata, origin, progress_cb, parallel):
+        for result in _segment_results(store_dir, metadata, origin, progress_cb, parallel,
+                                       progress_detail=progress_detail, resource_policy=resource_policy):
             timings.update(result['timings'])
             incidents.extend(result['incidents'])
             references.extend(result['references'])

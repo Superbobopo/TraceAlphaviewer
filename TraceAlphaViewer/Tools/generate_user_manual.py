@@ -126,7 +126,7 @@ def demonstration(directory):
     return path, frames, events, diagnostics, records
 
 
-def captures(viewer_only=False):
+def captures(viewer_only=False, loading_only=False, home_loading_only=False):
     import customtkinter as ctk
     if sys.platform != 'win32':
         raise RuntimeError('Les captures natives de ce manuel necessitent Windows')
@@ -144,7 +144,7 @@ def captures(viewer_only=False):
     app = TraceAlphaViewer()
     # Garder la fenetre derriere les applications et sans activation.
     app.withdraw()
-    app.geometry('1780x1000+10+10')
+    app.geometry('900x860+10+10')
     import ctypes
     from ctypes import wintypes
     user32 = ctypes.WinDLL('user32')
@@ -187,17 +187,52 @@ def captures(viewer_only=False):
         print(f'Capture : {name}', flush=True)
 
     try:
-        photograph('accueil')
+        if not loading_only:
+            ready_at = time.monotonic() + 1.1
+            pump(lambda: time.monotonic() >= ready_at)
+            photograph('accueil')
         home = app.main_view
         with patch.object(home, '_poll_loading', return_value=None):
             home._load(str(path))
+            # Retenir une vraie observation avant de laisser le viewer s'ouvrir.
+            observed = [False]
+
+            def diagnostic_started():
+                from queue import Empty
+                if observed[0]:
+                    return True
+                try:
+                    kind, payload = home._load_task.results.get_nowait()
+                except Empty:
+                    return False
+                if kind == 'progress':
+                    home._accept_progress(payload)
+                    observed[0] = isinstance(payload, dict) and payload.get('phase') == 'diagnostic'
+                elif kind == 'step':
+                    home._set_progress_text(*payload)
+                elif kind == 'error':
+                    raise AssertionError(payload)
+                else:
+                    raise AssertionError('La progression diagnostic attendue est absente')
+                return observed[0]
+
+            pump(diagnostic_started, timeout=20)
+            home._render_progress(force=True)
             photograph('chargement', settle=False)
+        if loading_only or home_loading_only:
+            manifest = assets / 'captures.json'
+            previous = json.loads(manifest.read_text(encoding='utf-8')) if manifest.exists() else {}
+            previous.update(metadata)
+            manifest.write_text(json.dumps(previous, indent=2), encoding='utf-8')
+            return
         home._poll_loading()
         pump(lambda: isinstance(app.main_view, TraceView))
         pump(lambda: not app.main_view._trace_panel._loading)
         # Les etats fictifs sont injectes dans les vrais widgets de l'application.
         view = TraceView(app, str(path), frames, events=events, diagnostics=diagnostics, references=records)
         app.switch_view(view)
+        # Conserver le cadrage des reperes du manuel, independant de la taille de demarrage.
+        app.geometry('1780x1000+10+10')
         pump(lambda: not view._trace_panel._loading)
         view._go_to(24)
         photograph('vue-ensemble')
@@ -250,17 +285,17 @@ def captures(viewer_only=False):
         view._btn_next_error.invoke()
         assert view._current_error_line == first_error
         photograph('erreurs')
+        view._analysis_tabs.set('Evenements')
+        view._event_panel._set_belt_filter('T5')
+        pump(lambda: not view._event_panel.loading)
+        assert view._event_panel._visible_events
+        photograph('evenements')
         if viewer_only:
             manifest = assets / 'captures.json'
             previous = json.loads(manifest.read_text(encoding='utf-8'))
             previous.update(metadata)
             manifest.write_text(json.dumps(previous, indent=2), encoding='utf-8')
             return
-        view._analysis_tabs.set('Evenements')
-        view._event_panel._set_belt_filter('T5')
-        pump(lambda: not view._event_panel.loading)
-        assert view._event_panel._visible_events
-        photograph('evenements')
         view._go_end()
         assert view._idx == len(frames) - 1
         view._go_start()
@@ -542,6 +577,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--captures', action='store_true', help='Reproduire les captures et verifier les parcours')
     parser.add_argument('--viewer-captures', action='store_true', help='Actualiser uniquement les captures natives du viewer')
+    parser.add_argument('--loading-capture', action='store_true', help='Actualiser uniquement la capture fictive du chargement')
+    parser.add_argument('--home-loading-captures', action='store_true', help='Actualiser accueil et chargement avec des donnees fictives')
     parser.add_argument('--pdf', action='store_true', help='Generer le PDF depuis le HTML')
     parser.add_argument('--robot-capture', action='store_true', help='Actualiser uniquement la capture fictive de l alerte robot')
     parser.add_argument('--unknown-capture', action='store_true', help='Actualiser uniquement les captures fictives du compteur UNKNOWN')
@@ -549,12 +586,16 @@ def main():
     parser.add_argument('--c5-capture', action='store_true', help='Actualiser la capture fictive du diagnostic C5')
     parser.add_argument('--observation-captures', action='store_true', help='Actualiser les captures fictives moteurs, DP et modes camera')
     args = parser.parse_args()
-    if not any((args.captures, args.viewer_captures, args.pdf, args.robot_capture, args.unknown_capture, args.layout_captures, args.c5_capture, args.observation_captures)):
-        parser.error('Choisir --captures, --robot-capture, --unknown-capture, --layout-captures et/ou --pdf')
+    if not any((args.captures, args.viewer_captures, args.loading_capture, args.home_loading_captures, args.pdf, args.robot_capture, args.unknown_capture, args.layout_captures, args.c5_capture, args.observation_captures)):
+        parser.error('Choisir --captures, --loading-capture, --robot-capture, --unknown-capture, --layout-captures et/ou --pdf')
     if args.captures:
         captures()
     elif args.viewer_captures:
         captures(viewer_only=True)
+    elif args.loading_capture:
+        captures(loading_only=True)
+    elif args.home_loading_captures:
+        captures(home_loading_only=True)
     if args.captures or args.robot_capture:
         robot_capture()
         for sensor in ('C2', 'C3'):
@@ -567,7 +608,7 @@ def main():
         observation_captures()
     if args.layout_captures:
         layout_captures()
-    if any((args.captures, args.viewer_captures, args.robot_capture, args.unknown_capture, args.layout_captures, args.c5_capture, args.observation_captures)):
+    if any((args.captures, args.viewer_captures, args.loading_capture, args.home_loading_captures, args.robot_capture, args.unknown_capture, args.layout_captures, args.c5_capture, args.observation_captures)):
         import re
         metadata = json.loads((MANUAL / 'assets' / 'captures.json').read_text(encoding='utf-8'))
         document = MANUAL / 'index.html'
@@ -575,6 +616,8 @@ def main():
         def image_size(match):
             tag = match[0]
             name = re.search(r'assets/([^"\s]+)\.png', tag)[1]
+            if args.loading_capture and not args.captures and not args.viewer_captures and name != 'chargement':
+                return tag
             size = metadata[name]
             for axis in ('width', 'height'):
                 tag = re.sub(rf'{axis}="\d+"', f'{axis}="{size[axis]}"', tag)

@@ -49,7 +49,8 @@ def frame_digest(frames):
     return digest.hexdigest()
 
 
-def measure_ui(path, timeout, show, exercise_window, screenshot=None, check_navigation=False):
+def measure_ui(path, timeout, show, exercise_window, screenshot=None, check_navigation=False,
+               measure_memory=False, group=None):
     from Main import TraceAlphaViewer
     from Views.traceView import TraceView
 
@@ -68,14 +69,35 @@ def measure_ui(path, timeout, show, exercise_window, screenshot=None, check_navi
     prepare_started = None
     displayed = None
     geometry_step = 0
+    progress_last = 0.
+    progress_samples = 0
+    sampler = None
+    if measure_memory:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('_benchmark_memory', ROOT / 'TraceAlphaViewer/Models/process_memory.py')
+        memory_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(memory_module)
+        sampler = memory_module.MemorySampler()
 
     def begin():
         nonlocal started, last_beat
+        if sampler:
+            sampler.__enter__()
         started = last_beat = time.perf_counter()
-        home._load(str(path))
+        if group is None:
+            home._load(str(path))
+        else:
+            from unittest.mock import patch
+            from Models.loading_client import LoadingSession
+            original = LoadingSession.start
+            def start_group(session, mode, **arguments):
+                return original(session, 'folder_group', **dict(arguments, group=group))
+            # Le groupe rejoint le meme TraceView, avec son vrai worker et sa trace brute.
+            with patch.object(LoadingSession, 'start', start_group):
+                home._load(str(path))
 
     def beat():
-        nonlocal last_beat, completed, error, phase, prepare_started, displayed
+        nonlocal last_beat, completed, error, phase, prepare_started, displayed, progress_last, progress_samples
         now = time.perf_counter()
         if started is not None:
             gap = now - last_beat
@@ -84,6 +106,15 @@ def measure_ui(path, timeout, show, exercise_window, screenshot=None, check_navi
                 peaks.append((round(gap, 3), phase))
             last_beat = now
             view = app.main_view
+            tracker = getattr(home, '_progress_tracker', None)
+            if tracker is not None:
+                fraction = tracker.fraction
+                if fraction < progress_last or (fraction >= 1 and not isinstance(view, TraceView)):
+                    error = 'Progression en recul ou terminee avant le viewer'
+                    app.quit()
+                    return
+                progress_last = fraction
+                progress_samples += 1
             if isinstance(view, TraceView):
                 if displayed is None:
                     displayed = now
@@ -123,17 +154,31 @@ def measure_ui(path, timeout, show, exercise_window, screenshot=None, check_navi
     try:
         app.mainloop()
         total = time.perf_counter() - started
+        if sampler:
+            sampler.__exit__(None, None, None)
         if not completed:
             raise RuntimeError(error or 'Le chargement ne se termine pas')
         view = app.main_view
         timings = dict(getattr(home, '_load_timings', {}))
         timings['preparation_vue'] = (displayed - prepare_started) if prepare_started else 0.0
         timings['texte_brut'] = time.perf_counter() - displayed
+        preparation = getattr(view, 'preparation_timings', {})
+        if 'affichage' in preparation:
+            # La trace brute et les panneaux se preparent maintenant ensemble.
+            timings['preparation_vue'] = preparation['affichage']
+            timings['texte_brut'] = preparation.get('texte_brut', 0.)
+            timings['preparation_complete'] = preparation['total']
         timings['total'] = total
         ordered = sorted(gaps)
         latency = {'p95_ms': ordered[int((len(ordered) - 1) * 0.95)] * 1000,
                    'max_ms': max(gaps) * 1000, 'samples': len(gaps),
                    'peaks': sorted(peaks, reverse=True)[:12], 'window_operations': geometry_step}
+        if progress_samples:
+            if progress_last != 1:
+                raise AssertionError('La progression ne termine pas a 100 %')
+            latency['progress'] = {'samples': progress_samples, 'monotonic': True, 'ready': progress_last}
+        if sampler:
+            latency['process_tree_memory'] = sampler.result()
         if check_navigation:
             check_view_navigation(app, view)
         if screenshot:
@@ -151,6 +196,8 @@ def measure_ui(path, timeout, show, exercise_window, screenshot=None, check_navi
         return (view._frames, view._events, view._diagnostics, view._references,
                 view._trace_panel._total_lines, timings, latency, session)
     finally:
+        if sampler and getattr(sampler, 'thread', None) and sampler.thread.is_alive():
+            sampler.__exit__(None, None, None)
         app.destroy()
         if not completed:
             session = getattr(home, '_load_session', None)
@@ -163,6 +210,9 @@ def main() -> None:
     parser.add_argument('trace', type=Path)
     parser.add_argument('--revision', help='Version Git des modules concernes, chargee en memoire')
     parser.add_argument('--source-tree', type=Path, help='Copie locale des sources servant de reference')
+    parser.add_argument('--resource-mode', choices=('auto', 'reference', 'candidate'), default='auto')
+    parser.add_argument('--measure-memory', action='store_true', help='Mesurer aussi la memoire simultanee du processus et de ses descendants')
+    parser.add_argument('--group-alpha', help='Selectionner un groupe de dossier pour mesurer son ouverture complete')
     parser.add_argument('--results-json', type=Path, help='Resultats complets a conserver localement')
     parser.add_argument('--compare-results', type=Path, help='Resultats precedents a verifier')
     parser.add_argument('--show', action='store_true', help='Afficher la fenetre pendant la mesure')
@@ -177,7 +227,7 @@ def main() -> None:
     parser.add_argument('--screenshot', type=Path, help='Capture locale du viewer charge')
     args = parser.parse_args()
     path = args.trace.resolve()
-    if not path.is_file():
+    if not path.exists() or (path.is_dir() and not args.group_alpha):
         parser.error('Le fichier trace est introuvable')
     if args.timeout <= 0:
         parser.error('Le delai doit etre positif')
@@ -187,6 +237,16 @@ def main() -> None:
         sys.path.insert(0, str(args.source_tree.resolve()))
     if args.revision:
         _load_revision(args.revision)
+    if args.resource_mode != 'auto':
+        try:
+            from Models import resource_policy
+        except ImportError:
+            if args.resource_mode == 'candidate':
+                raise
+        else:
+            resource_policy.QUALIFIED_FILE_MIN_BYTES = 0 if args.resource_mode == 'candidate' else None
+            resource_policy.QUALIFIED_FOLDER_WORKERS = 4 if args.resource_mode == 'candidate' else 2
+            resource_policy._governor = resource_policy.ResourceGovernor(limit=None)
 
     if args.exercise_window and not args.ui_latency:
         parser.error('--exercise-window exige --ui-latency')
@@ -197,8 +257,16 @@ def main() -> None:
     if (args.check_navigation or args.screenshot) and not args.ui_latency:
         parser.error('--check-navigation et --screenshot exigent --ui-latency')
     if args.ui_latency:
+        group = None
+        if path.is_dir():
+            from Models.folder_catalog import catalog_folder
+            groups = [item for item in catalog_folder(path)['groups']
+                      if (item.get('identity') or {}).get('alpha_number') == args.group_alpha]
+            if len(groups) != 1:
+                parser.error('Le numero Alpha doit selectionner exactement un groupe')
+            group = groups[0]
         values = measure_ui(path, args.timeout, args.show,
-                            args.exercise_window, args.screenshot, args.check_navigation)
+                            args.exercise_window, args.screenshot, args.check_navigation, args.measure_memory, group)
         frames, events, diagnostics, references, total_lines, timings, latency, session = values
         try:
             print(f'Total : {timings["total"]:.3f} s | p95 : {latency["p95_ms"]:.1f} ms | '

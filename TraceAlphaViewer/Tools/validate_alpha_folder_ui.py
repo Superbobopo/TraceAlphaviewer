@@ -296,7 +296,7 @@ class AlphaFolderUiTests(unittest.TestCase):
         self.assertEqual(set(folder._cache), {cached})
         self.assertIn('Erreur fictive', folder._status.cget('text'))
         callbacks = []
-        with patch.object(TraceView, 'prepare', side_effect=lambda ready, on_error=None: callbacks.append((ready, on_error))):
+        with patch.object(TraceView, 'prepare', side_effect=lambda ready, on_error=None, on_progress=None: callbacks.append((ready, on_error))):
             folder._selected = cached
             folder._open_selected()
             prepared = folder._prepared_view

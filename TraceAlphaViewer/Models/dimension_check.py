@@ -6,6 +6,10 @@ DIMENSION_TOLERANCES_MM = {'length': 3, 'width': 3, 'height': 2}
 
 DIMENSION_TOLERANCE_MM = 3
 
+
+def dimension_severity(count, comparable):
+    return 'error' if count >= 10 and comparable > 0 and count * 10 >= comparable else 'warning'
+
 ORIENTATION_CATEGORIES = (
     {'id': 'flat_rotation', 'label': 'Longueur / largeur inversées',
      'hypothesis': "Rotation à plat probable. La boîte a pu tourner pendant son passage dans l'Alpha, au guidage ou au tassage ; les dimensions seules ne datent pas cette rotation.",

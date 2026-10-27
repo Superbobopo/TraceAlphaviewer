@@ -1,20 +1,21 @@
 """Commandes communes pour les listes de 500 elements."""
 import customtkinter as ctk
+from Widgets.ui_theme import ui_color, control_colors
 from Models.list_navigation import PAGE_SIZE
 
 
 class Pagination(ctk.CTkFrame):
     def __init__(self, master, on_change):
-        super().__init__(master, fg_color='#1e1e30', corner_radius=0, height=26)
+        super().__init__(master, fg_color=ui_color(master, 'surface', '#1e1e30'), corner_radius=0, height=26)
         self._on_change = on_change
         self.page = 0
         self.pages = 1
-        self._previous = ctk.CTkButton(self, text='<', width=28, height=22,
+        self._previous = ctk.CTkButton(self, text='<', width=28, height=22, **control_colors(self),
             command=lambda: self._on_change(self.page - 1))
         self._previous.pack(side='left', padx=4, pady=2)
         self._label = ctk.CTkLabel(self, text='', font=('Consolas', 10), height=22)
         self._label.pack(side='left', expand=True)
-        self._next = ctk.CTkButton(self, text='>', width=28, height=22,
+        self._next = ctk.CTkButton(self, text='>', width=28, height=22, **control_colors(self),
             command=lambda: self._on_change(self.page + 1))
         self._next.pack(side='right', padx=4, pady=2)
 

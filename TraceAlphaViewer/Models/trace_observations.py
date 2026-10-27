@@ -1,7 +1,6 @@
 """Episodes de communication et modes de lecture observes, sans dependance Tk."""
 import re
-from Models.robot_drain import TraceCalendar
-from Models.trace_calendar import trace_calendar, display_time, format_observed_time
+from Models.trace_calendar import observation_clock
 
 OBSERVATION_CODES = {'MOTOR_COMM', 'DP_MISSING', 'CAMERA_CODE_MODE'}
 
@@ -36,15 +35,13 @@ _MODE = re.compile(r'idCB([12]):.*?codes autoris\S*s:(\d+)\b', re.I)
 
 
 def observations(line_states, origin=None, *, wanted=None, format_if=None):
-    dated = TraceCalendar(origin) if origin else None
-    calendar = {} if dated else trace_calendar(line_states)
-    for line, text, state in line_states:
-        moment = dated.at(state.timestamp) if dated else None
+    clock = observation_clock(line_states, origin)
+    for (line, text, state), seconds in zip(line_states, clock.values(line_states)):
         if wanted is not None and line not in wanted:
             continue
-        time_str = (format_observed_time(moment) if moment else display_time(calendar,line,state.timestamp_str)) if (
+        time_str = clock.label(line, seconds, state.timestamp_str) if (
             format_if is None or format_if(text)) else None
-        yield text, {'line': line, 'time': (moment-origin).total_seconds() if moment else state.timestamp,
+        yield text, {'line': line, 'time': seconds,
                      'time_str': time_str}
 
 
@@ -77,8 +74,12 @@ def analyze_motor_communication(line_states, origin=None):
         active=None
         pending={}
 
-    relevant = re.compile(r'StepMotors|028-Avt:|InitMachine:|version logiciel VBalpha:', re.I)
-    for text,obs in observations(line_states,origin,format_if=relevant.search):
+    pattern = re.compile(r'StepMotors|028-Avt:|InitMachine:|version logiciel VBalpha:', re.I)
+    def relevant(text):
+        lower = text.lower()
+        return ('stepmotors' in lower or '028-avt:' in lower or 'initmachine:' in lower
+                or 'version logiciel vbalpha:' in lower or (not text.isascii() and pattern.search(text)))
+    for text,obs in observations(line_states,origin,format_if=relevant):
         if active and obs['time']-last_signal>120:
             close('Plus de 120 secondes sans nouveau signal ; résolution inconnue')
         if obs['time_str'] is None:
@@ -152,7 +153,11 @@ def analyze_code_modes(line_states, origin=None):
             periods.append(item)
 
     relevant = re.compile(r'idCB[12]:|StepMotors|version logiciel VBalpha:', re.I)
-    for text,obs in observations(line_states,origin,format_if=relevant.search):
+    def candidate(text):
+        lower = text.lower()
+        return ('idcb1:' in lower or 'idcb2:' in lower or 'stepmotors' in lower
+                or 'version logiciel vbalpha:' in lower or (not text.isascii() and relevant.search(text)))
+    for text,obs in observations(line_states,origin,format_if=candidate):
         if previous and obs['time']-previous['time']>120:
             for reader in list(active):close(reader,'Observations interrompues plus de 120 secondes')
         previous=obs

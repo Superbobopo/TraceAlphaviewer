@@ -213,6 +213,7 @@ class WidgetTests(unittest.TestCase):
                 super().__init__(master)
                 self.frames = [MachineState()]
         host = ctk.CTkFrame(self.root)
+        host._apply_view_geometry = lambda: None
         host.main_view = Preview(host)
         old = weakref.ref(host.main_view)
         state = weakref.ref(host.main_view.frames[0])

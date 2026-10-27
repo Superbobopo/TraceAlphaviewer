@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import lru_cache
 import re
 
 
@@ -32,6 +33,44 @@ _RELEVANT = re.compile(
     r'CB[12]:|EA->T3|T2->EA|T3->T4|Cr\S*ation de la boite|AjoutBtT5|'
     r'T4 vers T5|manque la DP|Change|DataArrival\[|version logiciel VBalpha:', re.I)
 
+_CAMERA = 1
+_TRANSFER_ROW = 2
+_TO_T5_ROW = 4
+_CREATE_ROW = 8
+_ADDED_ROW = 16
+_DP_FINAL_ROW = 32
+_DP_RENAME_ROW = 64
+_RAW_ROW = 128
+_CONTROL_ROW = 256
+_ALL_ROWS = 511
+
+
+def _identification_candidates(text):
+    # Les correspondances Unicode de re.I gardent le parcours complet.
+    if not text.isascii():
+        return _ALL_ROWS
+    lower = text.lower()
+    flags = 0
+    if 'cb1:' in lower or 'cb2:' in lower:
+        flags |= _CAMERA | _RAW_ROW
+    if 'ea->t3' in lower or 't3->t4' in lower:
+        flags |= _TRANSFER_ROW | _CONTROL_ROW
+    if 't4 vers t5' in lower:
+        flags |= _TO_T5_ROW
+    if 'ation de la boite' in lower:
+        flags |= _CREATE_ROW
+    if 'ajoutbtt5' in lower:
+        flags |= _ADDED_ROW
+    if 'manque la dp' in lower:
+        flags |= _DP_FINAL_ROW
+    if 'change' in lower:
+        flags |= _DP_RENAME_ROW
+    if 'dataarrival[' in lower:
+        flags |= _RAW_ROW
+    if 't2->ea' in lower or 'version logiciel vbalpha:' in lower:
+        flags |= _CONTROL_ROW
+    return flags
+
 
 def unknown_reference(reference: str) -> bool:
     return reference.upper().startswith(('ALPHA-INC', 'ALPHA-DET', 'ALPHA-DIF'))
@@ -42,6 +81,9 @@ class IdentificationCycle:
     first_line: int
     parent: IdentificationCycle | None = None
     codes: dict[str, list[int]] = field(default_factory=dict)
+    reader_last_lines: dict[str, int] = field(default_factory=dict)
+    reader_success_lines: dict[str, int] = field(default_factory=dict)
+    reader_first_success_lines: dict[str, int] = field(default_factory=dict)
     unknown_readers: set[str] = field(default_factory=set)
     refusals: list[dict] = field(default_factory=list)
     references: set[str] = field(default_factory=set)
@@ -62,7 +104,7 @@ class IdentificationCycle:
         return self
 
 
-def identification_cycles(line_states, *, dp_output=None):
+def identification_cycles(line_states, *, dp_output=None, progress_cb=None, camera_row_cb=None):
     """Les compteurs Hist_LectCB sont des preuves de lecture, pas des identites."""
     cycles = []
     slots = dict(ea=None, t3=None, t4=None, t5=None)
@@ -73,6 +115,13 @@ def identification_cycles(line_states, *, dp_output=None):
     pending_dp = None
     unassigned_dp = []
     raw_pending = {}
+    candidate_flags = lru_cache(maxsize=2048)(_identification_candidates)
+    try:
+        total = len(line_states)
+    except TypeError:
+        total = 0
+    if progress_cb is not None:
+        progress_cb(0, total)
 
     def dp_proof(line, state, **values):
         return dict(line=line,time=state.timestamp,time_str=state.timestamp_str,**values)
@@ -116,6 +165,12 @@ def identification_cycles(line_states, *, dp_output=None):
         left.first_line = min(left.first_line, right.first_line)
         for reader, codes in right.codes.items():
             left.codes.setdefault(reader, []).extend(codes)
+        for field_name in ('reader_last_lines', 'reader_success_lines'):
+            destination = getattr(left, field_name)
+            for reader, line in getattr(right, field_name).items():
+                destination[reader] = max(destination.get(reader, 0), line)
+        for reader, line in right.reader_first_success_lines.items():
+            left.reader_first_success_lines[reader] = min(left.reader_first_success_lines.get(reader, line), line)
         left.unknown_readers.update(right.unknown_readers)
         left.refusals.extend(right.refusals)
         for key in ('dp_attempts','dp_recoveries','dp_final','raw_codes'):
@@ -134,12 +189,17 @@ def identification_cycles(line_states, *, dp_output=None):
             return cycle.root()
         return None
 
-    for line, text, state in line_states:
+    for index, (line, text, state) in enumerate(line_states):
+        if progress_cb is not None and index and index % 4096 == 0:
+            progress_cb(index, total)
         if pending_dp and state.timestamp-pending_dp['time']>120:
             if not pending_dp.get('attributed'):unassigned_dp.append(pending_dp)
             pending_dp=None
-        if not _RELEVANT.search(text):
+        flags = candidate_flags(text)
+        if not flags or (not text.isascii() and not _RELEVANT.search(text)):
             continue
+        if camera_row_cb is not None and flags & _CAMERA:
+            camera_row_cb(line, text, state)
         # Une reouverture du fichier de trace ne redemarre pas la machine.
         if 'version logiciel VBalpha:' in text:
             if pending_dp and not pending_dp.get('attributed'):unassigned_dp.append(pending_dp)
@@ -160,7 +220,7 @@ def identification_cycles(line_states, *, dp_output=None):
             complete_ea()
             slots['ea'] = None
 
-        match = _TRANSFER.search(text)
+        match = _TRANSFER.search(text) if flags & _TRANSFER_ROW else None
         if match:
             source, target = ('ea', 't3') if match[1].upper() == 'EA->T3' else ('t3', 't4')
             if source == 't3' and slots['t3'] is None:
@@ -174,12 +234,12 @@ def identification_cycles(line_states, *, dp_output=None):
             else:
                 slots[target], slots[source] = cycle.root(), None
 
-        match = _TO_T5.search(text)
+        match = _TO_T5.search(text) if flags & _TO_T5_ROW else None
         if match:
             slots['t5'] = technical(match[1]) or slots['t4'] or new(line)
             slots['t4'] = None
 
-        match = _CB2_SOURCE.search(text)
+        match = _CB2_SOURCE.search(text) if flags & _CAMERA else None
         if match and slots['t3'] is None:
             # La ligne relie explicitement la lecture CB2 a la reference CB1.
             cycle = technical(match[1])
@@ -198,9 +258,9 @@ def identification_cycles(line_states, *, dp_output=None):
             cycle=slots['t3'].root()
             cycle.dp_attempts.append(dp_proof(line,state,barcode=match[1],reader='CB2'))
 
-        request=_PHOTO_REQUEST.search(text)
+        request=_PHOTO_REQUEST.search(text) if flags & _CAMERA else None
         if request:raw_pending['CB'+request[1]]={'time':state.timestamp,'codes':[]}
-        raw_camera=_RAW_CAMERA.search(text)
+        raw_camera=_RAW_CAMERA.search(text) if flags & _CAMERA else None
         if raw_camera or ('DataArrival[' in text and 'R<Soh>' in text):
             for camera,code in _RAW_RECORD.findall(text):
                 reader=('CB'+raw_camera[1] if raw_camera else
@@ -209,7 +269,7 @@ def identification_cycles(line_states, *, dp_output=None):
                 if pending and 0<=state.timestamp-pending['time']<=120 and len(pending['codes'])<10:
                     pending['codes'].append(dp_proof(line,state,reader=reader,code=code[:256]))
 
-        match = _HIST.search(text)
+        match = _HIST.search(text) if flags & _CAMERA else None
         if match:
             reader = 'CB' + match[1]
             slot = 'ea' if reader == 'CB1' else 't3'
@@ -222,12 +282,17 @@ def identification_cycles(line_states, *, dp_output=None):
                 previous = cycle
                 cycle = slots[slot] = new(line)
                 attempts[cycle] = previous
-            cycle.codes.setdefault(reader, []).append(int(match[2]))
+            code_count = int(match[2])
+            cycle.codes.setdefault(reader, []).append(code_count)
+            cycle.reader_last_lines[reader] = line
+            if code_count:
+                cycle.reader_success_lines[reader] = line
+                cycle.reader_first_success_lines.setdefault(reader, line)
             pending=raw_pending.pop(reader,None)
             if pending and 0<=state.timestamp-pending['time']<=120:
                 cycle.raw_codes.extend(pending['codes'][:max(0,10-len(cycle.raw_codes))])
 
-        match = _NON_ALPHATISABLE.search(text) or _REFUSED.search(text)
+        match = (_NON_ALPHATISABLE.search(text) or _REFUSED.search(text)) if flags & _CAMERA else None
         if match:
             reader = 'CB' + match[1]
             cycle = current('ea' if reader == 'CB1' else 't3', line)
@@ -236,7 +301,7 @@ def identification_cycles(line_states, *, dp_output=None):
                 reason='non_alphatisable' if match.re is _NON_ALPHATISABLE else 'absent',
                 reason_detail=match[3] if match.re is _NON_ALPHATISABLE else ''))
 
-        match = _RESULT.search(text)
+        match = _RESULT.search(text) if flags & _CAMERA else None
         if match:
             reader, ref = 'CB' + match[1], match[2]
             slot = 'ea' if reader == 'CB1' else 't3'
@@ -262,7 +327,7 @@ def identification_cycles(line_states, *, dp_output=None):
                     refusal.update(technical_reference=ref, reference_line=line)
             slots[slot] = cycle
 
-        match = _ID_B.search(text)
+        match = _ID_B.search(text) if flags & _CAMERA else None
         if match:
             if slots['t3'] is None:
                 complete_ea()
@@ -275,7 +340,7 @@ def identification_cycles(line_states, *, dp_output=None):
             cycle.id_b = id_b
             by_b[id_b] = slots['t3'] = cycle
 
-        match = _T4_ID.search(text)
+        match = _T4_ID.search(text) if flags & _TRANSFER_ROW else None
         if match:
             id_b = int(match[1])
             cycle = by_b.get(id_b) or slots['t4'] or slots['t3'] or new(line)
@@ -287,7 +352,7 @@ def identification_cycles(line_states, *, dp_output=None):
             if slots['t3'] is not None and slots['t3'].root() is cycle:
                 slots['t3'] = None
 
-        match = _CREATE.search(text)
+        match = _CREATE.search(text) if flags & _CREATE_ROW else None
         if match:
             ref, name = match[1], match[2]
             id_match = _ID_A.search(text)
@@ -309,7 +374,7 @@ def identification_cycles(line_states, *, dp_output=None):
             if slots['t4'] is not None and slots['t4'].root() is cycle:
                 slots['t4'] = None
 
-        match = _ADDED.search(text)
+        match = _ADDED.search(text) if flags & _ADDED_ROW else None
         if match:
             id_a, id_b = int(match[1]), int(match[2])
             cycle = by_a.get(id_a) or slots['t5'] or by_b.get(id_b) or new(line)
@@ -324,14 +389,14 @@ def identification_cycles(line_states, *, dp_output=None):
                 by_b[id_b] = cycle
             slots['t5'] = None
 
-        final=_DP_FINAL.search(text)
+        final=_DP_FINAL.search(text) if flags & _DP_FINAL_ROW else None
         if final:
             if pending_dp and not pending_dp.get('attributed'):unassigned_dp.append(pending_dp)
             pending_dp=dp_proof(line,state,id_b=int(final[1]),barcode=final[2])
             cycle=by_b.get(int(final[1]))
             if cycle is not None and cycle.root().creation and attach_dp(cycle,pending_dp):
                 pending_dp['attributed']=True
-        rename=_DP_RENAME.search(text)
+        rename=_DP_RENAME.search(text) if flags & _DP_RENAME_ROW else None
         if rename:
             id_a,id_t5=int(rename[1]),int(rename[2])
             proof=dp_proof(line,state,id_alpha=id_a,barcode=rename[3],technical_reference=rename[4])
@@ -347,5 +412,8 @@ def identification_cycles(line_states, *, dp_output=None):
     for attempt, previous in attempts.items():
         if not attempt.result_line:
             join(previous, attempt)
-    return [cycle for cycle in cycles if cycle.parent is None and
-            (cycle.codes or cycle.refusals or cycle.result_line or cycle.id_b or cycle.creation)]
+    result = [cycle for cycle in cycles if cycle.parent is None and
+              (cycle.codes or cycle.refusals or cycle.result_line or cycle.id_b or cycle.creation)]
+    if progress_cb is not None:
+        progress_cb(total, total)
+    return result

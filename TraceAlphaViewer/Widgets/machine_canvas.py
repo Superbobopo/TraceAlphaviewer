@@ -25,6 +25,7 @@ Capteurs dessinés comme barres colorées sur les tapis (fidèle au schéma phys
 from __future__ import annotations
 
 import tkinter as tk
+from Widgets.ui_theme import ui_color
 from Models.measurement_identity import measurement_exclusion, EXCLUSION_LABELS
 from typing import Optional
 
@@ -561,7 +562,7 @@ def _draw_t4_dir_arrow(cv: tk.Canvas, st: MachineState) -> None:
 class MachineCanvas(tk.Canvas):
 
     def __init__(self, master, **kwargs):
-        kwargs.setdefault('bg', C['bg'])
+        kwargs.setdefault('bg', ui_color(master, 'panel', C['bg']))
         kwargs.setdefault('highlightthickness', 0)
         super().__init__(master, **kwargs)
         self._state: Optional[MachineState] = None

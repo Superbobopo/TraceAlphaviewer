@@ -293,7 +293,7 @@ class MeasurementTests(unittest.TestCase):
         self.assertEqual(summary['global']['outside_count'],5)
         self.assertEqual(summary['axes']['height']['tolerance_mm'],2)
         self.assertEqual(summary['axes']['height']['anomalies']['count'],4)
-        self.assertEqual(len(build_diagnostics(frames,[])),2)
+        self.assertEqual(len(build_diagnostics(frames,[])),3)
         height=next(i for i in build_diagnostics(frames,[]) if i.code=='T5_HEIGHT')
         self.assertIn('hauteur > 2 mm',height.summary)
         payload=build_report_payload(build_diagnostics(frames,[]),frames)
@@ -632,9 +632,10 @@ class MeasurementTests(unittest.TestCase):
             box.measured_t5_width_mm += delta
             box.measured_t5_height_mm += delta
         incidents = build_diagnostics(frames,[])
-        incident = next(item for item in incidents if item.code=='GLOBAL')
+        incident = next(item for item in incidents if item.code=='T4_LENGTH')
+        self.assertNotIn('GLOBAL', [item.code for item in incidents])
         payload = build_report_payload(incidents,frames)
-        group = next(item for item in payload['groups'] if item['code']=='GLOBAL')
+        group = next(item for item in payload['groups'] if item['code']=='T4_LENGTH')
         text = ' '.join(incident.probable_causes+incident.checks+group['probable_causes']+
                        group['checks']+[group['impact'],group['field_impact'],group['field_action']])
         for hypothesis in ('patinage','calibrage','suspicion','blocage','tassement','tassage','moteur','rouleau'):
@@ -1049,6 +1050,7 @@ class ReportReuseTests(unittest.TestCase):
                     generated_count = generated.call_count
                     store,session = Mock(spec=FrameStore),Mock()
                     store.directory = Path(temp)
+                    session.directory = Path(temp)
                     panels[0]._frames,panels[0]._load_session = store,session
                     panels[0]._open_web_report()
                     session.start.assert_not_called()

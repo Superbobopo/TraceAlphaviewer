@@ -17,7 +17,8 @@ from Models.identification_analysis import identification_cycles, unknown_refere
 from Models.state import MachineEvent, MachineState
 from Models.robot_drain import drain_metrics, drain_metric_text, TraceCalendar, date_drain_metrics, trace_period
 from Models.c2_analysis import analyze_c2, analyze_c3, signal_metric_text
-from Models.c5_analysis import analyze_c5, c5_metric_text
+from Models.c5_analysis import analyze_c5, c5_metric_text, c5_is_critical
+from Models.dimension_check import dimension_severity
 from Models.trace_observations import analyze_motor_communication, analyze_code_modes, observation_metric_text, observations
 from Models.trace_calendar import trace_calendar, TraceLines, clock_seconds
 from Models.diagnostic_summary import normalize_summary_incidents, motor_metrics
@@ -1036,11 +1037,12 @@ def _build_c5_incidents(line_states, trace_origin=None):
     if not analysis:
         return []
     metrics, examples = analysis
-    first, last = metrics['episodes'][0], metrics['episodes'][-1]
+    first = min(metrics['episodes'], key=lambda item: item['first_line'])
+    last = max(metrics['episodes'], key=lambda item: item['last_line'])
     rule = knowledge('c5_signal_anomaly')
     return [DiagnosticIncident(
-        severity='error' if metrics['suspect_cycle_count'] else 'warning',
-        title='Capteur C5 — signal anormal', belt='T3', code='C5_SIGNAL_ANOMALY',
+        severity='error' if c5_is_critical(metrics) else 'warning',
+        title='Capteur C5 / transfert T3→T4', belt='T3', code='C5_SIGNAL_ANOMALY',
         first_line=first['first_line'], last_line=last['last_line'],
         start_time=first['start_time'], end_time=last['end_time'],
         start_time_str=first['start_time_str'], end_time_str=last['end_time_str'],
@@ -1359,12 +1361,9 @@ def _dimension_causes_checks(code: str, measurement_summary=None) -> tuple[list[
 
 
 def _build_dimension_incidents(frames, line_states, measurement_analysis=None):
-    from Models.measurement_analysis import analyze_measurements, representative_samples
+    from Models.measurement_analysis import analyze_measurements, representative_samples, dimension_findings
     analysis = measurement_analysis if measurement_analysis is not None else analyze_measurements(frames)
-    grouped = {}
-    for sample in analysis['finals']:
-        if sample['code']:
-            grouped.setdefault(sample['code'], []).append(sample)
+    grouped = dimension_findings(analysis)
     incidents = []
     for code, findings in grouped.items():
         findings.sort(key=lambda s: s['line'])
@@ -1388,7 +1387,9 @@ def _build_dimension_incidents(frames, line_states, measurement_analysis=None):
         if context_labels:
             summary += " Contexte proche: " + ', '.join(context_labels) + '.'
         incidents.append(DiagnosticIncident(
-            severity='warning', title=_dimension_title(code), belt='T4' if code == 'T4_LENGTH' else 'T5',
+            severity=('warning' if code == 'ORIENTATION' else
+                      dimension_severity(len(findings), analysis['summary']['comparable_count'])),
+            title=_dimension_title(code), belt='T4' if code == 'T4_LENGTH' else 'T5',
             code=code, first_line=first['line'], last_line=last['line'],
             start_time=first['time'], end_time=last['time'], start_time_str=first['time_str'],
             end_time_str=last['time_str'], count=len(findings), summary=summary,
@@ -1473,6 +1474,12 @@ def _build_stale_unmeasured_t5_incidents(
         return info
 
     for line_num, text, state in line_states:
+        lower = text.lower()
+        if text.isascii() and not any(token in lower for token in (
+                'ation de la boite', 'ajoutbtt5', 'maj', 'supp.', 'suppression de la boite',
+                'suppr.', 'pas assez de place', 'dem-vidage', 'demande de vidage complet',
+                'avvidecompletdet5', 'alpha:t5-list-pack')):
+            continue
         if not _T5_STALE_RELEVANT.search(text):
             continue
         if _T5_NO_SPACE.search(text):
@@ -1694,19 +1701,21 @@ def _camera_unknown_bucket(readers: set[str] | frozenset[str]) -> str:
 
 def _camera_stats(
     line_states: list[tuple[int, str, MachineState]],
+    *, progress_cb=None,
 ) -> dict[str, object]:
     dp_output={}
-    cycles = identification_cycles(line_states,dp_output=dp_output)
-    all_hist_boxes = {cycle.first_line for cycle in cycles}
     reader_boxes = {'CB1': set(), 'CB2': set()}
     reader_zero_boxes = {'CB1': set(), 'CB2': set()}
     success_by_reader = {'CB1': {}, 'CB2': {}}
     created_unknown: list[tuple[int, str, float, str, frozenset[str]]] = []
     hist_samples: list[tuple[int, float, str]] = []
+    recovery = {'version': 1, 'available': True, 'cb1_zero_count': 0, 'cb2_recovered_count': 0,
+                'cb2_zero_count': 0, 'cb2_not_observed_count': 0, 'chronology_unconfirmed_count': 0}
+    decoding = {'version': 1, 'available': True, 'total': 0, 'CB1': 0, 'CB2': 0}
 
-    for line_num, text, state in line_states:
+    def observe_camera(line_num, text, state):
         if 'cb' not in text.lower():
-            continue
+            return
         match = _CAMERA_HIST.search(text)
         if match:
             hist_samples.append((line_num, state.timestamp, state.timestamp_str))
@@ -1721,16 +1730,42 @@ def _camera_stats(
                     continue
                 success_by_reader[reader][camera] = success_by_reader[reader].get(camera, 0) + 1
 
+    cycles = identification_cycles(line_states, dp_output=dp_output,
+        progress_cb=(lambda done, total: progress_cb(done, total * 1.05)) if progress_cb else None,
+        camera_row_cb=observe_camera)
+    all_hist_boxes = {cycle.first_line for cycle in cycles}
     for cycle in cycles:
+        first_successes = getattr(cycle, 'reader_first_success_lines', {})
+        successful = [reader for reader in ('CB1', 'CB2') if any(cycle.codes.get(reader, []))]
+        if any(reader not in first_successes for reader in successful):
+            decoding['available'] = False
+        elif successful:
+            reader = min(successful, key=lambda reader: first_successes[reader])
+            decoding['total'] += 1
+            decoding[reader] += 1
         for reader, codes in cycle.codes.items():
             reader_boxes[reader].add(cycle.first_line)
             if not any(codes):
                 reader_zero_boxes[reader].add(cycle.first_line)
+        cb1 = cycle.codes.get('CB1')
+        if cb1 and not any(cb1):
+            recovery['cb1_zero_count'] += 1
+            cb2 = cycle.codes.get('CB2')
+            if not cb2:
+                recovery['cb2_not_observed_count'] += 1
+            elif not any(cb2):
+                recovery['cb2_zero_count'] += 1
+            elif cycle.reader_success_lines.get('CB2', 0) > cycle.reader_last_lines.get('CB1', 0) > 0:
+                recovery['cb2_recovered_count'] += 1
+            else:
+                recovery['chronology_unconfirmed_count'] += 1
         if cycle.creation and not cycle.refusals and not cycle.dp_final:
             line, ref, timestamp, time_str, name = cycle.creation
             if unknown_reference(ref) and 'unknow' in name.lower():
                 created_unknown.append((line, ref, timestamp, time_str, frozenset(cycle.unknown_readers)))
     created_unknown.sort()
+    if progress_cb is not None:
+        progress_cb(1, 1)
 
     return {
         'all_hist_boxes': all_hist_boxes,
@@ -1740,6 +1775,8 @@ def _camera_stats(
         'created_unknown': created_unknown,
         'hist_samples': hist_samples,
         'cycles': cycles,
+        'recovery': recovery,
+        'decoding_distribution': decoding,
         'dp_unattributed': dp_output.get('unattributed',[]),
     }
 
@@ -2014,6 +2051,8 @@ def camera_report_stats(frames: list[MachineState], *, stats=None) -> dict[str, 
         'total_boxes': len(stats['all_hist_boxes']),
         'chart': chart,
         'reader_stats': reader_stats,
+        'recovery': stats.get('recovery', {'available': False}),
+        'decoding_distribution': stats.get('decoding_distribution', {'available': False}),
         'alerts': alerts,
         'note': 'CB1 = cameras 1, 2, 4, 5, 6. CB2 = camera 3.',
         'unknown': _unknown_report_stats(stats),
@@ -2032,10 +2071,51 @@ def build_diagnostics(
     camera_stats_output=None,
     state_incidents=None,
     robot_box_analysis=None,
+    progress_cb=None,
+    parallel_execution=None,
 ) -> list[DiagnosticIncident]:
+    # Poids mesures sur Monistrol ; seuls les travaux termines les consomment.
+    weights = {
+        'Lignes diagnostiques': 2.4 if line_states is None else 0.0,
+        'Evenements': 0.3,
+        'Etats et attentes': 0.5 if state_incidents is None else 0.0,
+        'Capteur C2': 2.4, 'Capteur C3': 2.4, 'Capteur C5 / transfert T3-T4': 5.8,
+        'Communication et modes': 2.4, 'CubeStop / C4': 1.8, 'Initialisations T4': 0.8,
+        'Messages et robot': 3.4, 'Redemarrages Alpha': 1.4, 'Blocages T5': 2.3,
+        'Capteur C9': 0.2, 'Dimensions': 0.2, 'Cameras / identification': 6.3,
+        'Peremptions': 0.2, 'Bilans cameras': 0.2, 'Classement': 0.1,
+    }
+    completed = 0.0
+    total_work = sum(weights.values())
+    active = None
+    parallel_names = {'C2': 'Capteur C2', 'C3': 'Capteur C3', 'C5': 'Capteur C5 / transfert T3-T4',
+                      'communication': 'Communication et modes', 'resets': 'Redemarrages Alpha',
+                      'stale': 'Blocages T5'} if parallel_execution else {}
+    deferred = []
+
+    def family(key, operation):
+        if parallel_execution:
+            deferred.append((len(incidents), key))
+        else:
+            incidents.extend(operation())
+
+    def stage(name):
+        nonlocal completed, active
+        if active is not None and active not in parallel_names.values():
+            completed += weights[active]
+        active = name
+        if progress_cb is not None:
+            progress_cb(name, completed, total_work)
+
+    def camera_progress(done, total):
+        if progress_cb is not None and total:
+            progress_cb(active, completed + weights[active] * min(1.0, done / total), total_work)
+
     incidents: list[DiagnosticIncident] = []
+    stage('Lignes diagnostiques')
     if line_states is None:
         line_states = _frame_line_states(frames)
+    stage('Evenements')
     incidents.extend(_build_motor_error_incidents(events))
     t4_incidents = _build_t4_diff_incidents(events)
     if t4_incidents:
@@ -2051,26 +2131,40 @@ def build_diagnostics(
     incidents.extend(t4_incidents)
     incidents.extend(_build_missing_c6_incidents(events))
     incidents.extend(_build_missing_t5_creation_incidents(events))
+    stage('Etats et attentes')
     if state_incidents is None:
         incidents.extend(_build_wait_incidents(frames))
         incidents.extend(_build_t2_blocked_before_ea_incidents(frames))
     else:
         incidents.extend(state_incidents)
     for sensor in ('C2', 'C3'):
-        incidents.extend(_build_signal_incidents(line_states, sensor))
-    incidents.extend(_build_c5_incidents(line_states, trace_origin))
-    incidents.extend(_build_communication_and_mode_incidents(line_states, trace_origin))
+        stage('Capteur ' + sensor)
+        family(sensor, lambda sensor=sensor: _build_signal_incidents(line_states, sensor))
+    stage('Capteur C5 / transfert T3-T4')
+    family('C5', lambda: _build_c5_incidents(line_states, trace_origin))
+    stage('Communication et modes')
+    family('communication', lambda: _build_communication_and_mode_incidents(line_states, trace_origin))
+    stage('CubeStop / C4')
     incidents.extend(_build_cubestop_c4_blocked_incidents(line_states))
+    stage('Initialisations T4')
     incidents.extend(_build_t4_init_loop_incidents(line_states, events))
+    stage('Messages et robot')
     incidents.extend(_build_text_pattern_incidents(line_states, trace_origin,
                      (frames[0].timestamp, frames[-1].timestamp) if frames else None, trace_metadata_output,
                      robot_box_analysis))
-    incidents.extend(_build_alpha_card_reset_incident(line_states))
-    incidents.extend(_build_stale_unmeasured_t5_incidents(line_states))
+    stage('Redemarrages Alpha')
+    family('resets', lambda: _build_alpha_card_reset_incident(line_states))
+    stage('Blocages T5')
+    family('stale', lambda: _build_stale_unmeasured_t5_incidents(line_states))
+    stage('Capteur C9')
     incidents.extend(_build_c9_invalid_width_incidents(line_states))
+    stage('Dimensions')
     incidents.extend(_build_dimension_incidents(frames, line_states, measurement_analysis))
-    camera_stats = _camera_stats(line_states)
+    stage('Cameras / identification')
+    camera_stats = _camera_stats(line_states, progress_cb=camera_progress if progress_cb else None)
+    stage('Peremptions')
     incidents.extend(_build_dp_incidents(camera_stats,line_states,trace_origin))
+    stage('Bilans cameras')
     if camera_report_output is not None:
         camera_stats['trace'] = trace_calendar(line_states)
         camera_report_output.update(camera_report_stats(frames, stats=camera_stats))
@@ -2081,8 +2175,19 @@ def build_diagnostics(
     incidents.extend(_build_unknown_camera_incident(camera_stats))
     incidents.extend(_build_inactive_camera_incident(camera_stats))
 
+    if parallel_execution:
+        def completed_family(key):
+            nonlocal completed
+            completed += weights[parallel_names[key]]
+            if progress_cb:
+                progress_cb(parallel_names[key], completed, total_work)
+        collected = parallel_execution.finish(completed_family)
+        for position, key in reversed(deferred):
+            incidents[position:position] = collected[key]
+
+    stage('Classement')
     severity_order = {'error': 0, 'warning': 1, 'info': 2}
-    return sorted(
+    result = sorted(
         normalize_summary_incidents(incidents),
         key=lambda incident: (
             severity_order.get(incident.severity, 9),
@@ -2090,3 +2195,6 @@ def build_diagnostics(
             incident.title,
         ),
     )
+    if progress_cb is not None:
+        progress_cb('finished', 1, 1)
+    return result

@@ -12,6 +12,7 @@ from tkinter import filedialog, messagebox, ttk
 import customtkinter as ctk
 
 from Models.folder_report import FolderReport, TraceReportEntry, export_folder_report_csv
+from Models.loading_progress import ProgressEmitter, ProgressTracker, VIEW_SEGMENT
 from Views.BaseView import BaseView
 
 
@@ -32,9 +33,15 @@ class AlphaFolderView(BaseView):
         self._prepared_view = None
         self._exporting = False
         self._export_cancel = threading.Event()
+        self._progress_tracker = ProgressTracker('folder_group')
+        self._progress_render_job = None
+        self._progress_rendered_at = -float('inf')
 
-    def prepare(self, on_ready, on_error=None):
+    def prepare(self, on_ready, on_error=None, on_progress=None):
         self._build()
+        progress = ProgressEmitter(lambda _kind, payload: on_progress(payload), segment=VIEW_SEGMENT)
+        if on_progress:
+            progress.emit('display', 'Preparation du catalogue', 0, len(self._groups), 'groupes')
 
         def insert(start=0):
             try:
@@ -44,10 +51,15 @@ class AlphaFolderView(BaseView):
                     self._tree.insert('', 'end', iid=str(index), text=group['label'],
                                       values=(len(group['sources']), period,
                                               'À vérifier' if group.get('status') == 'verify' else 'À analyser'))
+                if on_progress:
+                    progress.emit('display', 'Insertion du catalogue', min(start + 100, len(self._groups)),
+                                  len(self._groups), 'groupes')
                 if start + 100 < len(self._groups):
                     self.after(5, insert, start + 100)
                 else:
                     self._prepared = True
+                    if on_progress:
+                        progress.emit('display', 'Catalogue pret', 1, 1, 'groupes', state='done')
                     on_ready()
             except Exception as exc:
                 if on_error:
@@ -141,7 +153,12 @@ class AlphaFolderView(BaseView):
     def _start_group(self, index):
         if self._task is not None or self._prepared_view is not None or self._exporting:
             return
+        self._progress_tracker = ProgressTracker('folder_group')
+        self._progress_rendered_at = -float('inf')
+        self._progress.set(0)
         if index in self._cache:
+            for phase in ('read', 'diagnostic', 'references'):
+                self._progress_tracker.complete_phase(phase)
             if self._export_path:
                 self._continue_export()
             else:
@@ -149,7 +166,6 @@ class AlphaFolderView(BaseView):
             return
         self._loading_index = index
         self._data = None
-        self._progress.set(0)
         self._status.configure(text=f"Préparation : {self._groups[index]['label']}")
         self._cancel.configure(state='normal')
         self._open.configure(state='disabled')
@@ -167,7 +183,7 @@ class AlphaFolderView(BaseView):
                 if kind == 'step':
                     self._status.configure(text=f'{payload[0]} · {payload[1]}')
                 elif kind == 'progress':
-                    self._progress.set(float(payload))
+                    self._accept_progress(payload)
                 elif kind == 'entry':
                     self._data = dict(payload, events=[], diagnostics=[], references=[])
                     self._data['frames'] = self._load_session.open_store(payload['store'])
@@ -200,15 +216,44 @@ class AlphaFolderView(BaseView):
             return
         self.after(10, self._poll)
 
-    def _reset_loading(self):
+    def _reset_loading(self, complete=False):
         self._task = None
         self._data = None
         self._cancel.configure(state='disabled')
         self._open.configure(state='normal')
         self._csv_button.configure(state='normal')
-        self._progress.set(1)
+        if complete:
+            self._progress_tracker.ready()
+            self._render_progress(force=True)
+
+    def _accept_progress(self, payload):
+        self._progress_tracker.update(payload)
+        self._render_progress()
+
+    def _render_progress(self, force=False):
+        if self._progress_render_job is not None:
+            if not force:
+                return
+            self.after_cancel(self._progress_render_job)
+            self._progress_render_job = None
+        remaining = .1 - (time.perf_counter() - self._progress_rendered_at)
+        if remaining > 0 and not force:
+            self._progress_render_job = self.after(max(1, int(remaining * 1000)), self._flush_progress)
+            return
+        self._progress_rendered_at = time.perf_counter()
+        tracker = self._progress_tracker
+        self._progress.set(tracker.fraction)
+        task = tracker.task or 'Preparation du bilan'
+        self._status.configure(text=f'{task} · progression estimee : {int(tracker.fraction * 100)} %')
+
+    def _flush_progress(self):
+        self._progress_render_job = None
+        self._render_progress()
 
     def _cancel_loading(self):
+        if self._progress_render_job is not None:
+            self.after_cancel(self._progress_render_job)
+            self._progress_render_job = None
         self._export_cancel.set()
         if self._task is not None:
             self._task.cancel()
@@ -233,6 +278,8 @@ class AlphaFolderView(BaseView):
         self._cancel.configure(state='normal')
 
         def ready():
+            self._progress_tracker.ready()
+            self._render_progress(force=True)
             self._prepared_view = None
             self._open.configure(state='normal')
             self._cancel.configure(state='disabled')
@@ -244,7 +291,7 @@ class AlphaFolderView(BaseView):
             self._open.configure(state='normal')
             self._cancel.configure(state='disabled')
             self._status.configure(text=message)
-        view.prepare(ready, on_error=failed)
+        view.prepare(ready, on_error=failed, on_progress=self._accept_progress)
 
     def _export_csv(self):
         if self._task is not None or self._prepared_view is not None or self._exporting or not self._groups:
@@ -292,7 +339,7 @@ class AlphaFolderView(BaseView):
 
     def _export_finished(self, error):
         self._exporting = False
-        self._reset_loading()
+        self._reset_loading(complete=not error and not self._export_cancel.is_set())
         if error:
             self._status.configure(text=error)
             messagebox.showerror('Export CSV', error, parent=self)

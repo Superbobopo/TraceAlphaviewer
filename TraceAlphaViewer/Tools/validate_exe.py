@@ -189,9 +189,10 @@ def main():
                 assert native_frames.trace_period['available'], 'Calendrier du groupe absent du .exe'
                 from datetime import datetime, timedelta
                 from validate_c5_signal import fixture as c5_fixture
+                from validate_c5_blockage import ERROR, DONE
                 from validate_robot_box_counts import fixture as robot_fixture, REQUEST
                 from Models.robot_drain import read_trace_origin
-                combined_rows = c5_fixture() + [(1000 + index / 10, text) for index, text in enumerate(
+                combined_rows = c5_fixture() + [(200, ERROR), (260, ERROR), (320, ERROR), (321, DONE)] + [(1000 + index / 10, text) for index, text in enumerate(
                     [REQUEST] * 8 + [text for frame in robot_fixture() for _, text in frame.raw_lines])]
                 c5_path = traces / 'c5-robot-fictif.old'
                 origin = datetime(2026, 10, 21, 9)
@@ -210,6 +211,8 @@ def main():
                 assert actual_c5 == expected_c5, 'Diagnostics C5/robot differents dans le .exe'
                 c5 = next(row for row in actual_c5 if row.code == 'C5_SIGNAL_ANOMALY')
                 assert c5.severity == 'error' and c5.metrics['suspect_cycle_count'] == 1
+                assert c5.metrics['blocked_transfer_count'] == 1
+                assert c5.metrics['blocked_duration_seconds'] == 120
                 c5_entry = next(value for kind, value in result if kind == 'entry')
                 from validate_priority_impact import stale
                 report_incidents = actual_c5 + [stale(line=5, end=10)]

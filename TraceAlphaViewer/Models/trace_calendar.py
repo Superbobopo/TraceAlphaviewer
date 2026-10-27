@@ -2,6 +2,8 @@
 from bisect import bisect_right
 from datetime import datetime, timedelta
 from functools import lru_cache
+from array import array
+from collections.abc import Mapping
 import re
 
 
@@ -25,6 +27,82 @@ class TraceLines(list):
     """Lignes d'un seul segment avec calendrier partage entre analyses."""
 
     calendar = None
+
+
+class ObservationClock:
+    """Temps numeriques partages ; seules les preuves demandent une date formatee."""
+
+    def __init__(self, line_states, origin):
+        self.origin = origin
+        self.length = len(line_states)
+        self.calendar = trace_calendar(line_states) if origin is None else None
+        self.times = None
+        if origin is not None:
+            from Models.robot_drain import TraceCalendar
+            dated = TraceCalendar(origin)
+            self.times = array('d')
+            previous = None
+            value = 0.0
+            for _, _, state in line_states:
+                if state.timestamp != previous:
+                    value = (dated.at(state.timestamp) - origin).total_seconds()
+                    previous = state.timestamp
+                self.times.append(value)
+
+    def values(self, line_states):
+        return iter(self.times) if self.times is not None else (row[2].timestamp for row in line_states)
+
+    def label(self, line, seconds, timestamp_str, raw=None):
+        if self.origin is not None:
+            return format_observed_time(self.origin + timedelta(seconds=seconds))
+        return display_time(self.calendar, line, raw if raw is not None else timestamp_str)
+
+
+def observation_clock(line_states, origin=None):
+    # Les lignes d'un segment restent immuables pendant ses analyses.
+    cached = getattr(line_states, '_observation_clock', None)
+    if cached is not None and cached.origin == origin and cached.length == len(line_states):
+        return cached
+    clock = ObservationClock(line_states, origin)
+    if isinstance(line_states, TraceLines):
+        line_states._observation_clock = clock
+    return clock
+
+
+_RAW_TIME = re.compile(r'\d+\|\d{2}:\d{2}:\d{2}(?:\.\d+)?')
+
+
+class TimedObservation(Mapping):
+    """Observation C5 interne, sans chaine de date sur les lignes ignorees."""
+    __slots__ = ('line', 'time', 'clock', 'timestamp_str', 'text', 'label', 'value', 'previous', 'lower')
+
+    def __init__(self, clock, line, seconds, timestamp_str, text):
+        self.clock, self.line, self.time = clock, line, seconds
+        self.timestamp_str, self.text = timestamp_str, text
+        self.label = self.value = None
+        self.previous = None
+        self.lower = None
+
+    def __iter__(self):
+        return iter(('line', 'time', 'time_str', 'value') if self.value is not None else ('line', 'time', 'time_str'))
+
+    def __len__(self):
+        return 4 if self.value is not None else 3
+
+    def __getitem__(self, key):
+        if key == 'line':
+            return self.line
+        if key == 'time':
+            return self.time
+        if key == 'value' and self.value is not None:
+            return self.value
+        if key == 'time_str':
+            if self.label is None:
+                match = _RAW_TIME.search(self.text) if self.clock.origin is None else None
+                raw = match[0] if match else self.timestamp_str
+                self.label = self.clock.label(self.line, self.time, self.timestamp_str, raw)
+            return self.label
+        raise KeyError(key)
 
 
 class _Calendar(dict):

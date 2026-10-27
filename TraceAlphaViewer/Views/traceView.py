@@ -27,6 +27,7 @@ from typing import Callable, List, Optional
 from collections.abc import Sequence
 
 import customtkinter as ctk
+from Widgets.ui_theme import UI_COLORS, slider_colors
 import tkinter as tk
 from tkinter import messagebox
 
@@ -42,6 +43,7 @@ from Widgets.machine_canvas import MachineCanvas, CANVAS_W, CANVAS_H
 from Widgets.reference_panel import ReferencePanel
 from Widgets.state_table import StateTable
 from Widgets.trace_panel import TracePanel
+from Models.loading_progress import ProgressEmitter, VIEW_SEGMENT
 
 PLAY_DELAY_DEFAULT = 300   # ms entre frames en lecture auto
 PLAY_INTERP_MAX_STEPS = 5
@@ -84,7 +86,8 @@ class TraceView(BaseView):
         navigation=None,
         **kwargs,
     ):
-        super().__init__(master, fg_color='#12121f', **kwargs)
+        self._ui_palette = UI_COLORS
+        super().__init__(master, fg_color=UI_COLORS['background'], **kwargs)
         self._filepath    = filepath
         self._report_bridge = None
         self._bridge_job = None
@@ -163,36 +166,71 @@ class TraceView(BaseView):
             self._build_title_bar()
             self._build_split_layout()
             self._prepared = True
-        self._trace_panel.load_file(self._filepath)
+        if self._trace_panel._loaded_filepath != self._filepath:
+            self._trace_panel.load_file(self._filepath)
         if self._frames:
             self._go_to(0)
+        self._diagnostic_panel.prepare_web_report()
 
-    def prepare(self, on_ready, on_error=None) -> None:
+    def prepare(self, on_ready, on_error=None, on_progress=None) -> None:
         started = time.perf_counter()
+        progress = ProgressEmitter(lambda _kind, payload: on_progress(payload), segment=VIEW_SEGMENT)
+        def report(task, completed, state='running'):
+            if on_progress:
+                # Le worker a termine le premier quart avant de transmettre la vue.
+                progress.emit('display', task, 25 + 75 * completed / 8, 100, '%', state=state)
+
+        report('Construction du viewer', 0)
         self._build_title_bar()
+        report('En-tete du viewer', 1)
+        raw_started = None
+        display_ready = False
+        raw_errors = []
+
+        def raw_ready():
+            self.preparation_timings['texte_brut'] = time.perf_counter() - raw_started
 
         def layout():
             self._build_split_layout(build_children=False)
+            report('Disposition du viewer', 2)
             self.after(5, self.preparation_step, middle, on_error)
 
         def middle():
             tick = time.perf_counter()
             self._build_middle(self._middle_pane)
             self.preparation_timings['panneaux'] = time.perf_counter() - tick
+            report('Panneaux du viewer', 3)
             self.after(5, self.preparation_step, bottom, on_error)
 
         def bottom():
             tick = time.perf_counter()
             self._build_bottom(self._bottom_pane)
             self.preparation_timings['player'] = time.perf_counter() - tick
+            report('Commandes du viewer', 4)
+            nonlocal raw_started
+            raw_started = time.perf_counter()
+            self._trace_panel.load_file(self._filepath, on_ready=raw_ready,
+                                       on_error=raw_errors.append, on_progress=on_progress)
             self.after(80, lambda: self._set_bottom_height(self._details_height))
             self.after(5, self.preparation_step, wait_panels, on_error)
 
         def wait_panels():
+            nonlocal display_ready
+            if raw_errors:
+                raise OSError(raw_errors[0])
             panels = (self._event_panel, self._error_panel, self._reference_panel, self._diagnostic_panel)
-            if any(panel.loading for panel in panels):
+            remaining = sum(bool(panel.loading) for panel in panels)
+            if not remaining and not display_ready:
+                display_ready = True
+                report('Viewer prepare', 8, state='done')
+                self.preparation_timings['affichage'] = time.perf_counter() - started
+            elif not display_ready:
+                report('Premieres pages des panneaux', 8 - remaining)
+            if remaining or self._trace_panel._loading:
                 self.after(5, self.preparation_step, wait_panels, on_error)
             else:
+                if self._trace_panel._loaded_filepath != self._filepath:
+                    return
                 self._prepared = True
                 self.preparation_timings['total'] = time.perf_counter() - started
                 on_ready()
@@ -212,38 +250,36 @@ class TraceView(BaseView):
         if self._resize_job:
             self.after_cancel(self._resize_job)
             self._resize_job = None
-        for w in self.winfo_children():
-            w.destroy()
-        self._prepared = False
+        # Une vue de retour conserve ses panneaux ; les autres sont detruites par switch_view.
 
     # ── Barre de titre ────────────────────────────────────────────────────────
     def _build_title_bar(self) -> None:
-        bar = ctk.CTkFrame(self, fg_color='#1e1e30', height=38, corner_radius=0)
+        bar = ctk.CTkFrame(self, fg_color=UI_COLORS['surface'], height=38, corner_radius=0)
         bar.pack(fill='x', side='top')
         bar.pack_propagate(False)
 
         fname = self._source_name
         ctk.CTkLabel(bar, text=f'  {fname}',
                      font=('Consolas', 12, 'bold'),
-                     text_color='#88aacc').pack(side='left', padx=12)
+                     text_color=UI_COLORS['muted']).pack(side='left', padx=12)
 
         self._lbl_stats = ctk.CTkLabel(
             bar,
             text=f'{len(self._frames)} frames | {len(self._diagnostics)} incidents | {len(self._events)} evenements',
             font=('Consolas', 11),
-            text_color='#556677',
+            text_color=UI_COLORS['dim'],
         )
         self._lbl_stats.pack(side='left', padx=8)
 
         # Heure + numéro de ligne courant
         self._lbl_ts = ctk.CTkLabel(bar, text='00:00:00',
                                      font=('Consolas', 13, 'bold'),
-                                     text_color='#4FC3F7')
+                                     text_color=UI_COLORS['accent'])
         self._lbl_ts.pack(side='left', padx=16)
 
         self._lbl_frame = ctk.CTkLabel(bar, text='0 / 0',
                                         font=('Consolas', 10),
-                                        text_color='#445566')
+                                        text_color=UI_COLORS['dim'])
         self._lbl_frame.pack(side='left', padx=4)
 
         self._lbl_line = ctk.CTkLabel(bar, text='L. —',
@@ -252,25 +288,25 @@ class TraceView(BaseView):
         self._lbl_line.pack(side='left', padx=8)
 
         ctk.CTkButton(bar, text='✕ Fermer', width=80, height=28,
-                      fg_color='#2a2a3e', hover_color='#aa2233',
+                      fg_color=UI_COLORS['control'], hover_color='#aa2233',
                       text_color='#cc8888', font=('Consolas', 11),
                       command=self._close).pack(side='right', padx=8, pady=4)
 
     # ── Zone centrale : graphique (gauche) + état capteurs/tapis (droite) ─────
     def _build_split_layout(self, build_children=True) -> None:
-        self._main_pane = ctk.CTkFrame(self, fg_color='#12121f', corner_radius=0)
+        self._main_pane = ctk.CTkFrame(self, fg_color=UI_COLORS['background'], corner_radius=0)
         self._main_pane.pack(fill='both', expand=True, side='top')
 
         self._bottom_pane = ctk.CTkFrame(
             self._main_pane,
-            fg_color='#0f0f1c',
+            fg_color=UI_COLORS['panel'],
             corner_radius=0,
             height=self._bottom_total_height(),
         )
         self._bottom_pane.pack(fill='x', side='bottom')
         self._bottom_pane.pack_propagate(False)
 
-        self._middle_pane = ctk.CTkFrame(self._main_pane, fg_color='#12121f', corner_radius=0)
+        self._middle_pane = ctk.CTkFrame(self._main_pane, fg_color=UI_COLORS['background'], corner_radius=0)
         self._middle_pane.pack(fill='both', expand=True, side='top')
 
         if build_children:
@@ -324,35 +360,35 @@ class TraceView(BaseView):
             self.after_idle(lambda: self._set_bottom_height(self._details_height))
 
     def _build_middle(self, parent) -> None:
-        mid = ctk.CTkFrame(parent, fg_color='#12121f', corner_radius=0)
+        mid = ctk.CTkFrame(parent, fg_color=UI_COLORS['background'], corner_radius=0)
         mid.pack(fill='both', expand=True)
 
         # Graphique machine (gauche, largeur fixe = taille native du canvas)
-        canvas_frame = tk.Frame(mid, bg='#1a1a2e', width=CANVAS_W + 8)
+        canvas_frame = tk.Frame(mid, bg=UI_COLORS['surface'], width=CANVAS_W + 8)
         canvas_frame.pack(side='left', fill='y', padx=(6, 3), pady=6)
         canvas_frame.pack_propagate(False)
 
         self._machine_canvas = MachineCanvas(canvas_frame, width=CANVAS_W, height=CANVAS_H)
         self._machine_canvas.pack(padx=2, pady=2)
 
-        analysis_frame = ctk.CTkFrame(mid, fg_color='#12121f', corner_radius=0)
+        analysis_frame = ctk.CTkFrame(mid, fg_color=UI_COLORS['background'], corner_radius=0)
         analysis_frame.pack(side='right', fill='both', expand=True, padx=(3, 6), pady=6)
         self._build_analysis_tabs(analysis_frame)
 
     # ── Zone bas : navigation + trace complète ────────────────────────────────
     def _build_bottom(self, parent) -> None:
-        bottom = ctk.CTkFrame(parent, fg_color='#0f0f1c', corner_radius=0)
+        bottom = ctk.CTkFrame(parent, fg_color=UI_COLORS['panel'], corner_radius=0)
         bottom.pack(fill='both', expand=True)
 
         # -- Barre navigation --
-        nav_bar = ctk.CTkFrame(bottom, fg_color='#1a1a2e',
+        nav_bar = ctk.CTkFrame(bottom, fg_color=UI_COLORS['surface'],
                                 height=42, corner_radius=0)
         nav_bar.pack(fill='x', side='top')
         nav_bar.pack_propagate(False)
 
-        btn_cfg = dict(width=36, height=30, fg_color='#252538',
-                       hover_color='#353555', font=('Consolas', 13),
-                       text_color='#aabbcc')
+        btn_cfg = dict(width=36, height=30, fg_color=UI_COLORS['control'],
+                       hover_color=UI_COLORS['hover'], font=('Consolas', 13),
+                       text_color=UI_COLORS['text'])
 
         ctk.CTkButton(nav_bar, text='|◄', **btn_cfg,
                       command=self._go_start).pack(side='left', padx=(8, 2), pady=4)
@@ -367,14 +403,14 @@ class TraceView(BaseView):
                       command=self._go_end).pack(side='left', padx=2)
 
         ctk.CTkLabel(nav_bar, text='×', font=('Consolas', 10),
-                     text_color='#445566').pack(side='left', padx=(10, 0))
-        speed_btn_cfg = dict(width=32, height=26, fg_color='#252538',
-                             hover_color='#353555', font=('Consolas', 11, 'bold'),
-                             text_color='#aabbcc')
+                     text_color=UI_COLORS['dim']).pack(side='left', padx=(10, 0))
+        speed_btn_cfg = dict(width=32, height=26, fg_color=UI_COLORS['control'],
+                             hover_color=UI_COLORS['hover'], font=('Consolas', 11, 'bold'),
+                             text_color=UI_COLORS['text'])
         ctk.CTkButton(nav_bar, text='◄◄', **speed_btn_cfg,
                       command=self._speed_down).pack(side='left', padx=(4, 2), pady=6)
         self._speed_var = tk.DoubleVar(value=0.0)
-        ctk.CTkSlider(nav_bar, from_=SPEED_SLIDER_MIN, to=SPEED_SLIDER_MAX,
+        ctk.CTkSlider(nav_bar, from_=SPEED_SLIDER_MIN, to=SPEED_SLIDER_MAX, **slider_colors(self),
                       number_of_steps=200,
                       variable=self._speed_var, width=88, height=14,
                       command=self._on_speed_change).pack(
@@ -383,12 +419,12 @@ class TraceView(BaseView):
                       command=self._speed_up).pack(side='left', padx=(2, 4), pady=6)
         self._lbl_speed = ctk.CTkLabel(nav_bar, text='x1.00',
                                        font=('Consolas', 10),
-                                       text_color='#778899', width=42)
+                                       text_color=UI_COLORS['muted'], width=42)
         self._lbl_speed.pack(side='left', padx=(0, 6))
 
         n = max(1, len(self._frames) - 1)
         self._slider_var = tk.IntVar(value=0)
-        self._slider = ctk.CTkSlider(nav_bar, from_=0, to=n,
+        self._slider = ctk.CTkSlider(nav_bar, from_=0, to=n, **slider_colors(self),
                                       number_of_steps=n,
                                       variable=self._slider_var,
                                       command=self._on_slider)
@@ -396,20 +432,20 @@ class TraceView(BaseView):
 
         self._lbl_time = ctk.CTkLabel(nav_bar, text='--:--:--',
                                        font=('Consolas', 13, 'bold'),
-                                       text_color='#4FC3F7', width=80)
+                                       text_color=UI_COLORS['accent'], width=80)
         self._lbl_time.pack(side='right', padx=10)
 
         self._btn_details = ctk.CTkButton(nav_bar, text='Masquer details',
                                           width=116, height=28,
-                                          fg_color='#252538',
-                                          hover_color='#353555',
+                                          fg_color=UI_COLORS['control'],
+                                          hover_color=UI_COLORS['hover'],
                                           font=('Consolas', 10),
-                                          text_color='#aabbcc',
+                                          text_color=UI_COLORS['text'],
                                           command=self._toggle_details)
         self._btn_details.pack(side='right', padx=(0, 6), pady=5)
         self._btn_search = ctk.CTkButton(
             nav_bar, text='🔍', font=('Segoe UI Symbol', 16), width=30, height=30,
-            fg_color='#252538', hover_color='#344c66', text_color='#a8c4e4',
+            fg_color=UI_COLORS['control'], hover_color=UI_COLORS['hover'], text_color=UI_COLORS['text'],
             command=self._toggle_trace_search)
         self._btn_search.pack(side='right', padx=(0, 6), pady=5)
         self._btn_next_error = ctk.CTkButton(nav_bar, text='Err►', width=48, height=30,
@@ -427,12 +463,12 @@ class TraceView(BaseView):
                                            text_color='#cc7777', width=62)
         self._lbl_error_pos.pack(side='right', padx=(4, 8))
 
-        self._resize_handle = tk.Frame(bottom, bg='#263142', height=RESIZE_HANDLE_H, cursor='sb_v_double_arrow')
+        self._resize_handle = tk.Frame(bottom, bg=UI_COLORS['border'], height=RESIZE_HANDLE_H, cursor='sb_v_double_arrow')
         self._resize_handle.pack(fill='x', side='top')
         self._resize_handle.bind('<ButtonPress-1>', self._start_details_resize)
         self._resize_handle.bind('<B1-Motion>', self._drag_details_resize)
 
-        self._details_frame = ctk.CTkFrame(bottom, fg_color='#12121f', corner_radius=0)
+        self._details_frame = ctk.CTkFrame(bottom, fg_color=UI_COLORS['background'], corner_radius=0)
         self._details_frame.pack(fill='both', expand=True, side='top')
         self._details_frame.pack_propagate(False)
         self._build_trace_area(self._details_frame)
@@ -449,13 +485,13 @@ class TraceView(BaseView):
 
     def _build_analysis_tabs(self, parent) -> None:
         if hasattr(ctk, 'CTkTabview'):
-            tabs = ctk.CTkTabview(parent, fg_color='#12121f',
-                                  segmented_button_fg_color='#1e1e30',
-                                  segmented_button_selected_color='#1e3a5f',
-                                  segmented_button_selected_hover_color='#2a4a7f',
-                                  segmented_button_unselected_color='#252538',
-                                  segmented_button_unselected_hover_color='#353555',
-                                  text_color='#aabbcc',
+            tabs = ctk.CTkTabview(parent, fg_color=UI_COLORS['background'],
+                                  segmented_button_fg_color=UI_COLORS['surface'],
+                                  segmented_button_selected_color=UI_COLORS['selected'],
+                                  segmented_button_selected_hover_color=UI_COLORS['selected'],
+                                  segmented_button_unselected_color=UI_COLORS['control'],
+                                  segmented_button_unselected_hover_color=UI_COLORS['hover'],
+                                  text_color=UI_COLORS['text'],
                                   height=250)
             tabs.pack(fill='both', expand=True)
             state_tab = tabs.add('Capteurs & Tapis')
@@ -510,20 +546,20 @@ class TraceView(BaseView):
         self._build_analysis_fallback_tabs(parent)
 
     def _build_analysis_fallback_tabs(self, parent) -> None:
-        header = ctk.CTkFrame(parent, fg_color='#1e1e30', height=32, corner_radius=0)
+        header = ctk.CTkFrame(parent, fg_color=UI_COLORS['surface'], height=32, corner_radius=0)
         header.pack(fill='x')
         header.pack_propagate(False)
-        content = ctk.CTkFrame(parent, fg_color='#12121f', corner_radius=0)
+        content = ctk.CTkFrame(parent, fg_color=UI_COLORS['background'], corner_radius=0)
         content.pack(fill='both', expand=True)
 
         self._analysis_fallback_tab_frames = {}
         for name in ('Capteurs & Tapis', 'Diagnostic', 'References', 'Erreur', 'Evenements'):
-            frame = ctk.CTkFrame(content, fg_color='#12121f', corner_radius=0)
+            frame = ctk.CTkFrame(content, fg_color=UI_COLORS['background'], corner_radius=0)
             self._analysis_fallback_tab_frames[name] = frame
             ctk.CTkButton(
                 header, text=name, width=110, height=26,
-                fg_color='#252538', hover_color='#353555',
-                text_color='#aabbcc', font=('Consolas', 10),
+                fg_color=UI_COLORS['control'], hover_color=UI_COLORS['hover'],
+                text_color=UI_COLORS['text'], font=('Consolas', 10),
                 command=lambda n=name: self._show_analysis_fallback_tab(n),
             ).pack(side='left', padx=4, pady=3)
 

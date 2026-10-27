@@ -28,7 +28,7 @@ DIAGNOSTIC_KNOWLEDGE: dict[str, dict[str, object]] = {
         'confidence': 'forte ; correspondance des modes confirmee par l’utilisateur',
     },
     'c5_signal_anomaly': {
-        'symptom': "C5 alterne de façon répétée entre deux transferts EA→T3 confirmés. Des cycles non mesurés peuvent suivre.",
+        'symptom': "C5 alterne entre deux transferts EA→T3, ou le transfert T3→T4 reste en erreur. Un code moteur normal ne prouve pas sa reprise.",
         'causes': [
             "Obstacle, propreté, alignement ou câblage de C5 à contrôler.",
             "Détection intermittente d'une boîte réelle ou signal parasite possible.",
@@ -36,6 +36,8 @@ DIAGNOSTIC_KNOWLEDGE: dict[str, dict[str, object]] = {
         ],
         'checks': [
             "Contrôler un obstacle devant C5, sa propreté, son alignement et son câblage.",
+            "Vérifier la présence et la présentation de la boîte sur T3 après éjection ; ne pas modifier automatiquement le réglage de l'électroaimant.",
+            "Rechercher le refus -47 et une fin explicite du transfert T3→T4 ; une initialisation seule ne confirme aucune reprise.",
             "Suivre chaque IdB/IdA : transfert de longueur nulle, absence signalée sur C6 et suppression T5 avec C9=0.",
             "Comparer les créations virtuelles aux écarts de poids et vérifier la balance.",
             "Vérifier physiquement la présence des boîtes ; une boîte fantôme reste une hypothèse probable.",

@@ -8,11 +8,15 @@ import os
 import re
 import webbrowser
 import time
+import uuid
+import threading
+import shutil
 from queue import Empty
 from pathlib import Path
 from typing import Callable, Optional
 
 import customtkinter as ctk
+from Widgets.ui_theme import ui_color
 import tkinter as tk
 from tkinter import messagebox
 
@@ -181,7 +185,7 @@ class DiagnosticPanel(ctk.CTkFrame):
         on_measurement_sample=None,
         **kwargs,
     ):
-        kwargs.setdefault('fg_color', '#12121f')
+        kwargs.setdefault('fg_color', ui_color(master, 'background', '#12121f'))
         kwargs.setdefault('corner_radius', 0)
         super().__init__(master, **kwargs)
         self._incidents = normalize_summary_incidents(normalize_robot_incidents(incidents))
@@ -210,6 +214,11 @@ class DiagnosticPanel(ctk.CTkFrame):
         self._report_task = None
         self._report_job = None
         self._report_path = None
+        self._report_requested = False
+        self._report_retained = False
+        self._report_promoting = False
+        self._report_directory = None
+        self._report_prepare_job = None
         self._highlight_line = None
         self._build()
         self._renderer = TextRenderer(self, self._list,
@@ -224,7 +233,7 @@ class DiagnosticPanel(ctk.CTkFrame):
         return f'L.{line}'
 
     def _build(self) -> None:
-        header = ctk.CTkFrame(self, fg_color='#1e1e30', height=58, corner_radius=0)
+        header = ctk.CTkFrame(self, fg_color=ui_color(self, 'surface', '#1e1e30'), height=58, corner_radius=0)
         header.pack(fill='x')
         header.pack_propagate(False)
 
@@ -232,7 +241,7 @@ class DiagnosticPanel(ctk.CTkFrame):
             header,
             text='DIAGNOSTIC GLOBAL DE LA TRACE',
             font=('Consolas', 10, 'bold'),
-            text_color='#88aacc',
+            text_color=ui_color(self, 'muted', '#88aacc'),
         )
         self._title.pack(anchor='w', padx=8, pady=(5, 0))
 
@@ -240,13 +249,13 @@ class DiagnosticPanel(ctk.CTkFrame):
             header,
             text='Analyse de toute la trace chargee.',
             font=('Consolas', 9),
-            text_color='#778899',
+            text_color=ui_color(self, 'muted', '#778899'),
         )
         self._summary.pack(anchor='w', padx=8, pady=(0, 4))
         self._title.bind('<Button-1>', lambda _event: self._show_global_summary())
         self._summary.bind('<Button-1>', lambda _event: self._show_global_summary())
 
-        body = ctk.CTkFrame(self, fg_color='#12121f', corner_radius=0)
+        body = ctk.CTkFrame(self, fg_color=ui_color(self, 'background', '#12121f'), corner_radius=0)
         body.pack(fill='both', expand=True)
 
         self._paned = tk.PanedWindow(
@@ -256,13 +265,13 @@ class DiagnosticPanel(ctk.CTkFrame):
             sashwidth=8,
             bd=0,
             opaqueresize=True,
-            bg='#263142',
+            bg=ui_color(self, 'border', '#263142'),
             showhandle=False,
         )
         self._paned.pack(fill='both', expand=True)
 
-        left = tk.Frame(self._paned, bg='#0f0f1c', width=self._current_split_width())
-        right = tk.Frame(self._paned, bg='#12121f', width=_INCIDENTS_MIN_WIDTH + 60)
+        left = tk.Frame(self._paned, bg=ui_color(self, 'panel', '#0f0f1c'), width=self._current_split_width())
+        right = tk.Frame(self._paned, bg=ui_color(self, 'background', '#12121f'), width=_INCIDENTS_MIN_WIDTH + 60)
         left.pack_propagate(False)
         right.pack_propagate(False)
         self._paned.add(left, minsize=_DETAILS_MIN_WIDTH, stretch='always')
@@ -273,16 +282,16 @@ class DiagnosticPanel(ctk.CTkFrame):
         self._host = self.winfo_toplevel()
         self._host_binding = self._host.bind('<Configure>', self._on_host_configure, add='+')
 
-        detail_bar = tk.Frame(left, bg='#0f0f1c', height=34)
+        detail_bar = tk.Frame(left, bg=ui_color(self, 'panel', '#0f0f1c'), height=34)
         detail_bar.pack(fill='x')
         detail_bar.pack_propagate(False)
         self._global_btn = tk.Button(
             detail_bar,
             text='Vue globale',
             command=self._show_global_summary,
-            bg='#1e1e30',
-            fg='#aabbcc',
-            activebackground='#263142',
+            bg=ui_color(self, 'surface', '#1e1e30'),
+            fg=ui_color(self, 'text', '#aabbcc'),
+            activebackground=ui_color(self, 'border', '#263142'),
             activeforeground='#ffffff',
             relief='flat',
             borderwidth=0,
@@ -296,10 +305,10 @@ class DiagnosticPanel(ctk.CTkFrame):
             detail_bar,
             text='Rapport web',
             command=self._open_web_report,
-            bg='#1e1e30',
-            fg='#aabbcc',
-            activebackground='#263142',
-            activeforeground='#ffffff',
+            bg=ui_color(self, 'accent', '#1e1e30'),
+            fg=ui_color(self, 'accent_text', '#aabbcc'),
+            activebackground=ui_color(self, 'accent_hover', '#263142'),
+            activeforeground=ui_color(self, 'accent_text', '#ffffff'),
             relief='flat',
             borderwidth=0,
             font=('Consolas', 9, 'bold'),
@@ -309,16 +318,16 @@ class DiagnosticPanel(ctk.CTkFrame):
         )
         self._report_btn.pack(side='left', padx=(0, 8), pady=6)
 
-        detail_body = tk.Frame(left, bg='#0f0f1c')
+        detail_body = tk.Frame(left, bg=ui_color(self, 'panel', '#0f0f1c'))
         detail_body.pack(fill='both', expand=True)
         detail_scroll = ctk.CTkScrollbar(detail_body, orientation='vertical', width=12,
-            fg_color='#0f0f1c', button_color='#3c4358', button_hover_color='#65728d', corner_radius=6)
+            fg_color=ui_color(self, 'panel', '#0f0f1c'), button_color=ui_color(self, 'control', '#3c4358'), button_hover_color=ui_color(self, 'hover', '#65728d'), corner_radius=6)
         self._detail_scroll = detail_scroll
         detail_scroll.pack(side='right', fill='y')
         self._details = tk.Text(
             detail_body,
-            bg='#0f0f1c',
-            fg='#aabbcc',
+            bg=ui_color(self, 'panel', '#0f0f1c'),
+            fg=ui_color(self, 'text', '#aabbcc'),
             font=('Consolas', 9),
             wrap='word',
             yscrollcommand=detail_scroll.set,
@@ -331,14 +340,14 @@ class DiagnosticPanel(ctk.CTkFrame):
         detail_scroll.configure(command=self._details.yview)
 
         vscroll = ctk.CTkScrollbar(right, orientation='vertical', width=12,
-            fg_color='#12121f', button_color='#3c4358', button_hover_color='#65728d', corner_radius=6)
+            fg_color=ui_color(self, 'background', '#12121f'), button_color=ui_color(self, 'control', '#3c4358'), button_hover_color=ui_color(self, 'hover', '#65728d'), corner_radius=6)
         self._list_scroll = vscroll
         vscroll.pack(side='right', fill='y')
 
         self._list = tk.Text(
             right,
-            bg='#12121f',
-            fg='#aabbcc',
+            bg=ui_color(self, 'background', '#12121f'),
+            fg=ui_color(self, 'text', '#aabbcc'),
             font=('Consolas', 10),
             wrap='none',
             padx=8,
@@ -353,8 +362,8 @@ class DiagnosticPanel(ctk.CTkFrame):
         self._list.pack(fill='both', expand=True)
         vscroll.configure(command=self._list.yview)
 
-        self._list.tag_configure('current', background='#1a2d45')
-        self._list.tag_configure('header', foreground='#778899')
+        self._list.tag_configure('current', background=ui_color(self, 'selected', '#1a2d45'))
+        self._list.tag_configure('header', foreground=ui_color(self, 'muted', '#778899'))
         for severity, (fg, bg) in _SEVERITY_STYLES.items():
             self._list.tag_configure(severity, foreground=fg)
             self._list.tag_configure(f'{severity}_current', foreground=fg, background=bg)
@@ -613,6 +622,21 @@ class DiagnosticPanel(ctk.CTkFrame):
                 self._details.insert('end', '\n\n')
         self._details.insert('end', 'A TRAITER EN PRIORITE\n')
 
+        from Models.diagnostic_report import _field_priority_score, _field_severity_for
+        from Models.diagnostic import camera_report_stats
+        if isinstance(self._frames, FrameStore):
+            camera = (self._frames.read_camera_report()
+                      if (self._frames.directory / 'camera_report.pkl').is_file() else {})
+        else:
+            camera = camera_report_stats(self._frames or [])
+        total_boxes = int(camera.get('total_boxes') or 0)
+        for group in grouped:
+            group['measurement_stats'] = self._measurement_summary
+            comparable = self._measurement_summary.get('comparable_count', 0)
+            group['affected_ratio'] = group['occurrence_count'] / comparable if comparable else 0
+            group['field_severity'] = _field_severity_for(group, total_boxes, False)
+            group['field_priority'] = _field_priority_score(group)
+        grouped = order_impact(grouped)
         priority_groups = order_impact(sorted(
             [group for group in grouped if observation_is_priority(group) and (group['code'] != 'DemVidageComplet'
              or drain_is_critical(group.get('metrics')))],
@@ -635,10 +659,10 @@ class DiagnosticPanel(ctk.CTkFrame):
             if str(group['code']) in {'UNKNOWN', 'CAM-NO-READ', 'REFERENCE_ABSENT', 'REFERENCE_NON_ALPHATISABLE'} and key not in priority_keys:
                 priority_groups.append(group)
                 priority_keys.add(key)
-        for idx, group in enumerate(priority_groups, 1):
+        for idx, group in enumerate(order_impact(priority_groups), 1):
             if group.get('priority_impact', {}).get('available') is False:
                 self._details.insert('end', group['priority_impact']['note'] + '\n')
-            severity_key = str(group['severity'])
+            severity_key = str(group['field_severity'])
             severity = _SEVERITY_LABELS.get(severity_key, severity_key.upper())
             zone = str(group['belt'] or '-')
             code = str(group['code'] or '-')
@@ -651,7 +675,7 @@ class DiagnosticPanel(ctk.CTkFrame):
                 f'   {self._line_label(group["first_line"])} -> {self._line_label(group["last_line"])} | '
                 f'{group["start_time_str"]} -> {group["end_time_str"]}\n'
             )
-            for line in _business_lines(str(group['summary']), code)[:2]:
+            for line in ([] if code == 'C5_SIGNAL_ANOMALY' else _business_lines(str(group['summary']), code)[:2]):
                 self._details.insert('end', f'   {line}\n')
             self._details.insert('end', '\n')
 
@@ -659,7 +683,7 @@ class DiagnosticPanel(ctk.CTkFrame):
         self._details.insert('end', '------------------------------------------------------------\n')
 
         for idx, group in enumerate(grouped, 1):
-            severity_key = str(group['severity'])
+            severity_key = str(group['field_severity'])
             severity = _SEVERITY_LABELS.get(severity_key, severity_key.upper())
             zone = str(group['belt'] or '-')
             code = str(group['code'] or '-')
@@ -675,9 +699,9 @@ class DiagnosticPanel(ctk.CTkFrame):
                 f'{idx}. [{severity}] {zone} | {code} | {count_label} | {metric}\n'
                 f'   {group["title"]}\n'
                 f'   Lignes : {self._line_label(group["first_line"])} -> {self._line_label(group["last_line"])} | '
-                f'Periode : {group["start_time_str"]} -> {group["end_time_str"]} ({duration})\n'
+                f'Première et dernière occurrences : {group["start_time_str"]} -> {group["end_time_str"]}\n'
             )
-            for line in _business_lines(str(group['summary']), code)[:2]:
+            for line in ([] if code == 'C5_SIGNAL_ANOMALY' else _business_lines(str(group['summary']), code)[:2]):
                 self._details.insert('end', f'   {line}\n')
             self._details.insert('end', '------------------------------------------------------------\n')
         self._details.configure(state='disabled')
@@ -713,8 +737,7 @@ class DiagnosticPanel(ctk.CTkFrame):
                 f'Code     : {incident.code or "-"}\n'
                 f'Confiance: {confidence}\n'
                 f'Lignes   : {self._line_label(incident.first_line)} -> {self._line_label(incident.last_line)}\n'
-                f'Periode  : {incident.start_time_str} -> {incident.end_time_str} '
-                f'({incident.duration_label()})\n'
+                f'Première et dernière occurrences : {incident.start_time_str} -> {incident.end_time_str}\n'
                 f'Occurrences : {incident.count}\n\n'
                 f'Symptome detecte:\n{incident.symptom or "-"}\n\n'
                 f'Resume:\n{incident.summary}\n\n'
@@ -1059,30 +1082,72 @@ class DiagnosticPanel(ctk.CTkFrame):
         self._measurement_link('\nRetour au bilan', self._show_global_summary, 'measurement-back')
         self._details.configure(state='disabled')
 
+    def prepare_web_report(self):
+        if not isinstance(self._frames, FrameStore) or self._report_directory is not None or self._report_prepare_job is not None:
+            return
+        self._report_prepare_job = self.after(500, self._prepare_web_report)
+
+    def _prepare_web_report(self):
+        self._report_prepare_job = None
+        from Models.resource_policy import detect_resources, GIB
+        resources = detect_resources()
+        if resources.reliable and resources.available < max(2 * GIB, resources.total // 5):
+            self._report_prepare_job = self.after(1000, self._prepare_web_report)
+            return
+        self._start_report()
+
+    def _start_report(self):
+        try:
+            if self._load_session is None:
+                self._own_session = self._own_session or LoadingSession()
+                self._load_session = self._own_session
+            if self._report_directory is None:
+                self._report_directory = self._load_session.directory / ('report-' + uuid.uuid4().hex)
+            self._report_task = self._load_session.start(
+                'report', store=str(self._frames.directory), incidents=self._incidents,
+                source_name=self._source_name, output_dir=str(self._report_directory))
+            self._report_path = None
+            self._report_retained = False
+            self._report_job = self.after(10, self._poll_report)
+        except Exception as exc:
+            self._report_failed(str(exc))
+
+    def _report_failed(self, error):
+        self._report_task = None
+        self._report_promoting = False
+        self._report_btn.configure(text='Rapport web', state='normal')
+        if self._report_requested:
+            self._report_requested = False
+            messagebox.showerror('Rapport web', error)
+
+    def _retain_report(self):
+        try:
+            self._report_task = self._load_session.start('retain_report', report=str(self._report_path))
+            self._report_promoting = True
+            self._report_job = self.after(10, self._poll_report)
+        except Exception as exc:
+            self._report_failed(str(exc))
+
     def _open_web_report(self) -> None:
+        self._report_requested = True
         if self._report_path is not None and report_files_available(self._report_path):
-            self._launch_report(self._report_path)
+            if self._report_retained:
+                self._launch_report(self._report_path)
+            elif self._report_task is None:
+                self._report_btn.configure(text='Rapport en preparation...', state='disabled')
+                self._retain_report()
             return
         if isinstance(self._frames, FrameStore):
+            self._report_btn.configure(text='Rapport en preparation...', state='disabled')
             if self._report_task is not None:
                 return
-            try:
-                if self._load_session is None:
-                    self._own_session = self._own_session or LoadingSession()
-                    self._load_session = self._own_session
-                self._report_task = self._load_session.start(
-                    'report', store=str(self._frames.directory), incidents=self._incidents,
-                    source_name=self._source_name)
-            except Exception as exc:
-                messagebox.showerror('Rapport web', str(exc))
-                return
-            self._report_path = None
-            self._report_btn.configure(text='Rapport en preparation...', state='disabled')
-            self._report_job = self.after(10, self._poll_report)
+            if self._report_prepare_job is None:
+                self._prepare_web_report()
             return
         try:
             report_path = write_diagnostic_report(self._incidents, frames=self._frames, source_name=self._source_name)
             self._report_path = Path(report_path)
+            self._report_retained = True
             self._launch_report(report_path)
         except Exception as exc:
             messagebox.showerror(
@@ -1102,9 +1167,15 @@ class DiagnosticPanel(ctk.CTkFrame):
                     self._report_task = None
                     self._report_btn.configure(text='Rapport web', state='normal')
                     if kind == 'error':
-                        messagebox.showerror('Rapport web', payload)
+                        self._report_failed(payload)
                     elif self._report_path is not None:
-                        self._launch_report(self._report_path)
+                        if self._report_promoting:
+                            self._report_promoting = False
+                            self._report_retained = True
+                            self._launch_report(self._report_path)
+                        elif self._report_requested:
+                            self._report_btn.configure(text='Rapport en preparation...', state='disabled')
+                            self._retain_report()
                     return
         except Empty:
             pass
@@ -1127,6 +1198,15 @@ class DiagnosticPanel(ctk.CTkFrame):
             self.after_cancel(self._report_job)
         if self._report_task is not None:
             self._report_task.cancel()
+        if self._report_prepare_job is not None:
+            self.after_cancel(self._report_prepare_job)
+        if self._report_directory is not None:
+            directory, task = self._report_directory, self._report_task
+            def clean_report():
+                if task is not None:
+                    task.finished.wait()
+                shutil.rmtree(directory, ignore_errors=True)
+            threading.Thread(target=clean_report, daemon=False).start()
         if self._own_session is not None:
             self._own_session.close()
         super().destroy()

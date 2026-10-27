@@ -7,6 +7,7 @@ import re
 from typing import Callable, Optional
 
 import customtkinter as ctk
+from Widgets.ui_theme import ui_color, scrollbar_colors
 import tkinter as tk
 from queue import Empty
 import time
@@ -111,7 +112,7 @@ class EventPanel(ctk.CTkFrame):
         navigation=None,
         **kwargs,
     ):
-        kwargs.setdefault('fg_color', '#12121f')
+        kwargs.setdefault('fg_color', ui_color(master, 'background', '#12121f'))
         kwargs.setdefault('corner_radius', 0)
         super().__init__(master, **kwargs)
         self._events = events
@@ -141,7 +142,7 @@ class EventPanel(ctk.CTkFrame):
         self.set_events(events)
 
     def _build(self) -> None:
-        header = ctk.CTkFrame(self, fg_color='#1e1e30', height=26, corner_radius=0)
+        header = ctk.CTkFrame(self, fg_color=ui_color(self, 'surface', '#1e1e30'), height=26, corner_radius=0)
         header.pack(fill='x')
         header.pack_propagate(False)
 
@@ -149,7 +150,7 @@ class EventPanel(ctk.CTkFrame):
             header,
             text=self._panel_title,
             font=('Consolas', 10, 'bold'),
-            text_color='#88aacc',
+            text_color=ui_color(self, 'muted', '#88aacc'),
         )
         self._title.pack(side='left', padx=8)
         if self._show_belt_filters:
@@ -171,13 +172,13 @@ class EventPanel(ctk.CTkFrame):
 
         self._pagination = Pagination(self, self._set_page)
         self._pagination.pack(side='bottom', fill='x')
-        vscroll = tk.Scrollbar(self, orient='vertical')
+        vscroll = tk.Scrollbar(self, orient='vertical', **scrollbar_colors(self))
         vscroll.pack(side='right', fill='y')
 
         self._text = tk.Text(
             self,
-            bg='#12121f',
-            fg='#aabbcc',
+            bg=ui_color(self, 'background', '#12121f'),
+            fg=ui_color(self, 'text', '#aabbcc'),
             font=('Consolas', 9),
             wrap='none',
             cursor='arrow',
@@ -190,10 +191,11 @@ class EventPanel(ctk.CTkFrame):
         self._text.pack(fill='both', expand=True)
         vscroll.config(command=self._text.yview)
 
-        self._text.tag_configure('line', foreground='#445566')
-        self._text.tag_configure('current', background='#1a2d45')
-        self._text.tag_configure('header', foreground='#ddeeff', background='#1e1e30')
-        self._text.tag_configure('detail', foreground='#778899')
+        self._text.tag_configure('line', foreground=ui_color(self, 'dim', '#445566'))
+        self._text.tag_configure('current', background=ui_color(self, 'selected', '#1a2d45'))
+        self._text.tag_configure('header', foreground=ui_color(self, 'text', '#ddeeff'),
+                                 background=ui_color(self, 'surface', '#1e1e30'))
+        self._text.tag_configure('detail', foreground=ui_color(self, 'muted', '#778899'))
         for severity, (fg, bg) in _SEVERITY_TAGS.items():
             self._text.tag_configure(severity, foreground=fg)
             self._text.tag_configure(f'{severity}_current', foreground=fg, background=bg)
@@ -216,9 +218,9 @@ class EventPanel(ctk.CTkFrame):
     def _refresh_filter_buttons(self) -> None:
         for belt, button in self._filter_buttons.items():
             if belt == self._active_belt_filter:
-                button.configure(fg_color='#2a4a7f', hover_color='#345a96', text_color='#ddeeff')
+                button.configure(fg_color=ui_color(self, 'selected', '#2a4a7f'), hover_color=ui_color(self, 'selected_hover', '#345a96'), text_color=ui_color(self, 'text', '#ddeeff'))
             else:
-                button.configure(fg_color='#252538', hover_color='#353555', text_color='#aabbcc')
+                button.configure(fg_color=ui_color(self, 'control', '#252538'), hover_color=ui_color(self, 'hover', '#353555'), text_color=ui_color(self, 'text', '#aabbcc'))
 
     def _filtered_events(self) -> list[MachineEvent | BusinessEvent]:
         if self._active_belt_filter == 'Tous':

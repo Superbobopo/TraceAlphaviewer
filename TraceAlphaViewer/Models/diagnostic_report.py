@@ -13,9 +13,9 @@ from pathlib import Path
 
 from Models.diagnostic import DiagnosticIncident, camera_report_stats, alpha_reset_severity, t2_c4_error_severity
 from Models.state import MachineState
-from Models.measurement_analysis import analyze_measurements, representative_samples
+from Models.measurement_analysis import analyze_measurements, representative_samples, dimension_findings
 from Models.robot_drain import t5_priority_score, drain_metric_text, drain_period_text, format_trace_duration
-from Models.dimension_check import ORIENTATION_CATEGORIES
+from Models.dimension_check import ORIENTATION_CATEGORIES, dimension_severity
 from Models.robot_drain import drain_is_critical, normalize_robot_incidents
 from Models.robot_drain import drain_box_text
 from Models.c2_analysis import signal_metric_text
@@ -58,8 +58,8 @@ _REPORT_APP_BUILD_DIR = _REPORT_APP_DIR / "out"
 
 
 def reports_dir() -> Path:
-    base_dir = Path(os.environ.get("LOCALAPPDATA", Path.home()))
-    return base_dir / "TraceAlphaViewer" / "reports"
+    from Models.report_storage import desktop_reports_dir
+    return desktop_reports_dir()
 
 
 def _clean(text: object) -> str:
@@ -341,7 +341,7 @@ def _field_explanation(group: dict[str, object], total_boxes: int, c9_massive: b
                 "Comparer deplacement commande/reel T5, presentation des boites et position physique de l'Alpha.")
     if code == 'C5_SIGNAL_ANOMALY':
         return (c5_metric_text(group['metrics']) if group['metrics'].get('c5_metrics_version') else str(group['summary']),
-                "Des cycles incohérents peuvent suivre l'instabilité ; leur présence physique reste à vérifier.",
+                "Un refus ou un état d'erreur persistant peut bloquer T3→T4. La présence prolongée de la même boîte et la cause mécanique restent à vérifier.",
                 str(group['action']))
     belt = str(group["belt"])
     count = int(group["occurrence_count"])
@@ -478,7 +478,7 @@ def _field_severity_for(group: dict[str, object], total_boxes: int, c9_massive: 
         return "error" if count >= 2 or str(group["severity"]) == "error" else "warning"
     if code in _DIMENSION_CODES and code != "ORIENTATION":
         comparable = int(group.get("measurement_stats", {}).get("comparable_count", 0))
-        return "error" if count >= 10 and comparable > 0 and count * 10 >= comparable else "warning"
+        return dimension_severity(count, comparable)
     if belt == "T2" and code == "-88":
         return t2_c4_error_severity(group.get('metrics') or {})
     if belt == "T3" and code == "-43":
@@ -560,6 +560,8 @@ def _apply_field_severity(grouped: list[dict[str, object]], total_boxes: int) ->
                              for key in ('orientation', 'orientation_uncertain'))
             group['affected_ratio'] = _ratio(count,total)
             group['affected_label'] = _affected_label(count,total)
+            if group.get('requires_regeneration'):
+                group['affected_label'] = 'Ancienne analyse des axes — rechargez la trace et régénérez le rapport'
             if group['code'] != 'ORIENTATION' and population and group.get('checks'):
                 impact = 'Examiner les écarts par dimension et par produit ; la comparaison seule ne prouve pas une cause.'
                 action = group['checks'][0]
@@ -610,7 +612,7 @@ def _incident_payload(incident: DiagnosticIncident) -> dict[str, object]:
         "last_line": incident.last_line,
         "start_time_str": incident.start_time_str,
         "end_time_str": incident.end_time_str,
-        "duration": incident.duration_label(),
+        "duration": 'Première et dernière occurrences ; durée de blocage non déduite de ces bornes',
         "count": incident.count,
         "summary": incident.summary,
         "symptom": incident.symptom,
@@ -694,12 +696,16 @@ def _group_incidents(incidents: list[DiagnosticIncident]) -> list[dict[str, obje
         group["metric"] = _metric_from_summary(str(group["summary"]), code, int(group["occurrence_count"]), group['metrics'])
         if code == "T5_STALE_UNMEASURED_BOX":
             group["business_lines"] = _stale_t5_business_lines(group)
+        if code == 'C5_SIGNAL_ANOMALY' and group['metrics'].get('c5_metrics_version'):
+            m = group['metrics']
+            group['business_lines'] = [f"{m.get('transitions', 0)} bascules C5 · {m.get('initialization_count', 0)} initialisations",
+                f"{m.get('suspect_cycle_count', 0)} boîtes fantômes probables · {m.get('virtual_creation_count', 0)} créations virtuelles explicites · {m.get('incomplete_cycle_count', 0)} associations incomplètes"]
         group["action"] = _action_label(code, belt, str(group["title"]))
         group["impact"] = _impact_label(code, belt)
         group["priority_score"] = _priority_score(group)
         group["evidence"] = (
-            f"{group['start_time_str']} -> {group['end_time_str']} | "
-            f"L.{group['first_line']} -> L.{group['last_line']} | {group['duration']}"
+            f"Première et dernière occurrences : {group['start_time_str']} -> {group['end_time_str']} | "
+            f"L.{group['first_line']} -> L.{group['last_line']}"
         )
         group["field_severity"] = group["severity"]
         group["field_severity_label"] = group["severity_label"]
@@ -737,7 +743,7 @@ def _priority_groups(grouped: list[dict[str, object]]) -> list[dict[str, object]
         if (important_code or important_et) and key not in keys:
             priority.append(group)
             keys.add(key)
-    return priority[:8]
+    return order_impact(priority)[:8]
 
 
 def _zone_summary(grouped: list[dict[str, object]]) -> list[dict[str, object]]:
@@ -899,6 +905,7 @@ def build_report_payload(
     grouped = _group_incidents(incidents)
     analysis = (frames.read_measurements() if hasattr(frames, 'read_measurements') else
                 analyze_measurements(frames if frames is not None else []))
+    axis_examples = dimension_findings(analysis)
     wanted = set()
     targets = {}
     reference_samples = {}
@@ -952,7 +959,11 @@ def build_report_payload(
             prepared_lines.add(line)
             return True
         if group['code'] in _DIMENSION_CODES:
-            examples = [dict(sample) for sample in analysis['samples'] if sample['code'] == group['code']]
+            current_axes = (group['code'] in {'T4_LENGTH', 'T5_WIDTH', 'T5_HEIGHT'} and all(
+                row.get('measurement_stats', {}).get('axis_diagnostics_version', 1) >= 2
+                for row in group['incidents']))
+            examples = ([dict(sample) for sample in axis_examples.get(group['code'], [])] if current_axes else
+                        [dict(sample) for sample in analysis['samples'] if sample['code'] == group['code']])
         elif group['code'] == 'DemVidageComplet' and group['metrics'].get('daily'):
             examples = []
             group['daily'] = []
@@ -1055,6 +1066,8 @@ def build_report_payload(
             if sample['line'] in raw:
                 sample['time_str'] = raw[sample['line']][1]
         group['representative_ids'] = [s['id'] for s in representative_samples(group['examples'], code=group['code'])]
+        group['requires_regeneration'] = (group['code'] in _DIMENSION_CODES - {'ORIENTATION'} and any(
+            row.get('measurement_stats', {}).get('axis_diagnostics_version', 1) < 2 for row in group['incidents']))
         group['measurement_stats'] = analysis['summary'] if group['code'] in _DIMENSION_CODES else {}
     for sample in reference_samples.values():
         lines = set(sample['sources'].values()) - {0}
@@ -1075,13 +1088,7 @@ def build_report_payload(
             key = f'source:{row["line"]}'
             row['navigation_id'] = key
     _apply_field_severity(grouped, total_boxes)
-    grouped.sort(
-        key=lambda group: (
-            _SEVERITY_ORDER.get(str(group.get("field_severity", group["severity"])), 9),
-            -int(group.get("field_priority", group["priority_score"])),
-            int(group["first_line"]),
-        )
-    )
+    grouped = order_impact(grouped)
     counts = {
         "error": sum(1 for group in grouped if group.get("field_severity") == "error"),
         "warning": sum(1 for group in grouped if group.get("field_severity") == "warning"),
@@ -1213,14 +1220,27 @@ def write_diagnostic_report(
     source_name: str = '',
     trace_period=None,
 ) -> Path:
-    output_dir = output_dir or reports_dir()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     payload = build_report_payload(incidents, frames=frames, source_name=source_name, trace_period=trace_period)
-    data_path = output_dir / f"report_data_{stamp}.json"
-    data_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    output_path = output_dir / f"diagnostic_report_{stamp}.html"
+    if output_dir is None:
+        from Models.report_storage import pharmacy_directory
+        output_dir = pharmacy_directory(reports_dir(), payload)
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    base_stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S_%f")
+    number = 0
+    while True:
+        stamp = base_stamp if number == 0 else f'{base_stamp}_{number}'
+        data_path = output_dir / f"report_data_{stamp}.json"
+        output_path = output_dir / f"diagnostic_report_{stamp}.html"
+        if output_path.exists():
+            number += 1
+            continue
+        try:
+            with data_path.open('x', encoding='utf-8') as output:
+                json.dump(payload, output, ensure_ascii=False, indent=2)
+            break
+        except FileExistsError:
+            number += 1
     html_text = _react_report_html(payload) if _copy_report_app_assets(output_dir) else None
     if not html_text:
         html_text = build_diagnostic_report_html(incidents, frames=frames, payload=payload)

@@ -10,12 +10,16 @@ TracePanel – affiche la trace complète du fichier .old.
 from __future__ import annotations
 
 import threading
+import os
 from queue import Empty, Queue, Full
 import time
 from typing import Callable, List, Optional, Tuple
 
 import customtkinter as ctk
+from Widgets.ui_theme import ui_color
 import tkinter as tk
+
+from Models.loading_progress import ProgressEmitter, VIEW_SEGMENT
 
 
 class TracePanel(ctk.CTkFrame):
@@ -25,7 +29,7 @@ class TracePanel(ctk.CTkFrame):
                  on_line_click: Optional[Callable[[int], None]] = None,
                  line_label: Optional[Callable[[int], str]] = None,
                  **kwargs):
-        kwargs.setdefault('fg_color', '#12121f')
+        kwargs.setdefault('fg_color', ui_color(master, 'background', '#12121f'))
         kwargs.setdefault('corner_radius', 0)
         super().__init__(master, **kwargs)
         self._on_line_click = on_line_click
@@ -41,6 +45,10 @@ class TracePanel(ctk.CTkFrame):
         self._insert_job = None
         self._search_job = None
         self._loading = False
+        self._loaded_filepath = None
+        self._on_load_ready = None
+        self._on_load_error = None
+        self._progress_emitter = None
         self._search_var = tk.StringVar()
         self._search_matches = []
         self._search_index = -1
@@ -52,13 +60,13 @@ class TracePanel(ctk.CTkFrame):
     def _build(self) -> None:
         self._search_visible = False
         header = self._search_header = ctk.CTkFrame(
-            self, fg_color='#1b293a', corner_radius=10, border_width=1,
-            border_color='#344c66')
-        ctk.CTkLabel(header, text='CIP / texte', text_color='#a8c4e4',
+            self, fg_color=ui_color(self, 'surface', '#1b293a'), corner_radius=10, border_width=1,
+            border_color=ui_color(self, 'hover', '#344c66'))
+        ctk.CTkLabel(header, text='CIP / texte', text_color=ui_color(self, 'text', '#a8c4e4'),
                      font=('Segoe UI', 11)).pack(side='left', padx=(10, 2))
         search = self._search_entry = ctk.CTkEntry(
             header, textvariable=self._search_var, height=32, corner_radius=7,
-            border_width=0, fg_color='#23354b', text_color='#edf5ff',
+            border_width=0, fg_color=ui_color(self, 'control', '#23354b'), text_color=ui_color(self, 'text', '#edf5ff'),
             placeholder_text='Rechercher un CIP ou du texte…', font=('Segoe UI', 12))
         search.pack(side='left', fill='x', expand=True, padx=(8, 6), pady=7)
         search.bind('<Return>', lambda e: self._navigate_search(1))
@@ -72,30 +80,30 @@ class TracePanel(ctk.CTkFrame):
         self._search_label = ctk.CTkLabel(header, text='', width=72, font=('Segoe UI', 11))
         self._search_label.pack(side='left', padx=6)
         ctk.CTkButton(header, text='×', width=28, height=28,
-                      fg_color='transparent', hover_color='#344c66',
+                      fg_color='transparent', hover_color=ui_color(self, 'hover', '#344c66'),
                       command=lambda: self.set_search_visible(False)).pack(side='left', padx=(0, 6))
         self._search_var.trace_add('write', lambda *_: self._queue_search())
         # Scrollbars
         vscroll = tk.Scrollbar(self, orient='vertical',
-                                bg='#1a1a2e', troughcolor='#12121f',
-                                activebackground='#334455')
+                                bg=ui_color(self, 'surface', '#1a1a2e'), troughcolor=ui_color(self, 'background', '#12121f'),
+                                activebackground=ui_color(self, 'border', '#334455'))
         vscroll.pack(side='right', fill='y')
 
         hscroll = tk.Scrollbar(self, orient='horizontal',
-                                bg='#1a1a2e', troughcolor='#12121f',
-                                activebackground='#334455')
+                                bg=ui_color(self, 'surface', '#1a1a2e'), troughcolor=ui_color(self, 'background', '#12121f'),
+                                activebackground=ui_color(self, 'border', '#334455'))
         hscroll.pack(side='bottom', fill='x')
 
         # Widget texte
         self._text = tk.Text(
             self,
-            bg='#12121f', fg='#aabbcc',
+            bg=ui_color(self, 'background', '#12121f'), fg=ui_color(self, 'text', '#aabbcc'),
             font=('Consolas', 10),
             wrap='none',
             cursor='arrow',
             state='disabled',
-            selectbackground='#1e2d44',
-            insertbackground='#4FC3F7',
+            selectbackground=ui_color(self, 'selected', '#1e2d44'),
+            insertbackground=ui_color(self, 'accent', '#4FC3F7'),
             yscrollcommand=vscroll.set,
             xscrollcommand=hscroll.set,
             relief='flat', borderwidth=0,
@@ -106,12 +114,12 @@ class TracePanel(ctk.CTkFrame):
 
         # Tags de mise en forme
         self._text.tag_configure(
-            'linenum', foreground='#334455', font=('Consolas', 9))
+            'linenum', foreground=ui_color(self, 'dim', '#334455'), font=('Consolas', 9))
         self._text.tag_configure(
-            'unknown', foreground='#3a4a55',
+            'unknown', foreground=ui_color(self, 'dim', '#3a4a55'),
             font=('Consolas', 9, 'italic'))
         self._text.tag_configure(
-            'known', foreground='#aabbcc')
+            'known', foreground=ui_color(self, 'text', '#aabbcc'))
         self._text.tag_configure(
             'hi', background='#1a2d45', foreground='#ddeeff')
         self._text.tag_configure(
@@ -134,7 +142,7 @@ class TracePanel(ctk.CTkFrame):
             self._text.focus_set()
         return 'break'
 
-    def load_file(self, filepath: str) -> None:
+    def load_file(self, filepath: str, on_ready=None, on_error=None, on_progress=None) -> None:
         """Charge le fichier en arrière-plan et insère les lignes dans le widget."""
         self._load_cancel.set()
         self._load_cancel = threading.Event()
@@ -145,6 +153,16 @@ class TracePanel(ctk.CTkFrame):
         results = self._load_results
         self._stream_started = False
         self._loading = True
+        self._loaded_filepath = None
+        self._loading_filepath = filepath
+        self._on_load_ready = on_ready
+        self._on_load_error = on_error
+        self._progress_emitter = (ProgressEmitter(lambda _kind, payload: on_progress(payload),
+                                                 segment=VIEW_SEGMENT) if on_progress else None)
+        self._inserted_bytes = 0
+        self._source_size = None
+        if self._progress_emitter:
+            self._progress_emitter.emit('raw', 'Chargement de la trace brute', unit='octets')
         self._total_lines = 0
         self._hi_start = self._hi_end = 0
         if self._insert_job:
@@ -169,19 +187,22 @@ class TracePanel(ctk.CTkFrame):
             try:
                 lines = []
                 total_lines = 0
-                with open(filepath, encoding='latin-1', errors='replace') as fh:
+                completed = 0
+                size = os.path.getsize(filepath)
+                with open(filepath, encoding='latin-1', errors='replace', newline='') as fh:
                     for i, raw in enumerate(fh, 1):
                         if cancel.is_set():
                             return
                         lines.append((i, raw.rstrip('\r\n')))
+                        completed += len(raw)
                         total_lines = i
                         if len(lines) == 500:
-                            if not put('lines', lines):
+                            if not put('lines', (lines, completed, size)):
                                 return
                             lines = []
-                if lines and not put('lines', lines):
+                if lines and not put('lines', (lines, completed, size)):
                     return
-                put('done', total_lines)
+                put('done', (total_lines, completed, size))
             except Exception as exc:
                 put('error', f'Erreur lecture : {exc}')
 
@@ -200,15 +221,27 @@ class TracePanel(ctk.CTkFrame):
                         self._text.configure(state='disabled')
                         self._stream_started = True
                     if kind == 'lines':
-                        self._append_lines(value)
-                        self._total_lines = value[-1][0]
+                        lines, completed, total = value
+                        self._append_lines(lines)
+                        self._total_lines = lines[-1][0]
+                        self._inserted_bytes, self._source_size = completed, total
+                        if self._progress_emitter:
+                            self._progress_emitter.emit('raw', 'Insertion de la trace brute',
+                                                        completed, total, 'octets')
                     else:
                         if kind == 'error':
                             self._append_lines([(self._total_lines + 1, value)])
                             self._total_lines += 1
+                            callback = self._on_load_error
+                            self._finish_insert(success=False)
+                            if callback:
+                                callback(value)
+                            if not self.winfo_exists():
+                                return
                         else:
-                            self._total_lines = value
-                        self._finish_insert()
+                            self._total_lines = value[0]
+                            self._inserted_bytes, self._source_size = value[1:]
+                            self._finish_insert()
         except Empty:
             pass
         self._poll_job = self.after(1 if self._loading else 30, self._poll_results)
@@ -223,11 +256,20 @@ class TracePanel(ctk.CTkFrame):
             self._text.insert('end', *segments)
             self._text.configure(state='disabled')
 
-    def _finish_insert(self):
+    def _finish_insert(self, success=True):
         self._loading = False
         self._queue_search()
         if self._hi_start > 0:
             self.highlight_lines(self._hi_start, self._hi_end)
+        if success:
+            self._loaded_filepath = getattr(self, '_loading_filepath', None)
+            if self._progress_emitter:
+                self._progress_emitter.emit('raw', 'Trace brute chargee', self._inserted_bytes,
+                                            self._source_size, 'octets', state='done')
+            callback = self._on_load_ready
+            self._on_load_ready = self._on_load_error = None
+            if callback:
+                callback()
 
     def _start_insert(self, lines: List[Tuple[int, str]]) -> None:
         self._total_lines = len(lines)
@@ -307,6 +349,8 @@ class TracePanel(ctk.CTkFrame):
 
     def destroy(self) -> None:
         self._load_cancel.set()
+        self._on_load_ready = self._on_load_error = None
+        self._progress_emitter = None
         for job in (self._poll_job, self._insert_job, self._search_job):
             if job:
                 self.after_cancel(job)

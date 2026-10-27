@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import re
-from Models.trace_calendar import trace_calendar, display_time
+from array import array
+from functools import lru_cache
+from Models.trace_calendar import trace_calendar, display_time, TraceLines
 
 _TIME = re.compile(r'\d+\|\d{2}:\d{2}:\d{2}(?:\.\d+)?')
 _SENSOR = re.compile(r'\b(C[234569]):([01])\b')
@@ -12,6 +14,46 @@ _RELAUNCH = re.compile(r'relance le vidage machine', re.I)
 _INIT = re.compile(r'InitMachine:\s*demande initialisation de T2\b', re.I)
 _RESTART = re.compile(r'version logiciel VBalpha:', re.I)
 _DRAIN_END = re.compile(r'Vid:\s*Fin de vidage de la machine', re.I)
+_SENSOR_BITS = {key: 1 << index for index, key in enumerate(('C2', 'C3', 'C4', 'C5', 'C6', 'C9'))}
+_T2_FLAG, _PROGRESS_FLAG, _RELAUNCH_FLAG = 1 << 12, 1 << 13, 1 << 14
+_INIT_FLAG, _DRAIN_FLAG, _RESTART_FLAG, _CAPTEURS_FLAG = 1 << 15, 1 << 16, 1 << 17, 1 << 18
+
+
+def _parse_signal_facts(text):
+    lower = text.lower()
+    bits = 0
+    if 'C2:' in text or 'C3:' in text or 'C4:' in text:
+        for key, value in _SENSOR.findall(text):
+            bit = _SENSOR_BITS[key]
+            bits |= bit
+            bits = bits | (bit << 6) if value == '1' else bits & ~(bit << 6)
+    if 't2:' in lower:
+        if _T2.search(text):
+            bits |= _T2_FLAG
+        if _PROGRESS.search(text):
+            bits |= _PROGRESS_FLAG
+    if 'vidage' in lower and _RELAUNCH.search(text):
+        bits |= _RELAUNCH_FLAG
+    if 'initmachine:' in lower and _INIT.search(text):
+        bits |= _INIT_FLAG
+    if 'vid:' in lower and _DRAIN_END.search(text):
+        bits |= _DRAIN_FLAG
+    if ('version logiciel' in lower or not text.isascii()) and _RESTART.search(text):
+        bits |= _RESTART_FLAG
+    if 'Capteurs ' in text:
+        bits |= _CAPTEURS_FLAG
+    return bits
+
+
+def _signal_facts(line_states):
+    cached = getattr(line_states, '_signal_facts', None)
+    if cached is not None and len(cached) == len(line_states):
+        return cached
+    parse = lru_cache(maxsize=2048)(_parse_signal_facts)
+    result = array('I', (parse(text) for _, text, _ in line_states))
+    if isinstance(line_states, TraceLines):
+        line_states._signal_facts = result
+    return result
 
 
 def c2_metric_text(metrics):
@@ -69,28 +111,27 @@ def _analyze_signal(line_states, sensor):
             episodes.append(current)
         current = None
 
-    for line, text, state in line_states:
+    idle_mask = sum(_SENSOR_BITS[key] << 6 for key in idle_sensors)
+    for (line, text, state), facts in zip(line_states, _signal_facts(line_states)):
         if current and state.timestamp - current['last']['time'] > 120:
             close_episode('Interruption des observations supérieure à deux minutes')
         if pending and (line - pending['line'] > 3 or state.timestamp - pending['time'] > 2):
             pending = None
-        if _RESTART.search(text):
+        if facts & _RESTART_FLAG:
             close_episode('Redémarrage logiciel')
             pending = None
             continue
-        lower = text.lower()
-        sensors = ({key: int(value) for key, value in _SENSOR.findall(text)}
-                   if 'C2:' in text or 'C3:' in text or 'C4:' in text else {})
-        idle_active = any(sensors.get(key) == 1 for key in idle_sensors)
-        progress = 't2:' in lower and bool(_PROGRESS.search(text))
-        t2 = 't2:' in lower and bool(_T2.search(text))
-        relaunch = 'vidage' in lower and bool(_RELAUNCH.search(text))
-        initialization = 'initmachine:' in lower and bool(_INIT.search(text))
-        drain_end = 'vid:' in lower and bool(_DRAIN_END.search(text))
-        complete = all(key in sensors for key in ('C2', 'C3', 'C4'))
-        if not (idle_active or progress or relaunch or ('Capteurs ' in text and pending)
+        idle_active = bool(facts & idle_mask)
+        progress = bool(facts & _PROGRESS_FLAG)
+        t2 = bool(facts & _T2_FLAG)
+        relaunch = bool(facts & _RELAUNCH_FLAG)
+        initialization = bool(facts & _INIT_FLAG)
+        drain_end = bool(facts & _DRAIN_FLAG)
+        complete = facts & 7 == 7
+        if not (idle_active or progress or relaunch or (facts & _CAPTEURS_FLAG and pending)
                 or (t2 and complete) or (current and (initialization or drain_end))):
             continue
+        sensors = {key: int(bool(facts & (bit << 6))) for key, bit in _SENSOR_BITS.items() if facts & bit}
         obs = observation(line, text, state)
         if idle_active:
             if sensor == 'C3' and sensors.get('C4') != 1 and not progress:

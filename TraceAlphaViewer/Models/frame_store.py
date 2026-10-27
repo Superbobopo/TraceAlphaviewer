@@ -8,12 +8,46 @@ from collections.abc import Sequence
 from pathlib import Path
 import pickle
 import operator
+import sys
+import threading
 
 from Models.state import MachineState
 
 
 BLOCK_SIZE = 500
 CACHE_BLOCKS = 2
+
+
+def block_memory(frames):
+    """Compte le graphe du bloc, en evitant les alias et les objets de classes."""
+    pending, seen, total = [frames], set(), 0
+    while pending:
+        value = pending.pop()
+        identifier = id(value)
+        if identifier in seen:
+            continue
+        seen.add(identifier)
+        total += sys.getsizeof(value)
+        if isinstance(value, dict):
+            pending.extend(value.keys())
+            pending.extend(value.values())
+        elif isinstance(value, (list, tuple, set, frozenset)):
+            pending.extend(value)
+        elif type(value).__module__ == 'Models.state':
+            pending.append(vars(value))
+    return total + 256
+
+
+def update_store_metadata(directory, **values):
+    """Finalise les metadonnees sans reecrire les blocs de frames."""
+    directory = Path(directory)
+    with (directory / 'index.pkl').open('rb') as source:
+        metadata = pickle.load(source)
+    metadata.update(values)
+    temporary = directory / 'index.tmp'
+    with temporary.open('wb') as output:
+        pickle.dump(metadata, output, protocol=pickle.HIGHEST_PROTOCOL)
+    temporary.replace(directory / 'index.pkl')
 
 
 def write_frame_store_iter(frames, directory: Path, *, measurement_summary=None,
@@ -81,7 +115,7 @@ def write_frame_store(frames: Sequence[MachineState], directory: Path,
 
 
 class FrameStore(Sequence[MachineState]):
-    def __init__(self, directory: str | Path):
+    def __init__(self, directory: str | Path, *, cache_governor=None):
         self.directory = Path(directory).resolve()
         try:
             with (self.directory / 'index.pkl').open('rb') as source:
@@ -106,6 +140,10 @@ class FrameStore(Sequence[MachineState]):
             raise OSError('Index de frames incomplet')
         self._file = (self.directory / 'frames.bin').open('rb')
         self._cache = OrderedDict()
+        self._cache_sizes = {}
+        self._cache_lock = threading.RLock()
+        self._cache_governor = cache_governor
+        self.cache_hits = self.cache_misses = 0
 
     def __len__(self) -> int:
         return len(self.line_numbers)
@@ -113,6 +151,10 @@ class FrameStore(Sequence[MachineState]):
     def __getitem__(self, index):
         if isinstance(index, slice):
             return [self[i] for i in range(*index.indices(len(self)))]
+        with self._cache_lock:
+            return self._get_frame(index)
+
+    def _get_frame(self, index):
         index = operator.index(index)
         if index < 0:
             index += len(self)
@@ -122,6 +164,7 @@ class FrameStore(Sequence[MachineState]):
             raise OSError('Le stockage de la trace est ferme')
         block = index // BLOCK_SIZE
         if block not in self._cache:
+            self.cache_misses += 1
             try:
                 self._file.seek(self._offsets[block])
                 frames = pickle.load(self._file)
@@ -131,10 +174,30 @@ class FrameStore(Sequence[MachineState]):
             except (EOFError, pickle.UnpicklingError, ValueError) as exc:
                 raise OSError('Impossible de lire les frames de la trace') from exc
             self._cache[block] = frames
-            if len(self._cache) > CACHE_BLOCKS:
-                self._cache.popitem(last=False)
+            if self._cache_governor is not None:
+                self._cache_sizes[block] = block_memory(frames)
+        else:
+            self.cache_hits += 1
         self._cache.move_to_end(block)
+        self._trim_cache()
         return self._cache[block][index % BLOCK_SIZE]
+
+    def _trim_cache(self, extra_limit=None):
+        if self._cache_governor is None:
+            while len(self._cache) > CACHE_BLOCKS:
+                self._cache.popitem(last=False)
+            return
+        extra = sum(self._cache_sizes[key] for key in list(self._cache)[:-CACHE_BLOCKS])
+        allowance = self._cache_governor.cache_allowance(self, extra) if extra_limit is None else extra_limit
+        while len(self._cache) > CACHE_BLOCKS and extra > allowance:
+            key, _ = self._cache.popitem(last=False)
+            extra -= self._cache_sizes.pop(key)
+        self._cache_governor.cache_allowance(self, extra)
+
+    def trim_extra_cache(self):
+        with self._cache_lock:
+            if not self._file.closed:
+                self._trim_cache(0)
 
     def frame_index_for_line(self, line: int) -> int:
         from Parser.trace_source import canonical_line
@@ -190,8 +253,12 @@ class FrameStore(Sequence[MachineState]):
             return pickle.load(source)
 
     def close(self) -> None:
-        self._cache.clear()
-        self._file.close()
+        with self._cache_lock:
+            self._cache.clear()
+            self._cache_sizes.clear()
+            if self._cache_governor is not None:
+                self._cache_governor.release_cache(self)
+            self._file.close()
 
     def __enter__(self):
         return self

@@ -1,5 +1,22 @@
 # TraceAlphaViewer
 
+Les cartes CB1 et CB2 montrent les boites decodees par chaque groupement sur
+le meme total de passages decodes, avec leur pourcentage. Chaque passage compte
+une fois, pour le premier lecteur qui reussit. Les passages sans decodage sont
+exclus de ce total ; UNKNOWN final conserve le denominateur de tous les passages.
+Les anciens rapports demandent une regeneration de cette repartition.
+
+Les diagnostics Longueur, Largeur et Hauteur reprennent les memes boites hors
+tolerance que les cartes du rapport, y compris les defauts sur plusieurs axes.
+Une boite compte sur chaque axe concerne et une seule fois au bilan global.
+Les anciennes analyses doivent etre rechargees et leurs rapports regeneres.
+
+Le diagnostic T3/C5 signale aussi un transfert T3->T4 durablement bloque : refus
+`-47` associe a une instabilite C5, ou etat logiciel en erreur observe pendant
+au moins deux minutes. Un retour du code moteur a la normale ou une
+initialisation ne prouve pas la reprise. Les durees portent sur les observations,
+sans conclure a la presence physique de la meme boite pendant toute la periode.
+
 TraceAlphaViewer est un viewer local Python/customtkinter pour traces Alpha `.old`.
 
 Le rapport web et son PDF affichent la pharmacie et le numero Alpha lorsque la
@@ -161,7 +178,20 @@ Le PNG source et l'icone multi-resolution sont dans `TraceAlphaViewer/assets/`.
 La [consigne exacte de creation](TraceAlphaViewer/assets/README.md) est conservee
 avec ces deux fichiers.
 
+## Compatibilite Alpha 1
+
+Compatibilite Alpha 1 : les messages principaux de la trace gen1 examinee
+sont reconnus, mais la qualification complete des diagnostics reste a faire.
+Voir [les observations et limites Alpha 1](docs/compatibilite-alpha1.md).
+Aucune correction automatique des mesures selon la generation n'est appliquee.
+
 ## Rapport web React
+
+Les rapports sont conserves dans `Alpha reports` sur le Bureau Windows, classes
+dans un sous-dossier par pharmacie. Le nom de chaque nouveau rapport contient
+sa date et son heure de generation ; plusieurs rapports peuvent coexister.
+Sans pharmacie fiable, le rangement utilise `Pharmacie non identifiée`.
+Conserver avec chaque HTML son JSON, son manifeste et le dossier `_next`.
 
 Le bouton `Rapport web` utilise le build statique React/Next si celui-ci existe.
 Pour reconstruire le rapport web :
@@ -182,6 +212,10 @@ Les fichiers enregistres restent consultables hors connexion.
 Pour une meme vue, un nouveau clic sur `Rapport web` rouvre le rapport et sa
 liaison locale sans recalculer les preuves. Une nouvelle trace ou des fichiers
 de rapport supprimes imposent une nouvelle generation.
+Le rapport se prepare dans la session temporaire apres affichage du viewer,
+sans attendre le premier clic. Seul le clic le conserve dans `Alpha reports` ;
+une preparation jamais demandee est supprimee avec la vue. Si le calcul est
+encore en cours, le bouton indique l'attente avant ouverture.
 
 Les boites T5 disposent d'une legende permanente : bleu clair non evalue,
 vert conforme (hauteur jusqu'a 2 mm, longueur/largeur jusqu'a 3 mm inclus), orange orientation probable
@@ -344,8 +378,8 @@ champ la masque sans effacer la saisie ni les resultats.
 Dans la trace brute, le champ `CIP / texte` retrouve les occurrences d'un CIP,
 d'une heure ou de tout autre texte. Les boutons `<` / `>` et les touches
 `Enter`, `F3` / `Shift-F3` dans le champ permettent de passer entre les
-occurrences et de synchroniser le viewer. La recherche attend la fin du
-chargement de la trace brute.
+occurrences et de synchroniser le viewer. La trace brute est entierement
+chargee avant l'ouverture du viewer depuis l'accueil.
 
 ## Controles automatiques
 
@@ -385,6 +419,81 @@ references, ainsi que les nombres de frames, evenements et lignes. Le JSON
 contient des donnees de diagnostic de la trace : il reste local et ne doit pas
 etre versionne. Les temps incluent l'ouverture complete, sans profileur.
 
+Pour isoler l'etape diagnostic sans Tk, `benchmark_diagnostics.py` mesure chaque
+famille, les references, le stockage et le pic memoire. `--baseline-dir` charge
+une copie locale des six modules `diagnostic`, `c2_analysis`, `c5_analysis`,
+`trace_calendar`, `trace_observations` et `robot_drain`, sans toucher au depot.
+
+```powershell
+python TraceAlphaViewer\Tools\benchmark_diagnostics.py C:\Traces\Monistrol.txt --full --results-json TraceAlphaViewer\.trace_work\avant.json
+python TraceAlphaViewer\Tools\benchmark_diagnostics.py C:\Traces\Monistrol.txt --full --compare-results TraceAlphaViewer\.trace_work\avant.json --results-json TraceAlphaViewer\.trace_work\apres.json
+```
+
+La comparaison exige les memes incidents complets, mesures, cameras, evenements,
+references, index de navigation et metadonnees. Le total de cet outil couvre le
+worker metier ; `benchmark_loading.py --ui-latency` mesure aussi l'affichage reel.
+Les JSON contiennent des preuves terrain et restent strictement locaux.
+
+Mesures locales du 26 octobre 2026 pour l'optimisation des diagnostics, en
+precision trace, sans profileur et sans analyse concurrente :
+
+| Trace | Diagnostics avant | Apres | Acceleration |
+| --- | ---: | ---: | ---: |
+| Monistrol | 65,2 s | 34,2 s | x1,91 |
+| Astier | 78,8 s | 41,0 s | x1,92 |
+| Atout Sud | 37,6 s | 22,2 s | x1,69 |
+
+Tous les resultats compares sont identiques ; le pic memoire varie de moins de
+0,4 %. L'ouverture reelle de Monistrol depuis l'accueil, texte brut compris,
+passe de 127,7 a 100,0 s ; l'interface reste reactive. La navigation, la recherche
+CIP et la lecture sont controlees hors mesure.
+Ces temps sont indicatifs et dependent de la machine et de la trace. Lors de
+cette premiere passe, le parser restait inchange. Les analyses partagent la chronologie et les faits textuels du
+segment, sans cache de reouverture ni raccordement entre fichiers.
+
+La passe suivante traite les frames au fil de la lecture : un collecteur commun
+prepare evenements, mesures, references et lignes diagnostiques, puis les
+snapshots independants sont ecrits par blocs de 500. Le chargement ne conserve
+plus toute la liste des frames en memoire. `parse_file` reste disponible pour
+les usages demandant une liste, avec les memes parametres et resultats.
+
+La barre affiche une progression globale estimee. Les cinq etapes couvrent la
+lecture/construction, les diagnostics, la finalisation des references, la
+preparation du viewer et l'insertion du texte brut. Le viewer apparait lorsque
+les analyses, les premieres pages et toute la trace brute sont pretes ; 100 %
+est reserve a cet instant. Les phases avancees sont mesurees en travail realise,
+sans animation fondant le pourcentage sur le temps ecoule.
+
+Pour mesurer le worker complet et son pic memoire, puis comparer tous les champs
+des frames et les artefacts metier hors chronometre, utiliser une copie locale
+figee de l'etat precedent (repertoires `Models` et `Parser` compris) :
+
+```powershell
+python TraceAlphaViewer\Tools\benchmark_streaming_loading.py C:\Traces\Monistrol.txt --source-tree C:\Sources\Reference --results-json TraceAlphaViewer\.trace_work\flux-avant.json
+python TraceAlphaViewer\Tools\benchmark_streaming_loading.py C:\Traces\Monistrol.txt --compare-results TraceAlphaViewer\.trace_work\flux-avant.json --results-json TraceAlphaViewer\.trace_work\flux-apres.json
+```
+
+Ces JSON et les copies de sources de reference restent locaux. Le benchmark
+ne charge ni Tk ni les vues ; completer avec la mesure depuis l'accueil pour
+inclure l'affichage et verifier la reactivite.
+
+Mesures de cette seconde passe, le 26 octobre 2026, avec comparaison aux sources
+locales deja optimisees ci-dessus. L'ouverture complete inclut le texte brut ;
+le pic memoire porte sur le worker metier, avant le calcul des empreintes :
+
+| Trace | Ouverture avant | Apres | Gain de temps | Pic worker avant / apres |
+| --- | ---: | ---: | ---: | ---: |
+| Monistrol | 99,0 s | 86,5 s | 12,6 % | 7 407 / 760 Mio |
+| Astier | 102,3 s | 90,9 s | 11,1 % | 5 110 / 753 Mio |
+| Atout Sud | 54,8 s | 50,3 s | 8,2 % | 2 413 / 415 Mio |
+
+Toutes les frames et tous les artefacts compares sont identiques. Le gain de
+temps reste sous la cible de 20 % ; la memoire du worker est divisee par 5,8 a
+9,7. Le percentile 95 UI reste sous 17 ms et la pause maximale sous 267 ms.
+Les poids de progression utilisent la mediane des parts mesurees sur ces trois
+ouvertures, sans cache de trace. Les scenarios dossier conservent leurs limites
+de fichiers et leurs deux sous-workers, dont les files sont drainees ensemble.
+
 Les recherches de contexte diagnostic parcourent seulement la fenetre de lignes
 utile. Les boites sans identite ne creent pas de fiches temporaires. Le texte brut
 est insere par blocs en conservant les tags et la navigation ; les callbacks
@@ -420,15 +529,94 @@ permet d'utiliser cette reference locale a la place d'une revision Git.
 
 ## Garder la fenetre reactive pendant le chargement
 
+L'accueil demarre dans une fenetre etroite de 900 x 860 (minimum 820 x 750,
+adapte a l'ecran). Les pages dossier et viewer retrouvent une grande fenetre.
+Son accueil bleu nuit presente deux cartes cote a cote : **Une trace** pour
+un fichier et **Un dossier** pour les regroupements par machine. La frise
+de signal est decorative ; elle laisse place au suivi des etapes pendant
+le chargement. Les boutons conservent une largeur de 270 px.
+Les textes de presentation sont centres ; le bloc de marque en haut a gauche
+est retire. Le viewer reprend la palette bleu nuit et menthe via
+`Widgets/ui_theme.py`, sans changer les polices ni la geometrie. Les composants
+partages gardent leur style hors viewer. Les couleurs metier et les
+surbrillances de recherche restent identiques.
+Le lissage de la frise utilise Pillow, optionnel : sans ce module, le dessin
+Tk reste disponible et l'accueil fonctionne normalement. Pour activer le
+lissage, utiliser le meme Python que pour lancer le viewer :
+
+```powershell
+python -m pip install pillow
+```
+Sur l'accueil, les barres CPU/RAM de 160 px affichent l'utilisation globale du PC chaque
+seconde, y compris pendant le chargement. Elles sont absentes du viewer.
+Les indicateurs restent en haut a droite, sans reglage manuel. Les accelerations
+s'adaptent toujours automatiquement au PC. Les anciens plafonds de `settings.json`
+sont ignores ; ce fichier n'est plus lu ni ecrit. Le budget des accelerations
+n'est pas une limite de memoire totale : les donnees indispensables s'y ajoutent.
+
+Auto partage entre toutes les sessions un budget egal au minimum de 8 Gio, de
+la moitie de la RAM disponible et de la RAM disponible apres une reserve de
+max(2 Gio, 20 % de la RAM totale), sans forcer d'allocation. Les API Windows suffisent, sans dependance ajoutee.
+La surveillance chaque seconde libere les caches supplementaires sous pression
+et reduit les prochains lancements ; les calculs actifs peuvent se terminer.
+Sans mesure fiable, le logiciel garde un seul calcul et deux blocs en cache.
+
+Les profils paralleles doivent gagner au moins 10 % en mediane sur trois essais,
+sans regression de plus de 5 % sur leurs cas de qualification. La lecture du
+parser reste sequentielle. Une trace seule peut deleguer C2/C3, C5 et
+communication/modes/T5/resets via une projection compacte privee ecrite une
+seule fois. Le processus principal conserve camera, evenements, dimensions et
+assemblage. Un dossier delegue les segments, avec diagnostics internes
+sequentiels ; le logiciel limite l'ensemble a quatre calculs et laisse deux
+processeurs logiques disponibles quand le PC le permet. GPU et VRAM ne sont pas
+utilises. Les profils insuffisamment rapides conservent le chemin precedent.
+
+Qualification locale du 26 octobre 2026, Python 3.13, PC de 16 processeurs
+logiques et 31,1 Gio de RAM : trois ouvertures completes par configuration,
+sans profileur. Le pic ci-dessous est la mediane des pics de memoire cumulee
+des processus mesures pendant le chargement, pas seulement du worker principal.
+
+| Trace | Mediane precedente | Automatique | Gain | Pic cumule avant / apres |
+| --- | ---: | ---: | ---: | ---: |
+| Monistrol | 96,0 s | 82,4 s | 14,1 % | 1 091 / 2 697 Mio |
+| Astier | 97,6 s | 77,4 s | 20,7 % | 1 284 / 2 653 Mio |
+| Atout Sud | 50,3 s | 41,5 s | 17,3 % | 715 / 1 451 Mio |
+
+Le groupe Lahlou (quatre segments valides) passe de 9,41 a 8,34 s en mediane
+sur l'ouverture complete, soit 11,4 %. Son worker seul passe de 8,06 a 6,84 s.
+La mediane des pics cumules pendant l'ouverture passe de 225 a 327 Mio.
+Le profil dossier a quatre segments est retenu ; a trois places disponibles,
+le logiciel conserve le profil precedent a deux segments.
+
+Les trois cas conservent integralement leurs resultats. Le percentile 95 UI
+reste sous 18 ms et la pause maximale sous 291 ms. Le profil trace seule
+qualifie concerne les fichiers d'au moins 64 Mio, avec assez de CPU et de budget
+pour quatre calculs. Les profils a deux ou trois calculs restent sequentiels.
+Ces mesures illustrent un compromis temps/memoire, sans garantir le meme gain
+sur un autre PC.
+
+Sur un parcours de 200 retours repartis entre vingt blocs, Astier passe de
+1,52 a 0,45 s avec 58 Mio de cache supplementaire ; Atout Sud de 1,73 a 0,57 s
+avec 75 Mio. Les lectures de blocs passent de 200 a 20, les autres acces sont
+servis par le cache. Ces mesures de navigation sont distinctes du chargement.
+
+`Tools/qualify_auto_resources.py <dossier-traces> --baseline <sources-figees>
+--output <dossier-local>` repete les ouvertures de Monistrol, Astier, Atout Sud
+et du groupe Alpha 031 de Lahlou. `--reuse` est reserve aux controles acquis
+dont les sources sont restees inchangees. Les mesures et les copies de reference
+restent locales ; aucun profil n'est active automatiquement par cet outil.
+
 L'ouverture depuis l'accueil execute les analyses dans un processus Python
 separe sans interface graphique. Pour un dossier, ce worker appelle le moteur
 Python pour le catalogue et le parsing ; Rust reste un mode experimental explicite.
-L'accueil affiche la progression jusqu'a la preparation des analyses et des
-listes du viewer. La precision reste `min_dt=0.0`.
+L'accueil affiche la progression estimee jusqu'a la preparation des analyses,
+des premieres pages et de toute la trace brute. La precision reste `min_dt=0.0`.
 
 Les frames sont conservees uniquement pour la session dans
 `TraceAlphaViewer/.trace_work/session-*`, ignore par Git. `FrameStore` expose une
-sequence : blocs de 500 frames, cache de deux blocs et index compact des lignes.
+sequence : blocs de 500 frames, deux blocs de base et index compact des lignes.
+Le viewer peut conserver jusqu'a 256 Mio supplementaires dans le budget commun
+pour les retours de navigation ; les lecteurs sequentiels gardent deux blocs.
 La navigation lit uniquement les blocs utiles. Ce stockage temporaire demande
 de l'espace disque, mais ne constitue pas un cache de reouverture. La fermeture
 ou l'annulation supprime la session en arriere-plan ; une vue gardee comme
@@ -442,9 +630,10 @@ un appel Tk groupe par bloc et la construction des widgets est decoupee.
 Les onglets Evenements, Erreur et References affichent des pages de 500 elements.
 Recherches et filtres portent sur toutes les donnees ; une navigation vers une
 ligne ouvre automatiquement la page correspondante. Les premieres pages et les
-analyses sont preparees avant l'ouverture du viewer. Les analyses de dossier
+analyses ainsi que le texte brut sont prets avant l'ouverture du viewer. Les analyses de dossier
 partagent un parcours des frames et un calendrier par segment.
-Sous Windows, deux segments au maximum sont analyses en parallele, puis reunis
+Sous Windows, un a quatre segments peuvent etre analyses selon les ressources
+et le profil qualifie, puis reunis
 dans l'ordre des fichiers. L'annulation ferme aussi les sous-workers et leurs
 lecteurs ; aucun resultat de groupe partiel n'est affiche.
 Un appel Tk individuel ne peut pas etre interrompu : la mesure des intervalles
@@ -534,14 +723,13 @@ comptees separement ; une boite fantome reste probable, sans modifier UNKNOWN.
 Chaque episode garde ses limites et dix preuves au maximum. Aucune attribution
 ne traverse un redemarrage, une interruption de plus de 120 s ou un fichier.
 
-A criticite egale, C5 et les boites T5 bloquantes se departagent par cycles de
-boites touches, episodes distincts puis duree cumulee observee. Les messages
-repetes et bascules ne gonflent pas ce classement. Les intervalles T5 qui se
-chevauchent dans un segment comptent une seule duree et un seul episode ; un
-IdA reutilise dans une nouvelle creation compte un autre cycle. Seules les
-positions de ces deux diagnostics sont permutees avant de retenir les priorites.
-Les anciens resultats sans impact fiable conservent leur ordre et invitent a
-regenerer le rapport. Viewer, web et PDF partagent cette regle.
+A gravite egale, les blocages confirmes pendant au moins deux minutes passent
+avant les incidents ponctuels. Ils se classent par duree observee cumulee, puis
+cycles touches, episodes distincts et premiere ligne. Les chevauchements ne
+multiplient pas la duree ; interruptions et fichiers restent separes. Les
+bascules C5 seules ne prouvent pas un blocage. Les autres diagnostics gardent
+leur classement habituel. Une duree inconnue invite a regenerer le rapport.
+Viewer, priorites, liste complete web et PDF partagent cette regle.
 
 La priorite robot garde seulement le nombre de demandes sur la periode, les
 boites evacuees, les prises confirmees et leur part evacuee, puis Premier

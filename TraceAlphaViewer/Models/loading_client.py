@@ -14,6 +14,7 @@ import uuid
 import weakref
 
 from Models.frame_store import FrameStore
+from Models.resource_policy import get_governor
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -23,7 +24,7 @@ WORK_ROOT = (Path(os.environ.get('LOCALAPPDATA', tempfile.gettempdir()))
 
 
 class WorkerTask:
-    def __init__(self, directory: Path, request: dict):
+    def __init__(self, directory: Path, request: dict, *, resource_governor=None):
         self.job_id = uuid.uuid4().hex
         self.results = Queue(maxsize=4)
         self.cancelled = threading.Event()
@@ -31,6 +32,7 @@ class WorkerTask:
         self.process = None
         self._directory = directory
         self._request = dict(request, job_id=self.job_id)
+        self._resource_governor = resource_governor
         threading.Thread(target=self._run, daemon=True).start()
 
     def _put(self, kind, payload) -> None:
@@ -44,7 +46,13 @@ class WorkerTask:
     def _run(self) -> None:
         completed = False
         stderr = bytearray()
+        lease = None
         try:
+            if self._resource_governor is not None:
+                lease, policy = self._resource_governor.reserve(self._request, self.cancelled)
+                self._request['resource_policy'] = policy
+                if self.cancelled.is_set():
+                    return
             self._directory.mkdir(parents=True, exist_ok=True)
             request_path = self._directory / 'request.pkl'
             with request_path.open('wb') as output:
@@ -106,6 +114,8 @@ class WorkerTask:
                     self.process.stdout.close()
                     self.process.stderr.close()
             finally:
+                if lease is not None:
+                    self._resource_governor.release(lease)
                 self.finished.set()
 
     def cancel(self) -> None:
@@ -123,7 +133,7 @@ class WorkerTask:
 
 
 class LoadingSession:
-    def __init__(self):
+    def __init__(self, *, resource_governor=None):
         WORK_ROOT.mkdir(parents=True, exist_ok=True)
         self.directory = Path(tempfile.mkdtemp(prefix='session-', dir=WORK_ROOT)).resolve()
         self.closed = threading.Event()
@@ -131,6 +141,9 @@ class LoadingSession:
         self.cleanup_error = None
         self._tasks = weakref.WeakSet()
         self._stores = []
+        self._resource_governor = get_governor() if resource_governor is None else resource_governor
+        if self._resource_governor:
+            self._resource_governor.attach()
 
     def start(self, mode: str, **arguments) -> WorkerTask:
         if self.closed.is_set():
@@ -138,7 +151,8 @@ class LoadingSession:
         if mode in ('file', 'folder', 'folder_catalog', 'folder_group'):
             arguments['path'] = str(Path(arguments['path']).resolve())
         task = WorkerTask(self.directory / ('job-' + uuid.uuid4().hex),
-                          dict(arguments, mode=mode, session=str(self.directory)))
+                          dict(arguments, mode=mode, session=str(self.directory)),
+                          resource_governor=self._resource_governor or None)
         self._tasks.add(task)
         return task
 
@@ -146,7 +160,7 @@ class LoadingSession:
         path = Path(directory).resolve()
         if not path.is_relative_to(self.directory) or self.closed.is_set():
             raise OSError('Stockage de frames hors de la session active')
-        store = FrameStore(path)
+        store = FrameStore(path, cache_governor=self._resource_governor or None)
         self._stores.append(store)
         return store
 
@@ -160,6 +174,8 @@ class LoadingSession:
         for store in self._stores:
             store.close()
         self._stores.clear()
+        if self._resource_governor:
+            self._resource_governor.detach()
 
         def clean():
             try:

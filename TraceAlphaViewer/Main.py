@@ -21,10 +21,7 @@ class TraceAlphaViewer(ctk.CTk):
         self.title("TraceAlpha Viewer")
         self.iconbitmap(str(Path(__file__).resolve().parent / 'assets' / 'trace-alpha.ico'))
         self._fit_screen_limits()
-        scale = self._get_window_scaling()
-        width = min(1500, int((self.winfo_screenwidth() - 40) / scale))
-        height = min(860, int((self.winfo_screenheight() - 100) / scale))
-        self.geometry(f'{width}x{height}')
+        self._apply_view_geometry()
         self.configure(fg_color='#12121f')
 
         self.main_view: BaseView = AccueilView(self)
@@ -32,8 +29,20 @@ class TraceAlphaViewer(ctk.CTk):
 
     def _fit_screen_limits(self):
         scale = self._get_window_scaling()
-        self.minsize(min(1300, int((self.winfo_screenwidth() - 40) / scale)),
-                     min(750, int((self.winfo_screenheight() - 100) / scale)))
+        home = isinstance(getattr(self, 'main_view', None), AccueilView) or not hasattr(self, 'main_view')
+        minimum = (820, 750) if home else (1300, 750)
+        self.minsize(min(minimum[0], int((self.winfo_screenwidth() - 40) / scale)),
+                     min(minimum[1], int((self.winfo_screenheight() - 100) / scale)))
+
+    def _apply_view_geometry(self):
+        self._fit_screen_limits()
+        scale = self._get_window_scaling()
+        home = isinstance(getattr(self, 'main_view', None), AccueilView) or not hasattr(self, 'main_view')
+        width, height = (900, 860) if home else (1500, 860)
+        width = min(width, int((self.winfo_screenwidth() - 40) / scale))
+        height = min(height, int((self.winfo_screenheight() - 100) / scale))
+        self.state('normal')
+        self.geometry(f'{width}x{height}')
 
     def _set_scaling(self, *args, **kwargs):
         super()._set_scaling(*args, **kwargs)
@@ -43,6 +52,7 @@ class TraceAlphaViewer(ctk.CTk):
         previous = self.main_view
         previous.hide()
         self.main_view = new_view
+        self._apply_view_geometry()
         if getattr(new_view, '_return_view', None) is not previous:
             previous.destroy()
         self.main_view.show()

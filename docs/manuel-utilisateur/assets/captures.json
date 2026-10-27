@@ -1,11 +1,11 @@
 {
   "accueil": {
-    "width": 1780,
-    "height": 1000
+    "width": 900,
+    "height": 860
   },
   "chargement": {
-    "width": 1780,
-    "height": 1000
+    "width": 900,
+    "height": 860
   },
   "vue-ensemble": {
     "width": 1780,
@@ -72,8 +72,8 @@
     "height": 214
   },
   "dossier": {
-    "width": 1780,
-    "height": 1000
+    "width": 1500,
+    "height": 860
   },
   "vidage-robot": {
     "width": 1144,
@@ -93,11 +93,11 @@
   },
   "capteur-c5": {
     "width": 1139,
-    "height": 212
+    "height": 182
   },
   "communication-moteurs": {
     "width": 1139,
-    "height": 158
+    "height": 157
   },
   "peremption-absente": {
     "width": 1139,

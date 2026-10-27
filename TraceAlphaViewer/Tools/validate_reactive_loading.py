@@ -189,7 +189,7 @@ class WorkerTests(unittest.TestCase):
         try:
             blocker = session.directory / 'not-a-directory'
             blocker.write_text('test', encoding='utf-8')
-            with patch('Models.loading_worker.parse_file', return_value=[MachineState(line_num=1)]):
+            with patch('Models.loading_worker.iter_frames', return_value=iter([MachineState(line_num=1)])):
                 with self.assertRaises(OSError):
                     run({'mode': 'file', 'path': str(blocker), 'session': str(blocker)}, lambda *args: None)
             empty = session.directory / 'empty'
@@ -253,22 +253,29 @@ class UiTests(unittest.TestCase):
             window.withdraw()
         cls.hidden_windows = patch.object(ctk.CTkToplevel, '__init__', hidden_window)
         cls.hidden_windows.start()
+        cls.modal_errors = []
+        cls.hidden_errors = patch('tkinter.messagebox.showerror',
+                                 side_effect=lambda title, message, **kwargs: cls.modal_errors.append((title, message)))
+        cls.hidden_errors.start()
 
     @classmethod
     def tearDownClass(cls):
         cls.app.destroy()
         cls.hidden_windows.stop()
+        cls.hidden_errors.stop()
 
     def setUp(self):
         from Views.accueilView import AccueilView
         self.app.switch_view(AccueilView(self.app))
         self.errors = []
+        self.modal_errors.clear()
         self.app.report_callback_exception = lambda *args: self.errors.append(args)
 
     def tearDown(self):
         from Views.accueilView import AccueilView
         self.app.switch_view(AccueilView(self.app))
         self.assertEqual(self.errors, [])
+        self.assertEqual(self.modal_errors, [])
 
     def pump(self, predicate, timeout=15):
         deadline = time.monotonic() + timeout
@@ -350,6 +357,7 @@ class UiTests(unittest.TestCase):
         store = session.open_store(directory)
         view = TraceView(self.app, str(path), store, events=[], diagnostics=[], references=[], load_session=session)
         self.app.switch_view(view)
+        diagnostic_panel = view._diagnostic_panel
         retained = TraceView(self.app, str(path), [MachineState(line_num=1)],
                              events=[], diagnostics=[], references=[], return_view=view)
         self.app.switch_view(retained)
@@ -357,6 +365,7 @@ class UiTests(unittest.TestCase):
         self.assertEqual(store[-1], frames[-1])
         retained._close()
         self.assertIs(self.app.main_view, view)
+        self.assertIs(view._diagnostic_panel, diagnostic_panel)
         panel = view._event_panel
         panel._set_belt_filter('T5')
         task = panel._filter_task
@@ -388,9 +397,14 @@ class UiTests(unittest.TestCase):
             with patch('Widgets.trace_panel.TracePanel._poll_results', return_value=None):
                 home._load(str(path))
                 owner = home._load_session
-                self.pump(lambda: isinstance(self.app.main_view, TraceView))
-                self.assertTrue(self.app.main_view._trace_panel._loading)
-                self.app.main_view._close()
+                self.pump(lambda: home._prepared_view is not None
+                          and hasattr(home._prepared_view, '_trace_panel')
+                          and home._prepared_view._trace_panel._loading)
+                self.assertIs(self.app.main_view, home)
+                self.assertLess(home._progress_tracker.fraction, 1)
+                prepared = home._prepared_view
+                self.app.switch_view(BaseView(self.app))
+                self.assertTrue(prepared._disposed.is_set())
                 close_session(owner)
         finally:
             close_session(session)

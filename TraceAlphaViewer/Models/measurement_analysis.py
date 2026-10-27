@@ -271,7 +271,7 @@ def _analyze_comparable(samples, excluded=None):
                       'interpretation': _interpretation(name, total, observations)}
         axes[name]['recurrence_lines'] = repeated_offset_lines(axes[name])
     outside = sum(any(abs(v) > dimension_tolerance(i) for i, v in enumerate(s['deltas'])) for s in samples)
-    summary = {'axes': axes, 'excluded': dict(excluded or {}), 'comparable_count': len(samples),
+    summary = {'axis_diagnostics_version': 2, 'axes': axes, 'excluded': dict(excluded or {}), 'comparable_count': len(samples),
             'cycle_count': len(samples) + sum((excluded or {}).values()),
             'excluded_count': sum((excluded or {}).values()),
             'global': {'within_count': len(samples) - outside, 'outside_count': outside,
@@ -284,6 +284,20 @@ def _analyze_comparable(samples, excluded=None):
 
 def summarize(samples, excluded=None):
     return _analyze_comparable(samples, excluded)[0]
+
+
+def dimension_findings(analysis):
+    """Les memes finales comparables alimentent les cartes et les diagnostics par axe."""
+    groups = {'ORIENTATION': []}
+    axes = (('T4_LENGTH', 2), ('T5_WIDTH', 0), ('T5_HEIGHT', 1))
+    for sample in analysis['finals']:
+        if sample['code'] == 'ORIENTATION':
+            groups['ORIENTATION'].append(sample)
+            continue
+        for code, index in axes:
+            if abs(sample['deltas'][index]) > dimension_tolerance(index):
+                groups.setdefault(code, []).append(sample)
+    return {code: samples for code, samples in groups.items() if samples}
 
 
 class MeasurementCollector:

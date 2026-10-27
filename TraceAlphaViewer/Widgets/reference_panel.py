@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 import customtkinter as ctk
+from Widgets.ui_theme import ui_color, scrollbar_colors
 import tkinter as tk
 
 from Models.reference_index import ReferenceRecord
@@ -24,7 +25,7 @@ class ReferencePanel(ctk.CTkFrame):
         navigation=None,
         **kwargs,
     ):
-        kwargs.setdefault('fg_color', '#12121f')
+        kwargs.setdefault('fg_color', ui_color(master, 'background', '#12121f'))
         kwargs.setdefault('corner_radius', 0)
         super().__init__(master, **kwargs)
         self._records = records
@@ -45,7 +46,7 @@ class ReferencePanel(ctk.CTkFrame):
         self.set_records(records)
 
     def _build(self) -> None:
-        header = ctk.CTkFrame(self, fg_color='#1e1e30', height=34, corner_radius=0)
+        header = ctk.CTkFrame(self, fg_color=ui_color(self, 'surface', '#1e1e30'), height=34, corner_radius=0)
         header.pack(fill='x')
         header.pack_propagate(False)
 
@@ -53,20 +54,20 @@ class ReferencePanel(ctk.CTkFrame):
             header,
             text='REFERENCES',
             font=('Consolas', 10, 'bold'),
-            text_color='#88aacc',
+            text_color=ui_color(self, 'muted', '#88aacc'),
         )
         self._title.pack(side='left', padx=(8, 12))
         ctk.CTkLabel(header, text='CIP / filtre', font=('Consolas', 10),
-                     text_color='#88aacc').pack(side='left', padx=(0, 6))
+                     text_color=ui_color(self, 'muted', '#88aacc')).pack(side='left', padx=(0, 6))
 
         search = ctk.CTkEntry(
             header,
             textvariable=self._search_var,
             placeholder_text='CIP, barcode, nom, IdA, idB...',
             height=24,
-            fg_color='#151525',
-            text_color='#ddeeff',
-            border_color='#334455',
+            fg_color=ui_color(self, 'panel', '#151525'),
+            text_color=ui_color(self, 'text', '#ddeeff'),
+            border_color=ui_color(self, 'border', '#334455'),
             font=('Consolas', 10),
         )
         search.pack(side='left', fill='x', expand=True, padx=(0, 8), pady=5)
@@ -80,22 +81,22 @@ class ReferencePanel(ctk.CTkFrame):
             height=22,
             corner_radius=4,
             font=('Consolas', 9),
-            fg_color='#252538',
-            hover_color='#353555',
-            text_color='#aabbcc',
+            fg_color=ui_color(self, 'control', '#252538'),
+            hover_color=ui_color(self, 'hover', '#353555'),
+            text_color=ui_color(self, 'text', '#aabbcc'),
             command=self._toggle_unknown_filter,
         )
         self._btn_unknown.pack(side='right', padx=(0, 6), pady=5)
 
         self._pagination = Pagination(self, self._set_page)
         self._pagination.pack(side='bottom', fill='x')
-        vscroll = tk.Scrollbar(self, orient='vertical')
+        vscroll = tk.Scrollbar(self, orient='vertical', **scrollbar_colors(self))
         vscroll.pack(side='right', fill='y')
 
         self._text = tk.Text(
             self,
-            bg='#12121f',
-            fg='#aabbcc',
+            bg=ui_color(self, 'background', '#12121f'),
+            fg=ui_color(self, 'text', '#aabbcc'),
             font=('Consolas', 9),
             wrap='none',
             cursor='arrow',
@@ -108,11 +109,12 @@ class ReferencePanel(ctk.CTkFrame):
         self._text.pack(fill='both', expand=True)
         vscroll.config(command=self._text.yview)
 
-        self._text.tag_configure('header', foreground='#6688aa')
-        self._text.tag_configure('normal', foreground='#aabbcc')
+        self._text.tag_configure('header', foreground=ui_color(self, 'muted', '#6688aa'))
+        self._text.tag_configure('normal', foreground=ui_color(self, 'text', '#aabbcc'))
         self._text.tag_configure('taken', foreground='#88ddaa')
         self._text.tag_configure('unknown', foreground='#ffbb55')
-        self._text.tag_configure('current', background='#1a2d45', foreground='#ddeeff')
+        self._text.tag_configure('current', background=ui_color(self, 'selected', '#1a2d45'),
+                                 foreground=ui_color(self, 'selected_text', '#ddeeff'))
         self._text.bind('<Button-1>', self._on_click)
 
     def set_records(self, records: list[ReferenceRecord]) -> None:
@@ -153,9 +155,9 @@ class ReferencePanel(ctk.CTkFrame):
     def _toggle_unknown_filter(self) -> None:
         self._unknown_only = not self._unknown_only
         self._btn_unknown.configure(
-            fg_color='#7a5520' if self._unknown_only else '#252538',
-            hover_color='#8a6530' if self._unknown_only else '#353555',
-            text_color='#ffe0aa' if self._unknown_only else '#aabbcc',
+            fg_color='#7a5520' if self._unknown_only else ui_color(self, 'control', '#252538'),
+            hover_color='#8a6530' if self._unknown_only else ui_color(self, 'hover', '#353555'),
+            text_color='#ffe0aa' if self._unknown_only else ui_color(self, 'text', '#aabbcc'),
         )
         self._render()
 

@@ -76,7 +76,7 @@ def _check_routes_trace() -> None:
         any(box.measurement_status == "c9_error" for frame in frames for box in frame.boxes_on_T5),
         "statut c9_error absent sur TracAlpharoutes",
     )
-    _check("GLOBAL" in dimension_incidents, "diagnostic GLOBAL absent sur TracAlpharoutes")
+    _check("GLOBAL" not in dimension_incidents, "carte GLOBAL redondante sur TracAlpharoutes")
     _check("T5_WIDTH" in dimension_incidents, "diagnostic T5_WIDTH absent sur TracAlpharoutes")
     _check("T4_LENGTH" in dimension_incidents, "diagnostic T4_LENGTH absent sur TracAlpharoutes")
     all_example_lines = [
