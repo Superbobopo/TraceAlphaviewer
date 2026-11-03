@@ -64,7 +64,8 @@ def main():
     args = parser.parse_args()
     if args.baseline_dir:
         import Models
-        for name in ('robot_drain', 'trace_calendar', 'c2_analysis', 'c5_analysis', 'trace_observations', 'diagnostic'):
+        for name in ('robot_drain', 'trace_calendar', 'c2_analysis', 'c5_analysis',
+                     'trace_observations', 't5_drive_analysis', 'diagnostic'):
             path = args.baseline_dir/f'{name}.py'
             module = ModuleType('Models.' + name)
             module.__file__ = str(path.resolve())

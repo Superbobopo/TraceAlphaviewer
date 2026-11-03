@@ -121,7 +121,7 @@ class OrientationCategoryTests(unittest.TestCase):
                 for url in (bridge.register(report),fallback.as_uri()):
                     page.goto(url)
                     local=url.startswith('http:')
-                    if local:page.get_by_role('status').filter(has_text='Liaison avec').wait_for()
+                    if local:page.locator('[data-connected="true"]').wait_for()
                     self.assertIn('13/02/2026',page.locator('.hero-period').inner_text())
                     self.assertIn('15/02/2026',page.locator('.hero-period').inner_text())
                     self.assertIn('52 h 30 min 00 s',page.locator('.hero-duration').inner_text())

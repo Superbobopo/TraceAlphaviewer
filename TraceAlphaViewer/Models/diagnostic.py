@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
 from operator import itemgetter
+from datetime import timedelta
 import re
 from dataclasses import dataclass, field
 
@@ -20,7 +21,7 @@ from Models.c2_analysis import analyze_c2, analyze_c3, signal_metric_text
 from Models.c5_analysis import analyze_c5, c5_metric_text, c5_is_critical
 from Models.dimension_check import dimension_severity
 from Models.trace_observations import analyze_motor_communication, analyze_code_modes, observation_metric_text, observations
-from Models.trace_calendar import trace_calendar, TraceLines, clock_seconds
+from Models.trace_calendar import trace_calendar, TraceLines, clock_seconds, observation_clock
 from Models.diagnostic_summary import normalize_summary_incidents, motor_metrics
 
 
@@ -446,7 +447,7 @@ class StateIncidentCollector:
                                       ('T5', frame.state_T5, frame.C9)):
             item = self._waits[belt]
             suspicious = current.startswith('WAIT-') and current != 'WAIT-COND' and sensor == 0
-            if not suspicious or (item[0] is not None and current != item[2]):
+            if item[0] is not None and (not suspicious or current != item[2]):
                 self._close_wait(belt)
             if suspicious:
                 if item[0] is None:
@@ -456,7 +457,7 @@ class StateIncidentCollector:
                 and frame.C2 == 1 and frame.C3 == 1 and frame.C4 == 0):
             self._blocked[0] = self._blocked[0] or frame
             self._blocked[1] = frame
-        else:
+        elif self._blocked[0] is not None:
             self._close_block()
 
     def _close_wait(self, belt):
@@ -617,6 +618,8 @@ def _build_cubestop_c4_blocked_incidents(
 ) -> list[DiagnosticIncident]:
     has_cubestop = False
     for _, text, _ in line_states:
+        if text.isascii() and 'cubestop' not in text.lower():
+            continue
         info = _CUBESTOP_INFO.search(text)
         if info and info.group(1).upper() == 'Y':
             has_cubestop = True
@@ -874,7 +877,7 @@ def _build_t4_init_loop_incidents(
     event_numbers = [event.line_num for event in events]
     markers: list[tuple[int, str, MachineState | MachineEvent]] = []
     for line_num, text, state in line_states:
-        if _TRACE_T4_INIT_REQUEST.search(text):
+        if ('initmachine:' in text.lower() or not text.isascii()) and _TRACE_T4_INIT_REQUEST.search(text):
             markers.append((line_num, 'init', state))
     for event in events:
         if _is_t4_normal_cycle_event(event):
@@ -926,10 +929,11 @@ def _build_text_pattern_incidents(
     ]
 
     for title, belt, code, pattern, rule_id, severity, summary, minimum_count in patterns:
+        anchor = code.split('-')[0]
         matched = [
             (line_num, state.timestamp, state.timestamp_str)
             for line_num, text, state in line_states
-            if pattern.search(text)
+            if anchor in text and pattern.search(text)
         ]
         if len(matched) < minimum_count:
             continue
@@ -965,26 +969,34 @@ def _build_robot_drain_incidents(line_states, trace_origin=None, trace_bounds=No
     seen = set()
     calendar = TraceCalendar(trace_origin) if trace_origin is not None else None
     bounds = trace_bounds or ((line_states[0][2].timestamp, line_states[-1][2].timestamp) if line_states else (0, 0))
-    trace_start = calendar.at(bounds[0]) if calendar else None
-    for line, text, state in line_states:
-        if calendar:
+    # Reutiliser la chronologie seulement si ses bornes sont celles du segment.
+    axis = (observation_clock(line_states, trace_origin) if calendar and isinstance(line_states, TraceLines)
+            and line_states and bounds == (line_states[0][2].timestamp, line_states[-1][2].timestamp) else None)
+    trace_start = (trace_origin + timedelta(seconds=axis.times[0]) if axis is not None else
+                   calendar.at(bounds[0]) if calendar else None)
+    for index, (line, text, state) in enumerate(line_states):
+        if calendar and axis is None:
             calendar.observe(state.timestamp)
-        if line in seen or not _TRACE_T5_DEM_VIDAGE.search(text):
+        if line in seen or (text.isascii() and 'omega:t5-demvidagecomplet' not in text.lower()):
+            continue
+        if not _TRACE_T5_DEM_VIDAGE.search(text):
             continue
         seen.add(line)
         if calendar:
-            date = calendar.at(state.timestamp)
+            date = trace_origin + timedelta(seconds=axis.times[index]) if axis is not None else calendar.at(state.timestamp)
             dated.append((line, date))
             matched.append((line, (date - trace_origin).total_seconds(), date.strftime('%d/%m/%Y à %H:%M:%S')))
         else:
             matched.append((line, state.timestamp, state.timestamp_str))
+    trace_end = (trace_origin + timedelta(seconds=axis.times[-1]) if axis is not None else
+                 calendar.at(bounds[1]) if calendar else None)
     if trace_metadata_output is not None:
-        trace_metadata_output.update(trace_period(trace_start, calendar.at(bounds[1])) if calendar else {'available': False})
+        trace_metadata_output.update(trace_period(trace_start, trace_end) if calendar else {'available': False})
     if not matched:
         return []
     metrics = drain_metrics(matched)
     if calendar:
-        date_drain_metrics(metrics, dated, trace_start, calendar.at(bounds[1]))
+        date_drain_metrics(metrics, dated, trace_start, trace_end)
     from Models.robot_drain import analyze_robot_boxes, attach_robot_box_metrics
     attach_robot_box_metrics(metrics, robot_box_analysis if robot_box_analysis is not None else
                              analyze_robot_boxes(line_states, trace_origin))
@@ -1631,13 +1643,47 @@ def _build_stale_unmeasured_t5_incidents(
     return incidents
 
 
+def _build_t5_drive_incidents(line_states, origin=None):
+    from Models.t5_drive_analysis import analyze_t5_drive
+
+    incidents = []
+    rule = knowledge('t5_drive_suspected')
+    for row in analyze_t5_drive(line_states, origin):
+        proofs = sorted((row[key] for key in
+                         ('length', 'transfer', 't4', 'created', 'link', 'height', 'width', 'removed') if row[key]),
+                        key=lambda item: item['line'])
+        first, last = proofs[0], proofs[-1]
+        label = f"idB:{row['id_b']} / IdA:{row['id_alpha']}"
+        t4 = (f"T4C={row['t4']['t4c_mm']} mm, T4T={row['t4']['t4t_mm']} mm" if row['t4'] else
+              f"Longueur T4={row['length']['length_mm']:g} mm ; bilan T4C/T4T indisponible")
+        detail = (f"{label} — {row['barcode']} {row['name']}. {t4} ; "
+                  f"absence hauteur, largeur <2 mm avec C9={row['width']['c9']}, puis suppression informatique.")
+        cycle = {key: ({k: v for k, v in value.items() if k not in {'detail', 'label'}}
+                       if isinstance(value, dict) else value) for key, value in row.items()}
+        incidents.append(DiagnosticIncident(
+            severity='error', title="T5 — défaut d’entraînement mécanique suspecté",
+            belt='T5', code='T5_DRIVE_SUSPECTED', count=1,
+            first_line=first['line'], last_line=last['line'],
+            start_time=first['time'], end_time=last['time'],
+            start_time_str=first['time_str'], end_time_str=last['time_str'],
+            summary=detail,
+            symptom=rule['symptom'], probable_causes=list(rule['causes']),
+            checks=list(rule['checks']), confidence=rule['confidence'],
+            event_lines=[item['line'] for item in proofs],
+            examples=[dict(item, box=label, barcode=row['barcode'], name=row['name'],
+                           detail=f"{item['label']} : {item['detail']}") for item in proofs],
+            metrics={'t5_drive_metrics_version': 1, 'cycle_count': 1, 'cycle': cycle},
+        ))
+    return incidents
+
+
 def _build_c9_invalid_width_incidents(
     line_states: list[tuple[int, str, MachineState]],
 ) -> list[DiagnosticIncident]:
     matches = [
         (line_num, state.timestamp, state.timestamp_str)
         for line_num, text, state in line_states
-        if _T5_WIDTH_C9_INVALID.search(text)
+        if ('largeur lue sur t5' in text.lower() or not text.isascii()) and _T5_WIDTH_C9_INVALID.search(text)
     ]
     if not matches:
         return []
@@ -2082,7 +2128,7 @@ def build_diagnostics(
         'Capteur C2': 2.4, 'Capteur C3': 2.4, 'Capteur C5 / transfert T3-T4': 5.8,
         'Communication et modes': 2.4, 'CubeStop / C4': 1.8, 'Initialisations T4': 0.8,
         'Messages et robot': 3.4, 'Redemarrages Alpha': 1.4, 'Blocages T5': 2.3,
-        'Capteur C9': 0.2, 'Dimensions': 0.2, 'Cameras / identification': 6.3,
+        'Capteur C9': 0.1, 'Entrainement T5': 0.1, 'Dimensions': 0.2, 'Cameras / identification': 6.3,
         'Peremptions': 0.2, 'Bilans cameras': 0.2, 'Classement': 0.1,
     }
     completed = 0.0
@@ -2090,7 +2136,8 @@ def build_diagnostics(
     active = None
     parallel_names = {'C2': 'Capteur C2', 'C3': 'Capteur C3', 'C5': 'Capteur C5 / transfert T3-T4',
                       'communication': 'Communication et modes', 'resets': 'Redemarrages Alpha',
-                      'stale': 'Blocages T5'} if parallel_execution else {}
+                      'stale': 'Blocages T5', 'cubestop': 'CubeStop / C4',
+                      't5_drive': 'Entrainement T5'} if parallel_execution else {}
     deferred = []
 
     def family(key, operation):
@@ -2145,7 +2192,7 @@ def build_diagnostics(
     stage('Communication et modes')
     family('communication', lambda: _build_communication_and_mode_incidents(line_states, trace_origin))
     stage('CubeStop / C4')
-    incidents.extend(_build_cubestop_c4_blocked_incidents(line_states))
+    family('cubestop', lambda: _build_cubestop_c4_blocked_incidents(line_states))
     stage('Initialisations T4')
     incidents.extend(_build_t4_init_loop_incidents(line_states, events))
     stage('Messages et robot')
@@ -2158,6 +2205,8 @@ def build_diagnostics(
     family('stale', lambda: _build_stale_unmeasured_t5_incidents(line_states))
     stage('Capteur C9')
     incidents.extend(_build_c9_invalid_width_incidents(line_states))
+    stage('Entrainement T5')
+    family('t5_drive', lambda: _build_t5_drive_incidents(line_states, trace_origin))
     stage('Dimensions')
     incidents.extend(_build_dimension_incidents(frames, line_states, measurement_analysis))
     stage('Cameras / identification')

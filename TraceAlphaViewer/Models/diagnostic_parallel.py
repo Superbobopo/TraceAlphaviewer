@@ -7,7 +7,8 @@ import uuid
 
 
 GROUPS = ('signals', 'c5', 'communication')
-KEYS = ('C2', 'C3', 'C5', 'communication', 'resets', 'stale')
+KEYS = ('C2', 'C3', 'cubestop', 't5_drive', 'C5', 'communication', 'resets', 'stale')
+PROJECTION_BLOCK_SIZE = 8192
 
 
 def pack_projection(lines):
@@ -34,10 +35,38 @@ def unpack_projection(rows):
     return result
 
 
+def write_projection(path, lines, origin):
+    # Borner les tuples temporaires et le memo pickle au bloc courant.
+    with Path(path).open('wb') as output:
+        pickle.dump((3, origin), output, protocol=pickle.HIGHEST_PROTOCOL)
+        for start in range(0, len(lines), PROJECTION_BLOCK_SIZE):
+            rows = pack_projection(lines[start:start + PROJECTION_BLOCK_SIZE])
+            pickle.dump(rows, output, protocol=pickle.HIGHEST_PROTOCOL)
+        pickle.dump(None, output, protocol=pickle.HIGHEST_PROTOCOL)
+
+
+def read_projection(path):
+    from Models.trace_calendar import TraceLines
+    lines = TraceLines()
+    with Path(path).open('rb') as source:
+        header = pickle.load(source)
+        if not isinstance(header, tuple) or len(header) != 2 or header[0] != 3:
+            raise OSError('Projection diagnostique incompatible')
+        while True:
+            rows = pickle.load(source)
+            if rows is None:
+                break
+            lines.extend(unpack_projection(rows))
+    return header[1], lines
+
+
 def analyze_family(group, lines, origin):
     from Models import diagnostic as model
     if group == 'signals':
-        return {sensor: model._build_signal_incidents(lines, sensor) for sensor in ('C2', 'C3')}
+        result = {sensor: model._build_signal_incidents(lines, sensor) for sensor in ('C2', 'C3')}
+        result['cubestop'] = model._build_cubestop_c4_blocked_incidents(lines)
+        result['t5_drive'] = model._build_t5_drive_incidents(lines, origin)
+        return result
     if group == 'c5':
         return {'C5': model._build_c5_incidents(lines, origin)}
     if group == 'communication':
@@ -77,9 +106,7 @@ class DiagnosticExecution:
             from Models.worker_process_tree import own_process_tree
             own_process_tree()
             started = time.perf_counter()
-            # Les tuples excluent les caches paresseux de TraceLines.
-            with self.projection.open('wb') as output:
-                pickle.dump((2, self.origin, pack_projection(self.lines)), output, protocol=pickle.HIGHEST_PROTOCOL)
+            write_projection(self.projection, self.lines, self.origin)
             self.timings['projection'] = time.perf_counter() - started
         while self.pending_groups and running < capacity:
             group = self.pending_groups.pop(0)

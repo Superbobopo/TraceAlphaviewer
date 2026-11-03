@@ -217,6 +217,28 @@ class ParallelTests(unittest.TestCase):
             with self.assertRaisesRegex(OSError, 'incompatible'):
                 run({'mode': 'diagnostic_family', 'projection': str(path)}, lambda *_: None)
 
+    def test_projection_blocks_preserve_order_fields_and_truncation_errors(self):
+        import pickle
+        from datetime import datetime
+        from Models.diagnostic import DiagnosticState
+        from Models.diagnostic_parallel import PROJECTION_BLOCK_SIZE, write_projection, read_projection
+        origin = datetime(2026, 12, 31, 23, 59, 59)
+        shared = DiagnosticState(.1234565, '23:59:59.1234565', True)
+        rows = [(i, 'Texte fictif é ¶', shared if i % 2 else DiagnosticState(-i, str(i), 0))
+                for i in range(PROJECTION_BLOCK_SIZE * 2 + 7)]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'projection.pkl'
+            for values in ([], rows):
+                write_projection(path, values, origin)
+                actual_origin, actual = read_projection(path)
+                self.assertEqual(actual_origin, origin)
+                self.assertEqual(actual, values)
+                self.assertTrue(all(type(row[2].C6) is type(expected[2].C6)
+                                    for row, expected in zip(actual, values)))
+            path.write_bytes(path.read_bytes()[:-1])
+            with self.assertRaises((EOFError, pickle.UnpicklingError)):
+                read_projection(path)
+
     def test_subprocess_cancellation_and_failure(self):
         from Models.diagnostic_parallel import DiagnosticExecution
         from Models.loading_client import WorkerTask
@@ -246,6 +268,28 @@ class ParallelTests(unittest.TestCase):
 
     def test_diagnostics_camera_metadata_and_progress_are_identical(self):
         self.check_diagnostics()
+
+    def test_t5_drive_and_cubestop_are_preserved_by_parallel_diagnostics(self):
+        from Models import diagnostic
+        from Models.diagnostic_parallel import DiagnosticExecution
+        from Tools.validate_t5_drive import cycle, frames_for
+        cubestop = [
+            'CubeStop:Y', 'mvt CubeStop vers le BAS', 'mvt CubeStop vers le HAUT',
+            'tEA-T3: DEM-TRSF C4:1 C5:0 fgBfinT3:0 eT3:49 pT3:-210mm',
+            'tEA-T3: WAIT-FIN-TRSF C4:1 C5:0 fgBfinT3:0 eT3:44 pT3:-468mm',
+            'tEA-T3: ERREUR transfert EA->T3 -43',
+            "tEA-T3: boite coincée sur C4 après x éjections d'EA",
+        ]
+        frames = frames_for(cycle() + [(20 + i, text) for i, text in enumerate(cubestop)])
+        lines = diagnostic._frame_line_states(frames)
+        expected = diagnostic.build_diagnostics(frames, [], line_states=lines)
+        self.assertTrue(any(row.code == 'T5_DRIVE_SUSPECTED' for row in expected))
+        self.assertTrue(any(row.code == 'CUBESTOP_C4_BLOCKED' for row in expected))
+        with tempfile.TemporaryDirectory() as directory:
+            with DiagnosticExecution(lines, None, directory, {'max_workers': 4}) as execution:
+                actual = diagnostic.build_diagnostics(frames, [], line_states=lines,
+                                                       parallel_execution=execution)
+        self.assertEqual([asdict(row) for row in actual], [asdict(row) for row in expected])
 
     def test_pressure_fallback_preserves_all_diagnostics(self):
         with patch('Models.resource_policy.detect_resources', return_value=Resources()):

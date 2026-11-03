@@ -37,18 +37,23 @@ def browser_path():
 
 
 def run_browser(browser, url, *arguments):
-    work = APP_ROOT / '.trace_work'
-    work.mkdir(exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='manual-browser-', dir=work) as profile:
-        result = subprocess.run([
-            str(browser), '--headless', '--disable-gpu', '--no-first-run',
-            '--no-default-browser-check', '--disable-background-networking',
-            '--disable-extensions', '--disable-sync', '--hide-scrollbars',
-            '--allow-file-access-from-files', '--virtual-time-budget=5000',
-            f'--user-data-dir={profile}', *arguments, url,
-        ], capture_output=True, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0), timeout=60)
-        if result.returncode:
-            raise RuntimeError(f'Le navigateur a quitte avec le code {result.returncode}')
+    from playwright.sync_api import sync_playwright
+    options = dict(argument[2:].split('=', 1) for argument in arguments if '=' in argument)
+    width, height = map(int, options.get('window-size', '1440,850').split(','))
+    with sync_playwright() as playwright:
+        preview = playwright.chromium.launch(executable_path=str(browser), headless=True)
+        page = preview.new_page(viewport={'width': width, 'height': height})
+        try:
+            page.goto(url)
+            page.evaluate('document.fonts.ready')
+            if 'screenshot' in options:
+                page.locator('.priorities').wait_for()
+                page.screenshot(path=options['screenshot'])
+            if 'print-to-pdf' in options:
+                page.pdf(path=options['print-to-pdf'], print_background=True,
+                         prefer_css_page_size=True, display_header_footer=False)
+        finally:
+            preview.close()
 
 
 def demonstration(directory):
@@ -573,6 +578,48 @@ def observation_captures():
     (assets/'captures.json').write_text(json.dumps(metadata,indent=2),encoding='utf-8')
 
 
+def health_capture():
+    from Tools.validate_health_radar import NORMAL, ObservedFrames
+    from Tools.validate_c2_signal import frames_for
+    from Models.diagnostic import DiagnosticIncident
+    from Models.diagnostic_report import write_diagnostic_report
+    from Models.health_radar import HealthObservationCollector
+    from playwright.sync_api import sync_playwright
+
+    frames = ObservedFrames(frames_for([(i, text) for i, text in enumerate(NORMAL) if i != 3]))
+    observed = HealthObservationCollector()
+    for frame in frames:
+        observed.consume(frame.raw_lines[0][1])
+    frames.health_observations = dict(observed.finish(), duration_seconds=3600,
+        transfers=dict(affected=1,total=100,unattributed_episodes=0,unattributed_transfers=0),
+        robot=dict(box_metrics_version=1,rejected_boxes_count=25,robot_picked_boxes_count=1920))
+    frames.source_metadata = {'identity': {'pharmacy': 'Démonstration fictive', 'alpha_number': '031'}}
+    incidents = [
+        DiagnosticIncident('error', 'Entraînement T5 suspecté — exemple fictif', 'T5', 'T5_DRIVE_SUSPECTED',
+                           first_line=2, last_line=3, count=1, summary='Mesures finales absentes après transfert.',
+                           metrics={'t5_drive_metrics_version': 1, 'cycle_count': 1, 'cycle': {}}),
+        DiagnosticIncident('warning', 'Caméra 3 sans lecture — exemple fictif', 'IDENTIF', 'CAM-NO-READ',
+                           first_line=1, last_line=1, count=1, summary='Caméra attendue sans lecture observée.'),
+        DiagnosticIncident('warning', 'T4 - Index à vérifier — exemple fictif', 'T4', 'INIT-INDEX',
+                           first_line=4, last_line=4, count=3, summary='Trois initialisations fictives avec index non libéré.'),
+    ]
+    path = MANUAL / 'assets' / 'bilan-alpha.png'
+    with tempfile.TemporaryDirectory(dir=ROOT / 'build', prefix='manual-health-') as directory:
+        report = write_diagnostic_report(incidents, Path(directory), frames=frames,
+                                         source_name='BILAN ALPHA — DONNÉES FICTIVES',
+                                         trace_period=fictive_period(frames))
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(channel='msedge', headless=True)
+            page = browser.new_page(viewport={'width':1200, 'height':1000})
+            page.goto(report.as_uri())
+            page.locator('.priorities').screenshot(path=str(path))
+            browser.close()
+    metadata = json.loads((MANUAL / 'assets' / 'captures.json').read_text(encoding='utf-8'))
+    width, height = struct.unpack('>II', path.read_bytes()[16:24])
+    metadata['bilan-alpha'] = {'width':width, 'height':height}
+    (MANUAL / 'assets' / 'captures.json').write_text(json.dumps(metadata, indent=2), encoding='utf-8')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--captures', action='store_true', help='Reproduire les captures et verifier les parcours')
@@ -585,8 +632,9 @@ def main():
     parser.add_argument('--layout-captures', action='store_true', help='Actualiser les captures web concernees par la disposition du rapport')
     parser.add_argument('--c5-capture', action='store_true', help='Actualiser la capture fictive du diagnostic C5')
     parser.add_argument('--observation-captures', action='store_true', help='Actualiser les captures fictives moteurs, DP et modes camera')
+    parser.add_argument('--health-capture', action='store_true', help='Actualiser la toile fictive du bilan Alpha')
     args = parser.parse_args()
-    if not any((args.captures, args.viewer_captures, args.loading_capture, args.home_loading_captures, args.pdf, args.robot_capture, args.unknown_capture, args.layout_captures, args.c5_capture, args.observation_captures)):
+    if not any((args.captures, args.viewer_captures, args.loading_capture, args.home_loading_captures, args.pdf, args.robot_capture, args.unknown_capture, args.layout_captures, args.c5_capture, args.observation_captures, args.health_capture)):
         parser.error('Choisir --captures, --loading-capture, --robot-capture, --unknown-capture, --layout-captures et/ou --pdf')
     if args.captures:
         captures()
@@ -606,6 +654,8 @@ def main():
         signal_capture('C5')
     if args.captures or args.observation_captures:
         observation_captures()
+    if args.captures or args.health_capture:
+        health_capture()
     if args.layout_captures:
         layout_captures()
     if any((args.captures, args.viewer_captures, args.loading_capture, args.home_loading_captures, args.robot_capture, args.unknown_capture, args.layout_captures, args.c5_capture, args.observation_captures)):

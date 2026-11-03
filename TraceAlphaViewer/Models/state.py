@@ -90,44 +90,8 @@ class BoxInfo:
 # ── Snapshot complet de l'état machine à un instant donné ───────────────────
     def clone(self) -> "BoxInfo":
         box = BoxInfo.__new__(BoxInfo)
-        box.barcode = self.barcode
-        box.source_ref = self.source_ref
-        box.name = self.name
-        box.lot = self.lot
-        box.identified_barcode = self.identified_barcode
-        box.identified_name = self.identified_name
-        box.identity_line = self.identity_line
-        box.identity_source = self.identity_source
-        box.camera_identity_line = self.camera_identity_line
-        box.camera_identity_source = self.camera_identity_source
-        box.identity_conflict = self.identity_conflict
-        box.bdd_reference = self.bdd_reference
-        box.bdd_source_line = self.bdd_source_line
-        box.length_mm = self.length_mm
-        box.width_mm = self.width_mm
-        box.height_mm = self.height_mm
-        box.bdd_width_mm = self.bdd_width_mm
-        box.bdd_height_mm = self.bdd_height_mm
-        box.bdd_length_mm = self.bdd_length_mm
-        box.measured_t4_length_mm = self.measured_t4_length_mm
-        box.measured_t4t_length_mm = self.measured_t4t_length_mm
-        box.measured_t4_diff_mm = self.measured_t4_diff_mm
-        box.measured_t4_line = self.measured_t4_line
-        box.measured_t5_line = self.measured_t5_line
-        box.measured_height_line = self.measured_height_line
-        box.measured_t5_width_mm = self.measured_t5_width_mm
-        box.measured_t5_height_mm = self.measured_t5_height_mm
-        box.measured_t5_length_mm = self.measured_t5_length_mm
-        box.measurement_status = self.measurement_status
-        box.t5_footprint_mm = self.t5_footprint_mm
-        box.id_b = self.id_b
-        box.id_alpha = self.id_alpha
-        box.t5_transfer_id = self.t5_transfer_id
-        box.x_pos = self.x_pos
-        box.t5_visual_x_pos = self.t5_visual_x_pos
-        box.t5_entry_aligned = self.t5_entry_aligned
-        box.t5_after_c9 = self.t5_after_c9
-        box.color = self.color
+        # Les champs de BoxInfo sont scalaires ; le dictionnaire reste independant.
+        box.__dict__ = self.__dict__.copy()
         return box
 
 
@@ -203,53 +167,9 @@ class MachineState:
     events: List[MachineEvent] = field(default_factory=list)
 
     def deep_copy(self) -> "MachineState":
-        """Copie rapide des snapshots sans introspection generique."""
+        """Copie les scalaires en bloc et detache chaque objet mutable du snapshot."""
         state = MachineState.__new__(MachineState)
-        state.line_num = self.line_num
-        state.timestamp = self.timestamp
-        state.timestamp_str = self.timestamp_str
-        state.state_T0 = self.state_T0
-        state.state_T1 = self.state_T1
-        state.state_T2 = self.state_T2
-        state.state_tEA_T3 = self.state_tEA_T3
-        state.state_tT3_T4 = self.state_tT3_T4
-        state.state_tT4_T5 = self.state_tT4_T5
-        state.state_T5 = self.state_T5
-        state.eT0 = self.eT0
-        state.eT1 = self.eT1
-        state.eT2 = self.eT2
-        state.eT3 = self.eT3
-        state.eT4 = self.eT4
-        state.eT5 = self.eT5
-        state.C0 = self.C0
-        state.C1 = self.C1
-        state.C2 = self.C2
-        state.C3 = self.C3
-        state.C4 = self.C4
-        state.C5 = self.C5
-        state.C6 = self.C6
-        state.C9 = self.C9
-        state.flag_poubelle_pleine = self.flag_poubelle_pleine
-        state.lzb = self.lzb
-        state.pT3 = self.pT3
-        state.pT4 = self.pT4
-        state.pT5 = self.pT5
-        state.LgBtT4 = self.LgBtT4
-        state.larg_T5 = self.larg_T5
-        state.fgBfinT3 = self.fgBfinT3
-        state.fgBfinT4 = self.fgBfinT4
-        state.eT5useO = self.eT5useO
-        state.eT5useA = self.eT5useA
-        state.t4_direction = self.t4_direction
-        state.t5_direction = self.t5_direction
-        state.t5_active_id_alpha = self.t5_active_id_alpha
-        state.t5_x_butee = self.t5_x_butee
-        state.t5_visual_offset_mm = self.t5_visual_offset_mm
-        state.cubestop_present = self.cubestop_present
-        state.cubestop_position = self.cubestop_position
-        state.cubestop_reason = self.cubestop_reason
-        state.idCB1_state = self.idCB1_state
-        state.idCB1_barcode = self.idCB1_barcode
+        state.__dict__ = self.__dict__.copy()
         state.box_in_EA = self.box_in_EA.clone() if self.box_in_EA else None
         state.box_on_T3 = self.box_on_T3.clone() if self.box_on_T3 else None
         state.box_on_T4 = self.box_on_T4.clone() if self.box_on_T4 else None

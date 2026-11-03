@@ -132,6 +132,7 @@ class FrameStore(Sequence[MachineState]):
         self.end_time_str = metadata['end_time']
         self.measurement_summary = metadata.get('measurement_summary', {})
         self.trace_period = metadata.get('trace_period', {})
+        self.health_observations = metadata.get('health_observations', {})
         self.source_metadata = metadata.get('source_metadata', {})
         self._source_starts = tuple(item['first_line'] for item in self.source_metadata.get('sources', []))
         self._segment_starts = tuple(item['first_frame'] for item in self.source_metadata.get('segments', []))

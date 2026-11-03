@@ -72,6 +72,7 @@ def measure_ui(path, timeout, show, exercise_window, screenshot=None, check_navi
     progress_last = 0.
     progress_samples = 0
     sampler = None
+    preloaded_raw = False
     if measure_memory:
         import importlib.util
         spec = importlib.util.spec_from_file_location('_benchmark_memory', ROOT / 'TraceAlphaViewer/Models/process_memory.py')
@@ -80,12 +81,13 @@ def measure_ui(path, timeout, show, exercise_window, screenshot=None, check_navi
         sampler = memory_module.MemorySampler()
 
     def begin():
-        nonlocal started, last_beat
+        nonlocal started, last_beat, preloaded_raw
         if sampler:
             sampler.__enter__()
         started = last_beat = time.perf_counter()
         if group is None:
             home._load(str(path))
+            preloaded_raw = getattr(home, '_preloaded_trace', None) is not None
         else:
             from unittest.mock import patch
             from Models.loading_client import LoadingSession
@@ -172,7 +174,8 @@ def measure_ui(path, timeout, show, exercise_window, screenshot=None, check_navi
         ordered = sorted(gaps)
         latency = {'p95_ms': ordered[int((len(ordered) - 1) * 0.95)] * 1000,
                    'max_ms': max(gaps) * 1000, 'samples': len(gaps),
-                   'peaks': sorted(peaks, reverse=True)[:12], 'window_operations': geometry_step}
+                   'peaks': sorted(peaks, reverse=True)[:12], 'window_operations': geometry_step,
+                   'preloaded_raw': preloaded_raw}
         if progress_samples:
             if progress_last != 1:
                 raise AssertionError('La progression ne termine pas a 100 %')
@@ -376,10 +379,38 @@ def check_view_navigation(app, view):
     print('Navigation, recherche CIP et lecture : OK', flush=True)
 
 
+def reference_with_health_observations(frames, diagnostics=None, origin=None):
+    """Recalcule aussi les observations du bilan pour comparer un rapport complet."""
+    from Models.segment_collector import SegmentCollector
+    class ObservedFrames(list):
+        pass
+    result = ObservedFrames(frames)
+    collector = SegmentCollector()
+    for frame in result:
+        collector.consume(frame)
+    if diagnostics is None:
+        from Models.diagnostic import build_diagnostics
+        diagnostics = build_diagnostics(result, collector.events, collector.finish(),
+            trace_origin=origin, line_states=collector.lines, state_incidents=collector.states.finish())
+    result.health_observations = collector.health.finish(diagnostics, collector.lines, origin)
+    return result
+
+
 def verify_storage(path, frames, events, diagnostics, analyses):
     from Parser.trace_parser import parse_file
     from Models.folder_report import _collect_events
-    direct = parse_file(str(path), min_dt=0.0)
+    source_metadata = {}
+    direct = parse_file(str(path), min_dt=0.0, source_metadata_output=source_metadata)
+    if hasattr(frames, 'health_observations'):
+        from Models.robot_drain import read_trace_origin
+        direct = reference_with_health_observations(direct, diagnostics, read_trace_origin(path))
+        if direct.health_observations != frames.health_observations:
+            raise AssertionError('Observations du bilan differentes')
+        from Models.folder_catalog import read_source_identity
+        source_metadata['identity'] = read_source_identity(path)
+        direct.source_metadata = source_metadata
+        if source_metadata != frames.source_metadata:
+            raise AssertionError('Metadonnees de source differentes')
     if len(direct) != len(frames):
         raise AssertionError('Nombre de frames different')
     for index, (expected, actual) in enumerate(zip(direct, frames)):

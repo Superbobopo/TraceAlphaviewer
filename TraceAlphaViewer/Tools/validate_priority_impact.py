@@ -143,7 +143,10 @@ class ImpactTests(unittest.TestCase):
                 browser=pw.chromium.launch(channel='msedge',headless=True)
                 page=browser.new_page();page.goto(report.as_uri())
                 text=page.locator('.priority-grid').inner_text()
-                self.assertLess(text.index('Capteur C5'),text.index('T5 - Boite'))
+                self.assertIn('Capteur C5',text)
+                # Un cycle T5 rare reste en alerte et quitte les trois priorites.
+                self.assertNotIn('T5 - Boite',text)
+                self.assertIn('Alerte',page.locator('details.group[data-group^="T5_STALE_UNMEASURED_BOX:"] > summary').inner_text())
                 summary=page.locator('details.group[data-group^="C5_SIGNAL_ANOMALY:"] > summary').first
                 self.assertEqual(summary.inner_text().count('transfert T3→T4 bloqué'),1)
                 self.assertIn('42 h 52 observées · reprise non confirmée',summary.inner_text())

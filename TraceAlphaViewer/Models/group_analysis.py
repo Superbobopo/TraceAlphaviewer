@@ -28,6 +28,7 @@ from Models.c5_analysis import merge_c5_metrics, c5_metric_text, c5_is_critical
 from Models.trace_observations import OBSERVATION_CODES
 from Models.diagnostic_summary import normalize_summary_incidents
 from Models.trace_calendar import TraceLines
+from Models.health_radar import merge_health_observations
 from Models.segment_collector import SegmentCollector
 
 
@@ -425,7 +426,8 @@ def analyze_segment(store_dir, segment, origin, index, total, name='', progress_
         drains = [(line, frame.timestamp, frame.timestamp_str) for line, text, frame in line_states
                   if diagnostic_model._TRACE_T5_DEM_VIDAGE.search(text)]
         return dict(events=events, incidents=analyses, references=rows, analysis=analysis,
-                    camera=stats, resets=resets, drains=drains, boxes=robot_analysis, timings=timings)
+                    camera=stats, resets=resets, drains=drains, boxes=robot_analysis, timings=timings,
+                    health_observations=collector.health.finish(analyses, line_states, origin, robot_analysis))
 
 
 def _segment_results(store_dir, metadata, origin, progress_cb, parallel, *, progress_detail=None,
@@ -537,6 +539,7 @@ def analyze_group(sources, session_dir, progress_cb=None, *, timings=None, paral
     camera = None
     drains = []
     box_analyses = []
+    health_observations = []
     with FrameStore(store_dir) as frames:
         for result in _segment_results(store_dir, metadata, origin, progress_cb, parallel,
                                        progress_detail=progress_detail, resource_policy=resource_policy):
@@ -552,6 +555,7 @@ def analyze_group(sources, session_dir, progress_cb=None, *, timings=None, paral
             resets.extend(result['resets'])
             drains.extend(result['drains'])
             box_analyses.append(result['boxes'])
+            health_observations.append(result.get('health_observations', {}))
         analysis = _measurement_union(measurements)
         camera = camera or diagnostic_model._camera_stats([])
         camera['trace'] = period
@@ -596,7 +600,8 @@ def analyze_group(sources, session_dir, progress_cb=None, *, timings=None, paral
                                    row.first_line, row.title))
     with (store_dir / 'index.pkl').open('rb') as source:
         index = pickle.load(source)
-    index.update(measurement_summary=analysis['summary'], trace_period=period)
+    index.update(measurement_summary=analysis['summary'], trace_period=period,
+                 health_observations=merge_health_observations(health_observations))
     _dump(store_dir / 'index.tmp', index)
     (store_dir / 'index.tmp').replace(store_dir / 'index.pkl')
     _dump(store_dir / 'events.pkl', all_events)

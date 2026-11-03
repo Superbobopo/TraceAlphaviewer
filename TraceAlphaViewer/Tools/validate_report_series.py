@@ -139,7 +139,7 @@ class ReportSeriesTests(unittest.TestCase):
                     self.assertIn('is-'+tone,counter.get_attribute('class'))
                     self.assertEqual(counter.evaluate('node=>node.tagName'),'DIV')
                     self.assertIsNone(counter.get_attribute('tabindex'))
-                    self.assertEqual(round(counter.bounding_box()['height']),60)
+                    self.assertLessEqual(round(counter.bounding_box()['height']),32)
                     self.assertEqual(page.locator('.unknown-alert,#unknown-details,[data-unknown]').count(),0)
                     self.assertTrue(page.evaluate('document.documentElement.scrollWidth<=innerWidth'))
                     if not total:self.assertIn('Indisponible',counter.inner_text())

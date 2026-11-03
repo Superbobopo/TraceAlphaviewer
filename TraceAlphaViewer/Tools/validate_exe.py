@@ -141,7 +141,15 @@ def main():
                 assert report.is_file() and (report.parent / '_next').is_dir(), 'Rapport React absent'
                 import json
                 payload = json.loads(next(report.parent.glob('report_data_*.json')).read_text(encoding='utf-8'))
-                expected = build_report_payload(expected_diagnostics, frames=expected_frames,
+                from Tools.benchmark_loading import reference_with_health_observations
+                from Models.robot_drain import read_trace_origin
+                from Models.folder_catalog import read_source_identity
+                report_frames = reference_with_health_observations(expected_frames, expected_diagnostics, read_trace_origin(path))
+                assert report_frames.health_observations == frames.health_observations, 'Metriques radar differentes dans le .exe'
+                identity = read_source_identity(path)
+                assert frames.source_metadata.get('identity') == identity, 'Identite de source differente dans le .exe'
+                report_frames.source_metadata = {'identity': identity}
+                expected = build_report_payload(expected_diagnostics, frames=report_frames,
                                                 trace_period=frames.trace_period)
                 payload.pop('generated_at', None)
                 expected.pop('generated_at', None)

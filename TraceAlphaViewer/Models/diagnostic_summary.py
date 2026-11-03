@@ -31,6 +31,37 @@ def motor_metrics(episodes):
     return metrics
 
 
+def repeated_fault_severity(group):
+    """Les repetitions sur 24 h fixent la priorite terrain, pas les reessais."""
+    from collections import defaultdict
+    from math import isfinite
+    moments = defaultdict(set)
+    code = group['code']
+    threshold = 3 if code == 'MOTOR_COMM' else 10
+    for incident in group.get('incidents', []):
+        metrics = incident.get('metrics', {}) if isinstance(incident, dict) else incident.metrics
+        records = (metrics.get('episodes', []) if code == 'MOTOR_COMM' else
+                   [metrics['blocked_cycle']] if metrics.get('blocked_cycle') else [])
+        for record in records:
+            if code == 'MOTOR_COMM' and record.get('severity') != 'error':
+                continue
+            stamp = record.get('start_time')
+            if not isinstance(stamp, (int, float)) or not isfinite(stamp):
+                continue
+            segment = record.get('source_segment', metrics.get('source_segment', 0))
+            identity = record.get('first_line', 0)
+            moments[segment].add((stamp, identity))
+    maximum = 0
+    for values in moments.values():
+        stamps = sorted(stamp for stamp, _ in values)
+        left = 0
+        for right, stamp in enumerate(stamps):
+            while stamp - stamps[left] > 86400:
+                left += 1
+            maximum = max(maximum, right - left + 1)
+    return 'error' if maximum >= threshold else 'warning'
+
+
 def normalize_summary_incidents(incidents, analyzed_files=None):
     """Ne modifie pas les incidents d'origine ni les limites des segments."""
     from Models.trace_observations import observation_metric_text
@@ -40,13 +71,16 @@ def normalize_summary_incidents(incidents, analyzed_files=None):
             t4.append(incident)
             continue
         if incident.code == 'MOTOR_COMM':
-            episodes = [dict(row) for row in incident.metrics.get('episodes', []) if row.get('severity') == 'error']
+            episodes = [dict(row, detail=row.get('detail', '').replace('Critique :', 'Défaut explicite :', 1))
+                        for row in incident.metrics.get('episodes', []) if row.get('severity') == 'error']
             if not episodes:
                 # Les anciens resultats critiques sans preuve structuree restent explicites.
                 if incident.severity == 'error' and not incident.metrics.get('observation_metrics_version'):
                     result.append(replace(incident, summary='Détails indisponibles — régénérer le rapport'))
                 continue
             metrics = motor_metrics(episodes)
+            if 'source_segment' in incident.metrics:
+                metrics['source_segment'] = incident.metrics['source_segment']
             first, last = min(episodes, key=lambda row: row['first_line']), max(episodes, key=lambda row: row['last_line'])
             examples = [dict(line=row['first_line'], time_str=row['start_time_str'],
                              display_time_str=row['start_time_str'], box='', barcode='',

@@ -115,7 +115,7 @@ class RecoveryTests(unittest.TestCase):
             for index, path in enumerate((report, fallback)):
                 page.goto(path.as_uri())
                 self.assertIn('UNKNOWN finaux', page.locator('.unknown-counter').inner_text())
-                self.assertIn('passages', page.locator('.unknown-counter').inner_text())
+                self.assertIn('passages', page.locator('.unknown-counter').get_attribute('aria-label'))
                 cards = page.locator('.camera-readers section')
                 self.assertEqual(cards.count(), 2)
                 self.assertIn('1 / 3 · 33,3 %', cards.nth(0).inner_text())

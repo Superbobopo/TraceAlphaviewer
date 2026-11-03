@@ -102,6 +102,7 @@ def _record_for_box(
     alias_to_key: dict[str, set[str]],
     box: BoxInfo,
     active_keys: set[str] | None = None,
+    changes: list[bool] | None = None,
 ) -> ReferenceRecord:
     aliases = _aliases(box)
     key = None
@@ -136,7 +137,11 @@ def _record_for_box(
         records[key] = ReferenceRecord(key=key)
     record = records[key]
     for alias in aliases:
-        alias_to_key.setdefault(alias, set()).add(key)
+        keys = alias_to_key.setdefault(alias, set())
+        if key not in keys:
+            keys.add(key)
+            if changes is not None:
+                changes[0] = True
     return record
 
 
@@ -189,6 +194,7 @@ class ReferenceCollector:
         self.records, self.alias_to_key, self.active_keys = {}, {}, set()
         self._previous_values = None
         self._repeat_records = None
+        self.current_stage_keys = ()
 
     def consume(self, frame):
         boxes = [(stage, box) for stage, box in (
@@ -205,7 +211,9 @@ class ReferenceCollector:
                     record.last_line, record.last_time_str = frame.line_num, frame.timestamp_str
             return
         records, alias_to_key, active_keys = self.records, self.alias_to_key, self.active_keys
+        changes = [False]
         current_keys: set[str] = set()
+        stage_keys = []
         for stage, box in (
             ('EA', frame.box_in_EA),
             ('T3', frame.box_on_T3),
@@ -214,24 +222,28 @@ class ReferenceCollector:
             # Les boites sans alias seraient eliminees de la liste finale.
             if box is None or not (box.id_alpha or box.id_b or box.barcode or box.source_ref):
                 continue
-            record = _record_for_box(records, alias_to_key, box, active_keys | current_keys)
+            record = _record_for_box(records, alias_to_key, box, active_keys | current_keys, changes)
+            if (box.id_alpha and not record.id_alpha) or (box.id_b and not record.id_b):
+                changes[0] = True
             _update_record(record, box, stage, frame)
             current_keys.add(record.key)
+            stage_keys.append((stage, record.key))
         for box in frame.boxes_on_T5:
             if not (box.id_alpha or box.id_b or box.barcode or box.source_ref):
                 continue
-            record = _record_for_box(records, alias_to_key, box, active_keys | current_keys)
+            record = _record_for_box(records, alias_to_key, box, active_keys | current_keys, changes)
+            if (box.id_alpha and not record.id_alpha) or (box.id_b and not record.id_b):
+                changes[0] = True
             _update_record(record, box, 'T5', frame)
             current_keys.add(record.key)
-        active_keys = current_keys
-
-        self.active_keys = active_keys
+            stage_keys.append(('T5', record.key))
+        # Un passage sans mutation des entrees du matching est un point fixe.
+        # A valeurs identiques, les memes alias/candidats produiront les memes fiches.
+        stable = not changes[0] and active_keys == current_keys
+        self.active_keys = current_keys
+        self.current_stage_keys = tuple(stage_keys)
         self._previous_values = values
-        primary = [f'A:{box.id_alpha}' if box.id_alpha else f'B:{box.id_b}' if box.id_b else ''
-                   for _, box in boxes]
-        stable = all(primary) and len(set(primary)) == len(primary) and all(
-            len(alias_to_key.get(key, ())) == 1 for key in primary)
-        self._repeat_records = [records[key] for key in active_keys] if stable else None
+        self._repeat_records = [records[key] for key in current_keys] if stable else None
 
     def finish(self, events):
         records, alias_to_key = self.records, self.alias_to_key

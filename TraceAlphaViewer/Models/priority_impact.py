@@ -72,7 +72,7 @@ def order_impact(groups):
         impact = group.get('priority_impact', {})
         blocked = impact.get('available') and impact.get('blocking')
         severity = {'error': 0, 'warning': 1, 'info': 2}.get(group.get('field_severity', group['severity']), 9)
-        if blocked:
+        if blocked and severity == 0:
             return (severity, 0, -impact['duration_seconds'], -impact['cycles'], -impact['episodes'], group['first_line'])
         return (severity, 1, -group.get('field_priority', group.get('priority_score', 0)), 0, 0, group['first_line'])
     return sorted(result, key=key)

@@ -183,6 +183,7 @@ def main():
                 'period': frames.trace_period,
                 'metadata': digest(frames.source_metadata),
                 'measurement_summary': digest(frames.measurement_summary),
+                'health_observations': digest(getattr(frames, 'health_observations', {})),
                 'entry_counts': entry_counts[0],
             }
         if result['events'] != result['stored_events']:

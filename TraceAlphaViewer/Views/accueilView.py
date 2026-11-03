@@ -307,8 +307,7 @@ class AccueilView(BaseView):
         self.after(1000, self._update_usage)
 
     def _open_file(self) -> None:
-        trace_files = _find_trace_files()
-        initial_dir = str(trace_files[0].parent if trace_files else PROJECT_ROOT)
+        initial_dir = str(getattr(self.master, '_trace_dialog_directory', PROJECT_ROOT))
         path = filedialog.askopenfilename(
             title='Ouvrir une trace AlphaV2',
             initialdir=initial_dir,
@@ -320,16 +319,17 @@ class AccueilView(BaseView):
             ],
         )
         if path:
+            self.master._trace_dialog_directory = Path(path).parent
             self._load(path)
 
     def _open_folder(self) -> None:
-        trace_files = _find_trace_files()
-        initial_dir = str(trace_files[0].parent if trace_files else PROJECT_ROOT)
+        initial_dir = str(getattr(self.master, '_trace_dialog_directory', PROJECT_ROOT))
         path = filedialog.askdirectory(
             title='Ouvrir un dossier de traces AlphaV2',
             initialdir=initial_dir,
         )
         if path:
+            self.master._trace_dialog_directory = Path(path)
             self._load_folder(path)
 
     def _load(self, path: str) -> None:
@@ -361,14 +361,27 @@ class AccueilView(BaseView):
         self._load_data = None
         self._folder_catalog = None
         self._prepared_view = None
+        self._preloaded_trace = None
+        self._prepare_when_raw_ready = False
         try:
             self._load_session = LoadingSession()
             self._load_task = self._load_session.start(mode, path=path)
+            if mode == 'file' and Path(path).is_file():
+                from Models.resource_policy import detect_resources, budget_for, worker_estimate
+                resources = detect_resources()
+                if resources.reliable and resources.cpus >= 4 and budget_for(resources) >= 4 * worker_estimate(Path(path).stat().st_size):
+                    from Widgets.trace_panel import TracePanel
+                    self._preloaded_trace = TracePanel(self)
+                    self._raw_preload_started = time.perf_counter()
+                    self._preloaded_trace.load_file(path, on_ready=self._raw_prepared,
+                        on_error=self._on_error, on_progress=self._accept_progress)
             self.after(10, self._poll_loading)
         except Exception as exc:
             self._on_error(str(exc))
 
     def _poll_loading(self) -> None:
+        if not self._load_busy:
+            return
         deadline = time.perf_counter() + 0.008
         try:
             while time.perf_counter() < deadline:
@@ -407,6 +420,9 @@ class AccueilView(BaseView):
         self.after(10, self._poll_loading)
 
     def _prepare_loaded_view(self) -> None:
+        if self._preloaded_trace is not None and self._preloaded_trace._loading:
+            self._prepare_when_raw_ready = True
+            return
         self._set_progress_text('Preparation du viewer', "Preparation de l'affichage...", 'display')
         self._accept_progress(dict(phase='display', segment=VIEW_SEGMENT, task='Preparation du viewer'))
         if self._load_mode == 'folder_catalog':
@@ -419,7 +435,10 @@ class AccueilView(BaseView):
             view = TraceView(self.master, data['filepath'], data['frames'],
                              events=data['events'], diagnostics=data['diagnostics'],
                              references=data['references'], load_session=self._load_session,
-                             navigation=data.get('navigation'))
+                             navigation=data.get('navigation'), preloaded_trace=self._preloaded_trace)
+            if self._preloaded_trace is not None:
+                view.preparation_timings['prechargement_trace'] = self._raw_preload_seconds
+                self._preloaded_trace = None
         else:
             from Views.folderTraceView import FolderTraceView
             entries = [TraceReportEntry(
@@ -437,6 +456,18 @@ class AccueilView(BaseView):
         else:
             view.prepare(lambda: self._finish_loading(view), on_error=self._on_error)
 
+    def _raw_prepared(self):
+        self._raw_preload_seconds = time.perf_counter() - self._raw_preload_started
+        if self._prepare_when_raw_ready and self._load_busy:
+            self._prepare_when_raw_ready = False
+            self.after(0, self.preparation_step, self._prepare_loaded_view, self._on_error)
+
+    def _discard_preloaded_trace(self):
+        source = getattr(self, '_preloaded_trace', None)
+        if source is not None:
+            source.destroy()
+            self._preloaded_trace = None
+
     def _finish_loading(self, view) -> None:
         self._progress_tracker.ready()
         self._render_progress(force=True)
@@ -449,6 +480,7 @@ class AccueilView(BaseView):
         self.master.switch_view(view)
 
     def destroy(self) -> None:
+        self._discard_preloaded_trace()
         session = getattr(self, '_load_session', None)
         if session is not None:
             session.close()
@@ -555,6 +587,7 @@ class AccueilView(BaseView):
         self.master.switch_view(view)
 
     def _on_error(self, msg: str) -> None:
+        self._discard_preloaded_trace()
         job = getattr(self, '_progress_render_job', None)
         if job is not None:
             self.after_cancel(job)

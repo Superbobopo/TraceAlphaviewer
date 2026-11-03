@@ -84,6 +84,7 @@ class TraceView(BaseView):
         owns_load_session: bool = True,
         source_name: str = '',
         navigation=None,
+        preloaded_trace=None,
         **kwargs,
     ):
         self._ui_palette = UI_COLORS
@@ -100,6 +101,7 @@ class TraceView(BaseView):
         self._prepared = False
         self._navigation = navigation or {}
         self.preparation_timings = {}
+        self._preloaded_trace = preloaded_trace
         self._events      = events if events is not None else self._collect_events(frames)
         self._diagnostics = diagnostics if diagnostics is not None else build_diagnostics(frames, self._events)
         self._references  = references if references is not None else build_reference_records(frames, self._events)
@@ -209,8 +211,11 @@ class TraceView(BaseView):
             report('Commandes du viewer', 4)
             nonlocal raw_started
             raw_started = time.perf_counter()
-            self._trace_panel.load_file(self._filepath, on_ready=raw_ready,
-                                       on_error=raw_errors.append, on_progress=on_progress)
+            if self._trace_panel._loaded_filepath == self._filepath:
+                raw_ready()
+            else:
+                self._trace_panel.load_file(self._filepath, on_ready=raw_ready,
+                                           on_error=raw_errors.append, on_progress=on_progress)
             self.after(80, lambda: self._set_bottom_height(self._details_height))
             self.after(5, self.preparation_step, wait_panels, on_error)
 
@@ -238,6 +243,9 @@ class TraceView(BaseView):
         self.after(5, self.preparation_step, layout, on_error)
 
     def destroy(self) -> None:
+        if self._preloaded_trace is not None:
+            self._preloaded_trace.destroy()
+            self._preloaded_trace = None
         self._close_report_bridge()
         if self._load_session is not None and self._owns_load_session:
             self._load_session.close()
@@ -619,6 +627,10 @@ class TraceView(BaseView):
             line_label=self._source_line_label if self._is_group() else None,
             height=240,
         )
+        if self._preloaded_trace is not None:
+            self._trace_panel.adopt_loaded(self._preloaded_trace)
+            self._preloaded_trace.destroy()
+            self._preloaded_trace = None
         self._trace_panel.pack(fill='both', expand=True)
 
     def _open_trace_search(self) -> None:

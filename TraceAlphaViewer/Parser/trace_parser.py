@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections import namedtuple
 from contextlib import closing
 from functools import lru_cache
 from typing import Callable, Iterator, List, Optional
@@ -131,6 +132,52 @@ _T5_WIDTH_C9_INVALID = re.compile(
     r'largeur lue sur T5\s*<\s*2mm\s+et\s+C9=1',
     re.IGNORECASE,
 )
+
+# Chaque ancre est necessaire au motif associe, sans selection exclusive de ligne.
+_LINE_RULES = (
+    (_CUBESTOP_INFO, 'cubestop'), (_CUBESTOP_MOVE, 'cubestop'),
+    (_CB_HIST, 'hist_lectcb'),
+    (_T0, 'T0:'), (_T1, 'T1:'), (_T2, 'T2:'), (_TEA, 'tEA-T3:'),
+    (_TT3T4, 'tT3/T4:'), (_TT4T5, 'tT4*T5:'), (_T5, 'T5:'),
+    (_T5_WIDTH_C9_INVALID, 'largeur lue sur t5'),
+    (_BOX_INIT_T5, 'sur T5:'), (_BOX_CREATE, 'ation de la boite'),
+    (_BOX_REMOVE, 'supp. de T5'), (_BOX_REMOVE2, '-suppression de la boite'),
+    (_BOX_REMOVE3, 'Suppr. la boite'), (_MAJ_T5_POS, 'MAJ (BUTEE-T5)'),
+    (_MAJ_T5_MESURE, 'MAJ (APRES-MESURE-LARG)'),
+    (_DEPL_T5, 'place toutes les boites'), (_DEPL_T5_ACTIVE, 'deplbtsurt5.'),
+    (_RECH_INFOS, 'Rech. infos'), (_DB_INFO, '-->'),
+    (_CB_IDENTIF, 'idcb'), (_CB2_NBOITE, 'idcb2:'),
+    (_CB2_DIRECT_IDENTIF, 'idcb2:'), (_T3_T4_FIN_IDB, 'transfert t3->t4 termin'),
+    (_T4_T5_REQUEST, 'demande le transfert'), (_AJOUT_T5_ID, 'ajoutbtt5.'),
+    (_T4_LENGTH_SUMMARY, 'longueur boite'), (_C1_SENSOR, 'capteurC1='),
+    (_POUBELLE, 'flagpoubellepleine'), (_LZB, 'LzB'),
+    (_ERROR_WORD, ''),
+)
+_LineMatches = namedtuple('_LineMatches', (
+    'CUBESTOP_INFO CUBESTOP_MOVE CB_HIST T0 T1 T2 TEA TT3T4 TT4T5 T5 '
+    'T5_WIDTH_C9_INVALID BOX_INIT_T5 BOX_CREATE BOX_REMOVE BOX_REMOVE2 BOX_REMOVE3 '
+    'MAJ_T5_POS MAJ_T5_MESURE DEPL_T5 DEPL_T5_ACTIVE RECH_INFOS DB_INFO CB_IDENTIF '
+    'CB2_NBOITE CB2_DIRECT_IDENTIF T3_T4_FIN_IDB T4_T5_REQUEST AJOUT_T5_ID '
+    'T4_LENGTH_SUMMARY C1_SENSOR POUBELLE LZB ERROR_WORD'))
+_EXACT_RULES = tuple((index, pattern, anchor) for index, (pattern, anchor) in enumerate(_LINE_RULES)
+                     if not pattern.flags & re.IGNORECASE)
+_FOLDED_RULES = tuple((index, pattern, anchor) for index, (pattern, anchor) in enumerate(_LINE_RULES)
+                      if pattern.flags & re.IGNORECASE)
+
+
+def _line_matches(text):
+    """Decode les faits textuels seuls ; leurs effets restent sequentiels."""
+    matches = [None] * len(_LINE_RULES)
+    for index, pattern, anchor in _EXACT_RULES:
+        if anchor in text and (match := pattern.search(text)):
+            matches[index] = match
+    folded = text.lower()
+    # re.I reconnait aussi certaines lettres Unicode au-dela du latin-1 des traces.
+    unicode_case = not text.isascii() and any(char in text for char in '\u0130\u0131\u017f\u212a')
+    for index, pattern, anchor in _FOLDED_RULES:
+        if (anchor in folded or unicode_case) and (match := pattern.search(text)):
+            matches[index] = match
+    return _LineMatches._make(matches)
 
 
 def _ts(day: str, h: str, m: str, s: str, ds: str) -> float:
@@ -281,10 +328,12 @@ def _find_t4_measure_box(state: MachineState, ctx: dict) -> Optional[BoxInfo]:
 
 
 def _clear_missing_active_t5(state: MachineState) -> None:
-    if not state.t5_active_id_alpha:
+    active_id = state.t5_active_id_alpha
+    if not active_id:
         return
-    if any(b.id_alpha == state.t5_active_id_alpha for b in state.boxes_on_T5):
-        return
+    for box in state.boxes_on_T5:
+        if box.id_alpha == active_id:
+            return
     state.t5_active_id_alpha = 0
     _commit_t5_visual_motion(state)
 
@@ -343,35 +392,22 @@ def _track_motor_error(
 
 
 def _track_signal_edges(state: MachineState, line_num: int, ctx: dict) -> None:
-    sensors = {
-        'C0': state.C0,
-        'C2': state.C2,
-        'C3': state.C3,
-        'C4': state.C4,
-        'C5': state.C5,
-        'C6': state.C6,
-        'C9': state.C9,
-        'Poubelle': state.flag_poubelle_pleine,
-    }
-    labels = {
-        'C0': 'Presence T1 entree detectee',
-        'C2': 'Presence T2 sortie detectee',
-        'C3': 'Presence T2 chargee detectee',
-        'C4': 'Presence EA detectee',
-        'C5': 'Presence T3 detectee',
-        'C6': 'Presence T4 detectee',
-        'C9': 'Laser T5 actif',
-        'Poubelle': 'Poubelle pleine',
-    }
-    last = ctx.setdefault('last_sensors', {})
-    for name, value in sensors.items():
-        previous = last.get(name)
-        last[name] = value
-        if previous is None:
-            continue
+    sensors = (state.C0, state.C2, state.C3, state.C4, state.C5, state.C6,
+               state.C9, state.flag_poubelle_pleine)
+    last = ctx.get('last_sensors')
+    if sensors == last:
+        return
+    ctx['last_sensors'] = sensors
+    if last is None:
+        return
+    labels = ('Presence T1 entree detectee', 'Presence T2 sortie detectee',
+              'Presence T2 chargee detectee', 'Presence EA detectee',
+              'Presence T3 detectee', 'Presence T4 detectee',
+              'Laser T5 actif', 'Poubelle pleine')
+    for index, (previous, value) in enumerate(zip(last, sensors)):
         if previous == 0 and value == 1:
-            severity = 'warning' if name == 'Poubelle' else 'info'
-            _add_event(state, line_num, severity, 'CAPTEUR', labels[name])
+            severity = 'warning' if index == 7 else 'info'
+            _add_event(state, line_num, severity, 'CAPTEUR', labels[index])
 
 
 def _track_belt_task_edge(
@@ -652,8 +688,10 @@ def _apply_t5_list_pack(state: MachineState, text: str, ctx: Optional[dict] = No
     return False
 
 
-def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
+def _update(state: MachineState, text: str, ctx: dict, line_num: int, matches=None) -> None:
     """Applique une ligne de texte sur l'etat courant."""
+    if matches is None:
+        matches = _line_matches(text)
     if 'version logiciel VBalpha:' in text:
         for key in ('pending_t5_creation_box', 'pending_t4_length_transfer',
                     'pending_t4_length_idb', 'pending_t4_length_ida', 't4_t5_requested_ref'):
@@ -664,14 +702,14 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
     elif 'idCB1:' in text or 'CB1:' in text:
         ctx['last_reader'] = 'CB1'
 
-    mo = _CUBESTOP_INFO.search(text)
+    mo = matches.CUBESTOP_INFO
     if mo:
         state.cubestop_present = 1 if mo.group(1).upper() == 'Y' else 0
         if not state.cubestop_present:
             state.cubestop_position = ""
             state.cubestop_reason = ""
 
-    mo = _CUBESTOP_MOVE.search(text)
+    mo = matches.CUBESTOP_MOVE
     if mo:
         position = mo.group(1).upper()
         reason = (mo.group(2) or "").strip()
@@ -681,7 +719,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         title = "CubeStop monte" if position == "HAUT" else "CubeStop descend"
         _add_event(state, line_num, 'info', 'CUBESTOP', title, reason)
 
-    mo = _CB_HIST.search(text)
+    mo = matches.CB_HIST
     if mo:
         reader = f'CB{mo.group(1)}'
         code_count = int(mo.group(2))
@@ -702,10 +740,11 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
                     f'Lecture CB2 sans boite T3 ({code_count} code)', f'C5:{state.C5}'
                 )
 
-    _apply_t5_list_pack(state, text, ctx)
+    if 'ALPHA:T5-LIST-PACK' in text:
+        _apply_t5_list_pack(state, text, ctx)
 
     # T0
-    mo = _T0.search(text)
+    mo = matches.T0
     if mo:
         state.state_T0 = mo.group(1)
         state.eT0 = int(mo.group(2))
@@ -714,7 +753,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         _track_belt_task_edge(state, line_num, ctx, 'T0', state.eT0, state.state_T0)
 
     # T1
-    mo = _T1.search(text)
+    mo = matches.T1
     if mo:
         state.state_T1 = mo.group(1)
         state.eT1 = int(mo.group(2))
@@ -722,7 +761,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         _track_belt_task_edge(state, line_num, ctx, 'T1', state.eT1, state.state_T1)
 
     # T2
-    mo = _T2.search(text)
+    mo = matches.T2
     if mo:
         state.state_T2 = mo.group(1)
         state.eT2 = int(mo.group(2))
@@ -737,7 +776,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         _track_belt_task_edge(state, line_num, ctx, 'T2', state.eT2, state.state_T2)
 
     # tEA-T3
-    mo = _TEA.search(text)
+    mo = matches.TEA
     if mo:
         state.state_tEA_T3 = mo.group(1)
         state.C4 = int(mo.group(2))
@@ -748,7 +787,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         _track_motor_error(state, line_num, ctx, 'T3', state.eT3, text)
 
     # tT3/T4
-    mo = _TT3T4.search(text)
+    mo = matches.TT3T4
     if mo:
         state.state_tT3_T4 = mo.group(1)
         state.eT4 = int(mo.group(2))
@@ -765,7 +804,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         _track_t4_cycle(state, line_num, ctx)
 
     # tT4*T5
-    mo = _TT4T5.search(text)
+    mo = matches.TT4T5
     if mo:
         state.state_tT4_T5 = mo.group(1)
         state.C6 = int(mo.group(2))
@@ -775,7 +814,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         state.pT4 = new_pT4
 
     # T5
-    mo = _T5.search(text)
+    mo = matches.T5
     if mo:
         state.state_T5 = mo.group(1)
         state.eT5 = int(mo.group(2))
@@ -800,7 +839,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         state.eT5useA = int(mo.group(7))
         _track_motor_error(state, line_num, ctx, 'T5', state.eT5, text)
 
-    if _T5_WIDTH_C9_INVALID.search(text):
+    if matches.T5_WIDTH_C9_INVALID:
         box = (
             _find_t5_box(state, id_alpha=state.t5_active_id_alpha)
             or (state.boxes_on_T5[-1] if len(state.boxes_on_T5) == 1 else None)
@@ -814,7 +853,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         )
 
     # ── Boîte initiale sur T5 ────────────────────────────────────────────────
-    mo = _BOX_INIT_T5.search(text)
+    mo = matches.BOX_INIT_T5
     if mo:
         bc, name, lot, x = mo.group(1), mo.group(2), mo.group(3), int(mo.group(4))
         if not any(b.barcode == bc for b in state.boxes_on_T5):
@@ -827,7 +866,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         _add_event(state, line_num, 'info', 'BOITE', f'Boite deja sur T5 {bc}', text.strip())
 
     # ── Création boîte sur T5 ────────────────────────────────────────────────
-    mo = _BOX_CREATE.search(text)
+    mo = matches.BOX_CREATE
     if mo:
         bc   = mo.group(1)
         name = mo.group(2).strip()
@@ -871,7 +910,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         ctx['last_t5_transfer_idb'] = 0
 
     # ── Suppression boîte de T5 ──────────────────────────────────────────────
-    mo = _BOX_REMOVE.search(text)
+    mo = matches.BOX_REMOVE
     if mo:
         id_a = int(mo.group(1))   # Id: (id_alpha)
         bc   = mo.group(2)        # ref: (barcode)
@@ -887,7 +926,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         _add_event(state, line_num, 'info', 'BOITE', f'Robot prend IdA={id_a}', bc)
 
     # ── Suppression boîte de T5 (format long) ──────────────────────────────
-    mo = _BOX_REMOVE2.search(text)
+    mo = matches.BOX_REMOVE2
     if mo:
         id_a = int(mo.group(1))
         state.boxes_on_T5 = [
@@ -900,7 +939,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         _add_event(state, line_num, 'info', 'BOITE', f'Robot prend IdA={id_a}')
 
     # ── Suppression boîte (format "Suppr. la boite IdA:X") ─────────────────
-    mo = _BOX_REMOVE3.search(text)
+    mo = matches.BOX_REMOVE3
     if mo:
         id_a = int(mo.group(1))
         state.boxes_on_T5 = [
@@ -913,7 +952,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         _add_event(state, line_num, 'info', 'BOITE', f'Boite retiree de T5 IdA:{id_a}')
 
     # ── Mise à jour position X sur T5 (après tassement) ────────────────────
-    mo = _MAJ_T5_POS.search(text)
+    mo = matches.MAJ_T5_POS
     if mo:
         id_a = int(mo.group(1))
         bc   = mo.group(2)
@@ -948,7 +987,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         _add_event(state, line_num, 'info', 'BOITE', f'MAJ butee T5 {bc}', f'IdA:{id_a} X:{x} haut:{h}')
 
     # ── Déplacement global des boîtes sur T5 (tassement) ────────────────────
-    mo = _MAJ_T5_MESURE.search(text)
+    mo = matches.MAJ_T5_MESURE
     if mo:
         id_a = int(mo.group(1))
         bc = mo.group(2)
@@ -1010,7 +1049,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
             state.boxes_on_T5.append(b)
         _add_event(state, line_num, 'info', 'BOITE', f'MAJ mesure T5 {bc}', f'IdA:{id_a} X:{x} {width}x{height}x{length}')
 
-    mo = _DEPL_T5.search(text)
+    mo = matches.DEPL_T5
     if mo:
         delta = int(mo.group(1))
         # Ligne BdD confirmee : les boites deja etablies sur T5 sont deplacees
@@ -1029,13 +1068,13 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         _reset_t5_visual_offset(state, ctx, commit=False)
 
     # ── Mémorisation du code-barres cherché en BdD ──────────────────────────
-    mo = _DEPL_T5_ACTIVE.search(text)
+    mo = matches.DEPL_T5_ACTIVE
     if mo:
         delta = int(mo.group(1))
         id_a = int(mo.group(2))
         state.t5_active_id_alpha = id_a
 
-    mo = _RECH_INFOS.search(text)
+    mo = matches.RECH_INFOS
     if mo:
         ctx['pending_bc'] = mo.group(1)
         ctx['pending_name'] = ''
@@ -1043,7 +1082,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         ctx['pending_reader'] = ctx.pop('last_hist_reader', ctx.get('last_reader', ''))
 
     # ── Infos BdD (nom + dimensions) ────────────────────────────────────────
-    mo = _DB_INFO.search(text)
+    mo = matches.DB_INFO
     if mo and 'pending_bc' in ctx:
         ctx['pending_name'] = mo.group(1).strip()
         ctx['pending_dims'] = (int(mo.group(2)), int(mo.group(3)), int(mo.group(4)))
@@ -1060,7 +1099,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
                             line_num=line_num, identity_source=ctx.get('pending_reader') or 'BdD')
 
     # ── Identification CB1 terminée ──────────────────────────────────────────
-    mo = _CB_IDENTIF.search(text)
+    mo = matches.CB_IDENTIF
     if mo:
         reader = int(mo.group(1))
         bc = mo.group(2)
@@ -1090,7 +1129,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
                     f'CB2 identifie {bc} sans boite T3', f'C5:{state.C5}'
                 )
 
-    mo = _CB2_NBOITE.search(text)
+    mo = matches.CB2_NBOITE
     if mo:
         id_b = int(mo.group(1))
         target = state.box_on_T3
@@ -1109,7 +1148,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
                 f'Nboite={id_b} sans boite T3', f'C5:{state.C5}'
             )
 
-    mo = _CB2_DIRECT_IDENTIF.search(text)
+    mo = matches.CB2_DIRECT_IDENTIF
     if mo:
         bc = mo.group(1)
         id_b = int(mo.group(2))
@@ -1142,7 +1181,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
             )
         state.box_in_EA = None
 
-    mo = _T3_T4_FIN_IDB.search(text)
+    mo = matches.T3_T4_FIN_IDB
     if mo:
         length = float(mo.group(1).replace(',', '.'))
         id_b = int(mo.group(2))
@@ -1165,7 +1204,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
             )
 
     # ── Fin de transfert T4 → T5 : box_on_T4 est ajoutée à boxes_on_T5 ──────
-    request = _T4_T5_REQUEST.search(text)
+    request = matches.T4_T5_REQUEST
     if request:
         ctx['t4_t5_requested_ref'] = request[1]
 
@@ -1219,7 +1258,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         _add_event(state, line_num, 'info', 'TRANSFERT', f'T4 vers T5 {_box_label(state.box_on_T4)}')
         state.box_on_T4 = None
 
-    mo = _AJOUT_T5_ID.search(text)
+    mo = matches.AJOUT_T5_ID
     if mo:
         id_a = int(mo.group(1))
         id_b = int(mo.group(2))
@@ -1234,7 +1273,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
                 f'T4->T5 idB={id_b} -> IdA={id_a}', box.barcode or box.source_ref
             )
 
-    mo = _T4_LENGTH_SUMMARY.search(text)
+    mo = matches.T4_LENGTH_SUMMARY
     if mo:
         bdd, t2t, t4c, t4t, diff = (int(v) for v in mo.groups())
         measure_box = _find_t4_measure_box(state, ctx)
@@ -1263,22 +1302,22 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int) -> None:
         pass
 
     # ── C1 (fin T1) ──────────────────────────────────────────────────────────
-    mo = _C1_SENSOR.search(text)
+    mo = matches.C1_SENSOR
     if mo:
         state.C1 = int(mo.group(1))
 
     # ── FlagPoubellePleine ────────────────────────────────────────────────────
-    mo = _POUBELLE.search(text)
+    mo = matches.POUBELLE
     if mo:
         val = mo.group(1).lower()
         state.flag_poubelle_pleine = 0 if val in ('faux', '0', 'false', 'non') else 1
 
     # ── LzB (mesure hauteur T5, tentative) ────────────────────────────────────
-    mo = _LZB.search(text)
+    mo = matches.LZB
     if mo:
         state.lzb = int(mo.group(1))
 
-    if _ERROR_WORD.search(text):
+    if matches.ERROR_WORD:
         seen_error_lines = ctx.setdefault('seen_error_lines', set())
         if line_num not in seen_error_lines:
             seen_error_lines.add(line_num)
@@ -1396,9 +1435,15 @@ def iter_frames(
     @lru_cache(maxsize=2048)
     def is_known_text(text: str) -> bool:
         # Ce cache propre au fichier ne contient aucun etat de la machine.
-        return any(keyword in text for keyword in KEYWORDS)
+        for keyword in KEYWORDS:
+            if keyword in text:
+                return True
+        return False
+
+    line_matches = lru_cache(maxsize=2048)(_line_matches)
 
     file_line = 0
+    previous_clock = previous_fraction = None
     with closing(canonical_lines(filepath, source_metadata_output)) as source:
         for file_line, raw, position in source:
             previous_done = done
@@ -1415,8 +1460,16 @@ def iter_frames(
                 continue
 
             day, h, m, s, ds, text = mo.groups()
-            ts     = _ts(day, h, m, s, ds)
-            ts_str = f"{h}:{m}:{s}"
+            clock = (day, h, m, s)
+            if clock != previous_clock:
+                # La base entiere et le libelle restent communs a cette seconde.
+                clock_base = int(day) * 86400 + int(h) * 3600 + int(m) * 60 + int(s)
+                ts_str = f"{h}:{m}:{s}"
+                previous_clock = clock
+                previous_fraction = None
+            if ds != previous_fraction:
+                ts = clock_base + int(ds) * 0.1
+                previous_fraction = ds
 
             if first_ts is None:
                 first_ts          = ts
@@ -1448,7 +1501,7 @@ def iter_frames(
             is_known = is_known_text(text)
             current.raw_lines.append((file_line, text.rstrip(), is_known))
             if is_known:
-                _update(current, text, ctx, file_line)
+                _update(current, text, ctx, file_line, line_matches(text))
 
     # Dernier frame
     if current_ts is not None:

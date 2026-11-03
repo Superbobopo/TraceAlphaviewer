@@ -45,7 +45,7 @@ class ObservationClock:
             value = 0.0
             for _, _, state in line_states:
                 if state.timestamp != previous:
-                    value = (dated.at(state.timestamp) - origin).total_seconds()
+                    value = dated.elapsed(state.timestamp)
                     previous = state.timestamp
                 self.times.append(value)
 
@@ -131,7 +131,8 @@ def trace_calendar(line_states):
 
 
 def _build_calendar(line_states):
-    observations = []
+    numbers, offsets = array('Q'), array('d')
+    first_time = last_time = ''
     anchor = None
     previous = None
     elapsed = 0.0
@@ -144,8 +145,12 @@ def _build_calendar(line_states):
             delta = current[0] - previous[0]
             # Le compteur jour du firmware peut revenir a 1 au changement de mois.
             elapsed += delta if delta > -86400 else (seconds - previous[1]) % 86400
-        if previous != current or not observations:
-            observations.append((line, elapsed, state.timestamp_str, seconds))
+        if previous != current or not numbers:
+            if not numbers:
+                first_time = state.timestamp_str
+            last_time = state.timestamp_str
+            numbers.append(line)
+            offsets.append(elapsed)
         previous = current
         match = _OPEN_DATE.search(text)
         if match and anchor is None:
@@ -153,26 +158,33 @@ def _build_calendar(line_states):
                 anchor = (elapsed, datetime.strptime(match[1], '%d/%m/%Y') + timedelta(seconds=seconds))
             except ValueError:
                 pass
-    if not observations:
+    if not numbers:
         return {'available': False, 'start': '', 'end': '', 'days': 0, 'segments': []}
-    duration = max(0, observations[-1][1] - observations[0][1])
+    duration = max(0, offsets[-1] - offsets[0])
     hours, remainder = divmod(int(duration), 3600)
     minutes, seconds = divmod(remainder, 60)
-    result = {'available': anchor is not None, 'start': observations[0][2], 'end': observations[-1][2],
+    result = {'available': anchor is not None, 'start': first_time, 'end': last_time,
               'days': 0, 'duration_seconds': duration,
               'duration': f'{hours} h {minutes:02d} min {seconds:02d} s', 'segments': []}
     if anchor is not None:
-        moments = [(line, anchor[1] + timedelta(seconds=offset - anchor[0]))
-                   for line, offset, _, _ in observations]
-        result.update(start=moments[0][1].strftime('%d/%m/%Y à %H:%M:%S'),
-                      end=moments[-1][1].strftime('%d/%m/%Y à %H:%M:%S'),
-                      first_date=moments[0][1].date().isoformat(),
-                      last_date=moments[-1][1].date().isoformat(),
-                      days=(moments[-1][1].date() - moments[0][1].date()).days + 1)
-        for line, moment in moments:
+        first = anchor[1] + timedelta(seconds=offsets[0] - anchor[0])
+        last = anchor[1] + timedelta(seconds=offsets[-1] - anchor[0])
+        result.update(start=first.strftime('%d/%m/%Y à %H:%M:%S'),
+                      end=last.strftime('%d/%m/%Y à %H:%M:%S'),
+                      first_date=first.date().isoformat(), last_date=last.date().isoformat(),
+                      days=(last.date() - first.date()).days + 1)
+        start = end = float('-inf')
+        for line, offset in zip(numbers, offsets):
+            # Pres des bornes, datetime conserve son arrondi exact a la microseconde.
+            if start + .000001 < offset < end - .000001:
+                continue
+            moment = anchor[1] + timedelta(seconds=offset - anchor[0])
             day = moment.date().isoformat()
             if not result['segments'] or result['segments'][-1]['date'] != day:
                 result['segments'].append({'line': line, 'date': day})
+            midnight = moment.replace(hour=0, minute=0, second=0, microsecond=0)
+            start = (midnight - anchor[1]).total_seconds() + anchor[0]
+            end = start + 86400
     return result
 
 

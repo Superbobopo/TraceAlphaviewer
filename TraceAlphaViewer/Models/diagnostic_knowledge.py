@@ -2,6 +2,15 @@ from __future__ import annotations
 
 
 DIAGNOSTIC_KNOWLEDGE: dict[str, dict[str, object]] = {
+    't5_drive_suspected': {
+        'symptom': 'Boîte mesurée sur T4, transférée sur T5, sans hauteur ni largeur finale exploitable, puis supprimée informatiquement.',
+        'causes': ['Défaut d’entraînement mécanique de T5 : tapis immobile ou entraînement intermittent.',
+                   'Boîte bloquée ou mal présentée ; capteurs hauteur/largeur perturbés.'],
+        'checks': ['Vérifier en priorité le mouvement réel du tapis T5 et son entraînement mécanique.',
+                   'Une variation de pT5 ne garantit pas que le tapis entraîne les boîtes.',
+                   'Vérifier le passage physique des boîtes, puis LzB et C9, leur propreté et leur alignement.'],
+        'confidence': 'forte pour la séquence observée ; cause mécanique à confirmer',
+    },
     'motor_comm': {
         'symptom': 'L’Alpha a signalé un défaut de communication avec la carte qui commande les tapis.',
         'causes': ['Liaison reseau ou serie, alimentation ou carte moteurs a verifier.',

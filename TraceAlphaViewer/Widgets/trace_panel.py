@@ -46,6 +46,8 @@ class TracePanel(ctk.CTkFrame):
         self._search_job = None
         self._loading = False
         self._loaded_filepath = None
+        self._file_signature = None
+        self._load_thread = None
         self._on_load_ready = None
         self._on_load_error = None
         self._progress_emitter = None
@@ -144,6 +146,11 @@ class TracePanel(ctk.CTkFrame):
 
     def load_file(self, filepath: str, on_ready=None, on_error=None, on_progress=None) -> None:
         """Charge le fichier en arrière-plan et insère les lignes dans le widget."""
+        try:
+            stat = os.stat(filepath)
+            self._file_signature = (stat.st_size, stat.st_mtime_ns)
+        except OSError:
+            self._file_signature = None
         self._load_cancel.set()
         self._load_cancel = threading.Event()
         cancel = self._load_cancel
@@ -206,7 +213,33 @@ class TracePanel(ctk.CTkFrame):
             except Exception as exc:
                 put('error', f'Erreur lecture : {exc}')
 
-        threading.Thread(target=_worker, daemon=True).start()
+        # Attendre cet arret hors Tk avant de retirer une source temporaire.
+        self._load_thread = threading.Thread(target=_worker, daemon=True)
+        self._load_thread.start()
+
+    def adopt_loaded(self, source):
+        """Reprend le texte prepare via un pair Tk, sans copie ni relecture."""
+        if source._loading or not source._loaded_filepath:
+            raise ValueError('La trace brute doit etre entierement preparee')
+        if self._line_label is not source._line_label:
+            raise ValueError('Les reperes de lignes de la trace sont incompatibles')
+        stat = os.stat(source._loaded_filepath)
+        if source._file_signature != (stat.st_size, stat.st_mtime_ns):
+            raise OSError('La trace a change pendant le chargement ; rouvrir le fichier')
+        options = {key: value[-1] for key, value in self._text.configure().items() if len(value) == 5}
+        tags = {name: {key: value[-1] for key, value in self._text.tag_configure(name).items()}
+                for name in self._text.tag_names()}
+        # Le wrapper Python conserve ses commandes de scrollbar jusqu'a sa destruction.
+        self._text.tk.call('destroy', self._text._w)
+        source._text.peer_create(self._text._w, **options)
+        self._text.pack(fill='both', expand=True)
+        for name, values in tags.items():
+            self._text.tag_configure(name, **values)
+        self._text.bind('<Button-1>', self._on_click)
+        self._total_lines = source._total_lines
+        self._loaded_filepath = source._loaded_filepath
+        self._file_signature = source._file_signature
+        self._inserted_bytes, self._source_size = source._inserted_bytes, source._source_size
 
     def _poll_results(self) -> None:
         self._poll_job = None
@@ -244,7 +277,15 @@ class TracePanel(ctk.CTkFrame):
                             self._finish_insert()
         except Empty:
             pass
-        self._poll_job = self.after(1 if self._loading else 30, self._poll_results)
+        if self._loading and not self._load_results.empty():
+            # Reprendre apres les evenements Tk, sans attendre un nouveau tick Windows.
+            self._poll_job = self.after_idle(self._resume_poll)
+        else:
+            self._poll_job = self.after(1 if self._loading else 30, self._poll_results)
+
+    def _resume_poll(self):
+        # Sortir aussi d'update_idletasks avant de reprendre un bloc de texte.
+        self._poll_job = self.after(0, self._poll_results)
 
     def _append_lines(self, lines):
         segments = []

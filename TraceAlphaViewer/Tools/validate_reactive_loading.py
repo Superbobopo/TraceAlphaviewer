@@ -230,7 +230,10 @@ class WorkerTests(unittest.TestCase):
             report_path = next(value for kind, value in messages if kind == 'result')
             self.assertTrue(Path(report_path).is_file())
             actual = json.loads(next(output.glob('report_data_*.json')).read_text(encoding='utf-8'))
-            wanted = build_report_payload(diagnostics, frames=expected, trace_period=store.trace_period)
+            from Tools.benchmark_loading import reference_with_health_observations
+            report_frames = reference_with_health_observations(expected, diagnostics, read_trace_origin(path))
+            self.assertEqual(report_frames.health_observations, store.health_observations)
+            wanted = build_report_payload(diagnostics, frames=report_frames, trace_period=store.trace_period)
             identity = read_source_identity(path)
             self.assertEqual(store.source_metadata.get('identity'), identity)
             if identity:
@@ -377,35 +380,85 @@ class UiTests(unittest.TestCase):
         view._close()
         close_session(session)
 
+    def test_raw_text_is_loaded_once_with_and_without_preparation(self):
+        from Views.accueilView import AccueilView
+        from Widgets.trace_panel import TracePanel
+        from Models.resource_policy import Resources, GIB
+        session = LoadingSession()
+        path = self.fixture(session)
+        original = TracePanel.load_file
+        try:
+            for preload in (False, True):
+                home = AccueilView(self.app)
+                self.app.switch_view(home)
+                calls = []
+
+                def load(panel, filepath, **kwargs):
+                    calls.append(str(filepath))
+                    return original(panel, filepath, **kwargs)
+
+                with patch.object(TracePanel, 'load_file', load), \
+                     patch('Models.resource_policy.detect_resources', return_value=Resources(32*GIB, 24*GIB, 8, True)), \
+                     patch('Models.resource_policy.budget_for', return_value=8*GIB if preload else 0):
+                    home._load(str(path))
+                    owner = home._load_session
+                    self.assertEqual(home._preloaded_trace is not None, preload)
+                    self.pump(lambda: isinstance(self.app.main_view, TraceView))
+                    view = self.app.main_view
+                    self.assertEqual(calls, [str(path)])
+                    self.assertFalse(view._trace_panel._loading)
+                    self.assertEqual(view._trace_panel._total_lines,
+                                     len(path.read_text(encoding='latin-1').splitlines()))
+                    view._close()
+                    close_session(owner)
+        finally:
+            close_session(session)
+
     def test_close_during_hidden_preparation_and_raw_loading(self):
         session = LoadingSession()
         path = self.fixture(session)
         try:
             home = self.app.main_view
-            home._load(str(path))
-            owner = home._load_session
-            self.pump(lambda: home._prepared_view is not None)
-            self.assertIs(self.app.main_view, home)
-            prepared = home._prepared_view
-            self.app.switch_view(BaseView(self.app))
-            self.assertTrue(prepared._disposed.is_set())
-            close_session(owner)
-            from Views.accueilView import AccueilView
-            home = AccueilView(self.app)
-            self.app.switch_view(home)
-            # Suspendre la reception Tk : un petit fichier peut finir avant l'assertion.
-            with patch('Widgets.trace_panel.TracePanel._poll_results', return_value=None):
+            # Retenir la bascule finale pour observer la vue cachee meme apres un update lent.
+            with patch.object(home, '_finish_loading', return_value=None):
                 home._load(str(path))
                 owner = home._load_session
-                self.pump(lambda: home._prepared_view is not None
-                          and hasattr(home._prepared_view, '_trace_panel')
-                          and home._prepared_view._trace_panel._loading)
+                self.pump(lambda: home._prepared_view is not None)
                 self.assertIs(self.app.main_view, home)
-                self.assertLess(home._progress_tracker.fraction, 1)
                 prepared = home._prepared_view
                 self.app.switch_view(BaseView(self.app))
                 self.assertTrue(prepared._disposed.is_set())
-                close_session(owner)
+            close_session(owner)
+            from Views.accueilView import AccueilView
+            from Models.resource_policy import Resources, GIB
+            for preload in (False, True):
+                home = AccueilView(self.app)
+                self.app.switch_view(home)
+                # Suspendre la reception Tk pour fermer pendant l'insertion.
+                with patch('Widgets.trace_panel.TracePanel._poll_results', return_value=None), \
+                     patch('Models.resource_policy.detect_resources', return_value=Resources(32*GIB, 24*GIB, 8, True)), \
+                     patch('Models.resource_policy.budget_for', return_value=8*GIB if preload else 0):
+                    home._load(str(path))
+                    owner = home._load_session
+                    if preload:
+                        self.pump(lambda: home._prepare_when_raw_ready)
+                        prepared = None
+                        source = home._preloaded_trace
+                        self.assertTrue(source._loading)
+                    else:
+                        self.pump(lambda: home._prepared_view is not None
+                                  and hasattr(home._prepared_view, '_trace_panel')
+                                  and home._prepared_view._trace_panel._loading)
+                        prepared = home._prepared_view
+                        source = prepared._trace_panel
+                    self.assertIs(self.app.main_view, home)
+                    self.assertLess(home._progress_tracker.fraction, 1)
+                    self.app.switch_view(BaseView(self.app))
+                    self.assertTrue(source._load_cancel.is_set())
+                    self.assertFalse(source.winfo_exists())
+                    if prepared is not None:
+                        self.assertTrue(prepared._disposed.is_set())
+                    close_session(owner)
         finally:
             close_session(session)
 

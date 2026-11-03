@@ -235,23 +235,35 @@ class TraceCalendar:
         self.previous_day = origin.day
         self.previous_timestamp = None
         self._moment = None
+        self._month_microseconds = None
 
     def observe(self, timestamp):
         if timestamp == self.previous_timestamp:
             return
-        day, _ = divmod(round((self.base + timestamp) * 10), 864000)
+        day, ticks = divmod(round((self.base + timestamp) * 10), 864000)
         if day < self.previous_day:
             self.month = (self.month.replace(day=28) + timedelta(days=4)).replace(day=1)
+            self._month_microseconds = None
         self.previous_day = day
         self.previous_timestamp = timestamp
+        self._ticks = ticks
         self._moment = None
 
     def at(self, timestamp):
         self.observe(timestamp)
         if self._moment is None:
-            day, ticks = divmod(round((self.base + timestamp) * 10), 864000)
-            self._moment = self.month + timedelta(days=day - 1, milliseconds=ticks * 100)
+            self._moment = self.month + timedelta(days=self.previous_day - 1, milliseconds=self._ticks * 100)
         return self._moment
+
+    def elapsed(self, timestamp):
+        """Duree exacte en ticks, sans fabriquer une date pour chaque frame."""
+        self.observe(timestamp)
+        if self._month_microseconds is None:
+            delta = self.month - self.origin
+            self._month_microseconds = ((delta.days * 86400 + delta.seconds) * 1_000_000
+                                        + delta.microseconds)
+        return (self._month_microseconds + (self.previous_day - 1) * 86_400_000_000
+                + self._ticks * 100_000) / 1_000_000
 
 
 def format_trace_duration(seconds):

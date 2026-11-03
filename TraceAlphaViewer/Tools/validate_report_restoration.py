@@ -125,7 +125,7 @@ class RestorationTests(unittest.TestCase):
                     local = url.startswith('http:')
                     page.goto(url)
                     if local:
-                        page.get_by_role('status').filter(has_text='Liaison avec').wait_for()
+                        page.locator('[data-connected="true"]').wait_for()
                     for width in (1920, 1440, 1280, 850, 390):
                         page.set_viewport_size({'width': width, 'height': 1080})
                         sidebar = page.locator('.camera-sidebar')
@@ -203,7 +203,7 @@ class RestorationTests(unittest.TestCase):
                     legacy['unknown'] = dict(legacy['unknown'], total=1000, count=int(ratio*1000), ratio=ratio, alert=ratio>0.07)
                     page.evaluate('(payload)=>TraceReport.mount(document.querySelector("#legacy"),payload)', legacy)
                     self.assertIn(band, page.locator('.unknown-counter').get_attribute('class'))
-                    self.assertEqual(page.locator('.unknown-counter').bounding_box()['height'], 60)
+                    self.assertLessEqual(page.locator('.unknown-counter').bounding_box()['height'], 32)
                     self.assertEqual(page.locator('.unknown-alert').count(), 0)
                     self.assertEqual(page.locator('button.unknown-counter').count(), 0)
                 self.assertFalse(errors, errors)

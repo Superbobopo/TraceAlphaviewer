@@ -18,9 +18,16 @@ from Parser.trace_parser import iter_frames
 from Models.list_navigation import LineIndex, prepare_navigation
 from Models.segment_collector import SegmentCollector
 from Models.loading_progress import ProgressEmitter
+from Models.worker_gc import loading_collections
 
 
 def run(request, send):
+    # Cette politique reste dans le worker, jamais dans le processus Tk.
+    with loading_collections():
+        return _run(request, send)
+
+
+def _run(request, send):
     mode = request['mode']
     if mode == 'retain_report':
         from Models.report_storage import retain_prepared_report
@@ -31,14 +38,9 @@ def run(request, send):
         send('done', {})
         return
     if mode == 'diagnostic_family':
-        from Models.diagnostic_parallel import analyze_family, unpack_projection
+        from Models.diagnostic_parallel import analyze_family, read_projection
         started = time.perf_counter()
-        with Path(request['projection']).open('rb') as source:
-            version, origin, rows = pickle.load(source)
-        if version != 2:
-            raise OSError('Projection diagnostique incompatible')
-        lines = unpack_projection(rows)
-        del rows
+        origin, lines = read_projection(request['projection'])
         loaded = time.perf_counter()
         result = analyze_family(request['family'], lines, origin)
         send('family_result', result)
@@ -177,6 +179,7 @@ def run(request, send):
         step('references', 'Finalisation des references...')
         emitter.emit('references', 'References', force=True)
         references = measure('references', lambda: collector.references.finish(events)) if mode == 'file' else []
+        health_observations = collector.health.finish(diagnostics, collector.lines, origin)
         emitter.emit('references', 'References', state='done')
         del collector
         step('display', 'Preparation du viewer...')
@@ -184,7 +187,8 @@ def run(request, send):
         from Models.folder_catalog import read_source_identity
         source_metadata['identity'] = measure('identite', lambda: read_source_identity(filepath))
         update_store_metadata(directory, measurement_summary=measurements['summary'],
-                              trace_period=trace_metadata, source_metadata=source_metadata)
+                              trace_period=trace_metadata, source_metadata=source_metadata,
+                              health_observations=health_observations)
         with (directory / 'camera_report.pkl').open('wb') as output:
             pickle.dump(camera_report, output, protocol=pickle.HIGHEST_PROTOCOL)
         with (directory / 'measurements.pkl').open('wb') as output:

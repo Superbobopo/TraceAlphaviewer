@@ -148,6 +148,9 @@ def _metric_from_summary(summary: str, code: str, occurrence_count: int, metrics
 
 
 def _business_lines(summary: str, code: str) -> list[str]:
+    if code == 'T5_DRIVE_SUSPECTED':
+        return ['Mesure T4 puis absence hauteur, largeur T5 invalide et suppression informatique.',
+                'Vérifier le mouvement réel de T5 ; cause mécanique à confirmer.']
     if code == 'DemVidageComplet':
         return []
     if code == 'UNKNOWN':
@@ -282,38 +285,31 @@ class DiagnosticPanel(ctk.CTkFrame):
         self._host = self.winfo_toplevel()
         self._host_binding = self._host.bind('<Configure>', self._on_host_configure, add='+')
 
-        detail_bar = tk.Frame(left, bg=ui_color(self, 'panel', '#0f0f1c'), height=34)
+        detail_bar = ctk.CTkFrame(left, fg_color=ui_color(self, 'panel', '#0f0f1c'), height=34, corner_radius=0)
         detail_bar.pack(fill='x')
         detail_bar.pack_propagate(False)
-        self._global_btn = tk.Button(
+        button_font = ctk.CTkFont(family='Consolas', size=12, weight='bold')
+        self._global_btn = ctk.CTkButton(
             detail_bar,
             text='Vue globale',
             command=self._show_global_summary,
-            bg=ui_color(self, 'surface', '#1e1e30'),
-            fg=ui_color(self, 'text', '#aabbcc'),
-            activebackground=ui_color(self, 'border', '#263142'),
-            activeforeground='#ffffff',
-            relief='flat',
-            borderwidth=0,
-            font=('Consolas', 9, 'bold'),
-            padx=10,
-            pady=3,
+            fg_color=ui_color(self, 'surface', '#1e1e30'),
+            text_color=ui_color(self, 'text', '#aabbcc'),
+            hover_color=ui_color(self, 'border', '#263142'),
+            corner_radius=6, border_width=0, width=100, height=22,
+            font=button_font,
             cursor='hand2',
         )
         self._global_btn.pack(side='left', padx=8, pady=6)
-        self._report_btn = tk.Button(
+        self._report_btn = ctk.CTkButton(
             detail_bar,
             text='Rapport web',
             command=self._open_web_report,
-            bg=ui_color(self, 'accent', '#1e1e30'),
-            fg=ui_color(self, 'accent_text', '#aabbcc'),
-            activebackground=ui_color(self, 'accent_hover', '#263142'),
-            activeforeground=ui_color(self, 'accent_text', '#ffffff'),
-            relief='flat',
-            borderwidth=0,
-            font=('Consolas', 9, 'bold'),
-            padx=10,
-            pady=3,
+            fg_color=ui_color(self, 'accent', '#1e1e30'),
+            text_color=ui_color(self, 'accent_text', '#aabbcc'),
+            hover_color=ui_color(self, 'accent_hover', '#263142'),
+            corner_radius=6, border_width=0, width=100, height=22,
+            font=button_font,
             cursor='hand2',
         )
         self._report_btn.pack(side='left', padx=(0, 8), pady=6)
@@ -1112,10 +1108,15 @@ class DiagnosticPanel(ctk.CTkFrame):
         except Exception as exc:
             self._report_failed(str(exc))
 
+    def _set_report_button(self, preparing=False):
+        text = 'Rapport en préparation…' if preparing else 'Rapport web'
+        width = max(100, self._report_btn.cget('font').measure(text) + 20)
+        self._report_btn.configure(text=text, width=width, state='disabled' if preparing else 'normal')
+
     def _report_failed(self, error):
         self._report_task = None
         self._report_promoting = False
-        self._report_btn.configure(text='Rapport web', state='normal')
+        self._set_report_button()
         if self._report_requested:
             self._report_requested = False
             messagebox.showerror('Rapport web', error)
@@ -1134,11 +1135,11 @@ class DiagnosticPanel(ctk.CTkFrame):
             if self._report_retained:
                 self._launch_report(self._report_path)
             elif self._report_task is None:
-                self._report_btn.configure(text='Rapport en preparation...', state='disabled')
+                self._set_report_button(preparing=True)
                 self._retain_report()
             return
         if isinstance(self._frames, FrameStore):
-            self._report_btn.configure(text='Rapport en preparation...', state='disabled')
+            self._set_report_button(preparing=True)
             if self._report_task is not None:
                 return
             if self._report_prepare_job is None:
@@ -1165,7 +1166,7 @@ class DiagnosticPanel(ctk.CTkFrame):
                     self._report_path = Path(payload)
                 elif kind in ('done', 'error'):
                     self._report_task = None
-                    self._report_btn.configure(text='Rapport web', state='normal')
+                    self._set_report_button()
                     if kind == 'error':
                         self._report_failed(payload)
                     elif self._report_path is not None:
@@ -1174,7 +1175,7 @@ class DiagnosticPanel(ctk.CTkFrame):
                             self._report_retained = True
                             self._launch_report(self._report_path)
                         elif self._report_requested:
-                            self._report_btn.configure(text='Rapport en preparation...', state='disabled')
+                            self._set_report_button(preparing=True)
                             self._retain_report()
                     return
         except Empty:

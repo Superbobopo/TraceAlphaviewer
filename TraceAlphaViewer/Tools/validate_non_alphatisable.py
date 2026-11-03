@@ -148,7 +148,7 @@ class NonAlphatisableTests(unittest.TestCase):
                     local = url.startswith('http:')
                     page.goto(url)
                     if local:
-                        page.get_by_role('status').filter(has_text='Liaison avec').wait_for()
+                        page.locator('[data-connected="true"]').wait_for()
                     self.assertIn('1 / 3', page.locator('.unknown-counter').inner_text())
                     self.assertEqual(page.locator('.camera-sidebar .camera-row').count(), 6)
                     page.locator('[data-family]').select_option('references')

@@ -127,6 +127,15 @@ class StreamingLoadingTests(unittest.TestCase):
         if not (BASELINE / 'Models/loading_worker.py').is_file():
             return
         expected = self.capture(BASELINE, request)['artifacts']
+        # Seuls ces trois titres ont ete enrichis ; toutes les donnees restent comparees.
+        from dataclasses import replace
+        titles = {
+            'T2 eT:-88 - Err: boite deja C4': 'T2 eT:-88 - Err: boite deja C4 (boite deja presente sur C4 avant transfert)',
+            'T3 eT:-43 - Err: boite coincee': 'T3 eT:-43 - Err: boite coincee (passage de C4 vers T3 non libere)',
+            'T4 eT:-17 - Err: index non degage': "T4 eT:-17 - Err: index non degage (C6 reste actif pendant l'initialisation de T4)",
+        }
+        expected['diagnostics'] = [replace(row, title=titles.get(row.title, row.title))
+                                   for row in expected['diagnostics']]
         actual = result['artifacts']
         self.assertEqual(set(actual), set(expected))
         self.assertEqual(len(actual['frames']), len(expected['frames']))

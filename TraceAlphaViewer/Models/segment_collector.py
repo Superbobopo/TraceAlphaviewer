@@ -3,6 +3,7 @@ from Models.diagnostic import DiagnosticState, StateIncidentCollector
 from Models.measurement_analysis import MeasurementCollector
 from Models.reference_index import ReferenceCollector
 from Models.trace_calendar import TraceLines
+from Models.health_radar import HealthObservationCollector
 
 
 class SegmentCollector:
@@ -12,6 +13,7 @@ class SegmentCollector:
         self.states = StateIncidentCollector()
         self.events = []
         self.lines = TraceLines()
+        self.health = HealthObservationCollector()
         self.count = 0
         self._seen_events = set()
         self._seen_lines = set()
@@ -19,6 +21,7 @@ class SegmentCollector:
     def consume(self, frame):
         self.measures.consume(self.count, frame)
         self.references.consume(frame)
+        self.health.observe_frame(frame, self.references, self._seen_lines)
         self.states.consume(frame)
         for event in frame.events:
             key = (event.line_num, event.kind, event.title)
@@ -28,6 +31,7 @@ class SegmentCollector:
         state = DiagnosticState(frame.timestamp, frame.timestamp_str, frame.C6)
         for line, text, *_ in frame.raw_lines:
             if line not in self._seen_lines:
+                self.health.consume(text)
                 self.lines.append((line, text, state))
                 self._seen_lines.add(line)
         self.count += 1

@@ -60,8 +60,9 @@ class PreparationTests(unittest.TestCase):
             _report_requested=False, _report_retained=False, _report_promoting=False,
             _report_btn=Mock(), _load_session=session, _incidents=[], _source_name='FICTIF',
             after=Mock(return_value='callback'), _launch_report=Mock())
+        panel._report_btn.cget.return_value = SimpleNamespace(measure=lambda text: len(text) * 7)
         for name in ('prepare_web_report', '_prepare_web_report', '_start_report',
-                     '_report_failed', '_retain_report', '_open_web_report', '_poll_report'):
+                     '_set_report_button', '_report_failed', '_retain_report', '_open_web_report', '_poll_report'):
             setattr(panel, name, MethodType(getattr(DiagnosticPanel, name), panel))
         return panel, task
 

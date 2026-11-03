@@ -2,11 +2,11 @@
 (function (scope) {
   'use strict';
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const number = value => value == null ? '—' : Number(value).toLocaleString('fr-FR', {minimumFractionDigits:1, maximumFractionDigits:1});
+  const number = (value,digits=1) => value == null ? '—' : Number(value).toLocaleString('fr-FR', {minimumFractionDigits:digits, maximumFractionDigits:digits});
   const signed = value => value == null ? '—' : `${value > 0 ? '+' : ''}${number(value)}`;
   const severity = group => group.field_severity || group.severity;
   const referenceRejection = code => ['REFERENCE_ABSENT','REFERENCE_NON_ALPHATISABLE'].includes(code);
-  const structuredProof = code => referenceRejection(code) || ['C2_SIGNAL_ANOMALY','C3_SIGNAL_ANOMALY','C5_SIGNAL_ANOMALY','diffT4','MOTOR_COMM','DP_MISSING','CAMERA_CODE_MODE'].includes(code);
+  const structuredProof = code => referenceRejection(code) || ['C2_SIGNAL_ANOMALY','C3_SIGNAL_ANOMALY','C5_SIGNAL_ANOMALY','T5_DRIVE_SUSPECTED','diffT4','MOTOR_COMM','DP_MISSING','CAMERA_CODE_MODE'].includes(code);
   const criticalRobot = group => Number(group?.metrics?.day?.count||0)>=10;
   const severityLabel = group => ({error:'Critique',warning:'Alerte',info:'Info'}[severity(group)] || 'Info');
   const action = group => group.field_action || group.action || group.title;
@@ -102,7 +102,7 @@
     const count=Number(unknown.count),total=Number(unknown.total);
     const available=Number.isFinite(count)&&count>=0&&Number.isFinite(total)&&total>0;
     const tone=!available?'is-neutral':count*100<total*8?'is-good':count*100<=total*12?'is-warning':'is-bad';
-    return `<div class='unknown-counter ${tone}' role='group' aria-label='Boîtes finales UNKNOWN après CB1 et CB2, sur tous les passages'><span class='unknown-caption'>UNKNOWN finaux · CB1 + CB2</span><span class='unknown-values'><strong>${integer(unknown.count)} <small>/ ${integer(unknown.total)} passages</small></strong><span class='unknown-percent'>${available?number(100*count/total)+' %':'Indisponible'}</span></span></div>`;
+    return `<div class='unknown-counter ${tone}' role='group' aria-label='Boîtes finales UNKNOWN après CB1 et CB2, sur tous les passages'><span class='unknown-caption'>UNKNOWN finaux</span><strong class='unknown-values'>${integer(unknown.count)} / ${integer(unknown.total)}</strong><span class='unknown-percent'>${available?number(100*count/total)+' %':'Indisponible'}</span></div>`;
   }
   function proofHtml(context,connected) {
     if(!context?.length)return 'Contexte indisponible.';
@@ -125,6 +125,40 @@
   function sourcePeriodText(source) {
     return source?.dates_available===false?'Dates indisponibles — rechargez la trace':`${source?.start||''} → ${source?.end||''}`;
   }
+  const healthColors={ok:'#287c50',warning:'#b57912',critical:'#bf3444',unavailable:'#929ca7'};
+  function healthGeometry(axes,cx,cy,radius) {
+    const unit=axes.map((axis,index)=>{const angle=-Math.PI/2+index*2*Math.PI/axes.length;return {x:Math.cos(angle),y:Math.sin(angle)};});
+    const points=axes.map((axis,index)=>Number.isFinite(axis.value)&&axis.value>=0&&axis.value<=1?{x:cx+unit[index].x*radius*axis.value,y:cy+unit[index].y*radius*axis.value}:null);
+    return {unit,points,complete:points.every(Boolean)};
+  }
+  function healthSvg(radar,selected) {
+    const {unit,points,complete}=healthGeometry(radar.axes,210,185,104);
+    const pairs=items=>items.map(point=>point.x.toFixed(2)+','+point.y.toFixed(2)).join(' ');
+    const rings=[1/3,2/3,1].map(level=>'<polygon points="'+pairs(unit.map(p=>({x:210+p.x*104*level,y:185+p.y*104*level})))+'" fill="none" stroke="#d6dee6"/>').join('');
+    const spokes=unit.map((p,index)=>'<line x1="210" y1="185" x2="'+(210+p.x*104)+'" y2="'+(185+p.y*104)+'" stroke="'+(points[index]?'#dce3e9':healthColors.unavailable)+'" '+(points[index]?'':'stroke-dasharray="4 4"')+'/>').join('');
+    const shape=complete?'<polygon class="health-shape" points="'+pairs(points)+'" fill="#3986ad" fill-opacity=".13" stroke="#3986ad" stroke-width="2"/>':points.map((p,index)=>{const next=points[(index+1)%points.length];return p&&next?'<line x1="'+p.x+'" y1="'+p.y+'" x2="'+next.x+'" y2="'+next.y+'" stroke="#3986ad" stroke-width="2"/>':'';}).join('');
+    const labels=radar.axes.map((axis,index)=>{
+      const u=unit[index],x=210+u.x*133,y=185+u.y*133,anchor=u.x>.3?'start':u.x<-.3?'end':'middle';
+      const words=axis.id==='motors'?['Comm.','moteurs']:[axis.label+(axis.coverage==='partial'?' *':'')];
+      const label='<text class="health-label" x="'+x+'" y="'+y+'" text-anchor="'+anchor+'" fill="'+axis.color+'" role="button" tabindex="0" data-health-axis="'+esc(axis.id)+'" aria-label="'+esc(axis.label+' : '+healthMetric(axis))+'">'+words.map((word,i)=>'<tspan x="'+x+'" dy="'+(i?15:0)+'">'+esc(word)+'</tspan>').join('')+'</text>';
+      const p=points[index];
+      return label+(p?'<circle class="health-point" data-health-axis="'+esc(axis.id)+'" data-value="'+axis.value+'" cx="'+p.x+'" cy="'+p.y+'" r="'+(selected===axis.id?6:4.5)+'" fill="'+axis.color+'" stroke="white" stroke-width="2"><title>'+esc(axis.label+' : '+healthMetric(axis))+'</title></circle>':'');
+    }).join('');
+    return '<svg class="health-svg" viewBox="0 0 420 365" role="img" aria-label="Impact relatif à six domaines : extérieur faible, centre fort. Les domaines non calculés restent gris.">'+rings+spokes+shape+labels+'</svg>';
+  }
+  function healthMetric(axis) {
+    if(!Number.isFinite(axis.value))return 'Non calculé';
+    return axis.metric_kind==='frequency'?number(axis.rate,2)+' incident(s)/h':number(100*axis.rate,2)+' %';
+  }
+  function healthHtml(data,state) {
+    const radar=data.health_radar;
+    if(!radar)return '';
+    if(radar.version!==2)return '<p class="health-legacy muted">Bilan d’impact : recharger la trace et régénérer le rapport.</p>';
+    if(radar.axes?.length!==6)return '';
+    const selected=radar.axes.find(axis=>axis.id===state.healthAxis);
+    const detail=selected?'<div class="health-detail" aria-live="polite"><button class="health-close" data-health-close aria-label="Fermer le résumé du bilan">×</button><h3>'+esc(selected.label)+' · '+esc(healthMetric(selected))+'</h3><p>'+esc(selected.explanation)+'</p><p>'+esc(selected.numerator==null?'Effectif indisponible':integer(selected.numerator)+' '+selected.unit)+' / '+esc(selected.denominator==null?'population indisponible':number(selected.denominator,2)+' '+selected.population)+'.</p>'+list(selected.limits)+'<div class="health-links">'+selected.groups.map(group=>'<button data-health-group="'+esc(group.id)+'"><span class="badge '+esc(group.severity)+'">'+esc({error:'Critique',warning:'Alerte',info:'Information'}[group.severity])+'</span> '+esc(group.title)+' →</button>').join('')+'</div></div>':'';
+    return '<div class="health-overview" aria-label="'+esc(radar.title)+'"><strong class="health-caption">Bilan de l’Alpha</strong>'+healthSvg(radar,selected?.id)+'<p class="health-reading">Impact faible → fort<br>Extérieur → centre · gris : non calculé<br><span>Cliquer sur un domaine pour le résumé</span></p>'+detail+'</div>';
+  }
   function mount(root, data) {
     const groups = (data.groups || []).filter(group=>!data.orientation_references || group.code!=='ORIENTATION');
     const indexed = groups.map(group => ({group,search:JSON.stringify(group).toLocaleLowerCase('fr')}));
@@ -132,6 +166,8 @@
     state.distributions=new Set();
     state.tolerances=data.measurements?.tolerances_mm;
     state.measurementSelection=null;
+    state.healthAxis=null;
+    state.connectionChecked=false;
     state.orientations={probable:{page:0,barcode:''},uncertain:{page:0,barcode:''}};
     for(const category of data.orientation_categories||[])state.orientations[category.id]={page:0,barcode:''};
     state.measurementExamples=new Map((data.measurement_examples || []).map(sample=>[sample.id,sample]));
@@ -143,9 +179,23 @@
       const filtered = indexed.filter(({group,search}) => (state.family==='all'||group.family===state.family) && (state.level==='all'||severity(group)===state.level) && (!state.search||search.includes(state.search.toLocaleLowerCase('fr')))).map(x => x.group);
       const counts = data.counts || {};
       const source = data.source || {};
-      root.innerHTML = `<main class='report ${data.camera?.available?'has-sidebar':''}'><header class='hero'><div class='hero-top'><div class='hero-brand'><span class='brand-mark' aria-hidden='true'><svg viewBox='0 0 24 24' width='22' height='22' fill='none' stroke='currentColor' stroke-width='1.6'><path d='M4 18V6m4 12v-4m4 4V9m4 9V5m4 13v-7M3 21h18'/></svg></span><span class='eyebrow'>TraceAlphaViewer</span></div><p class='status' role='status'>${esc(state.message||(state.connected?'Liaison avec la trace ouverte dans AlphaViewer.':'Consultation autonome · navigation viewer indisponible.'))}</p></div><div class='hero-title'><h1>Rapport d’analyse Alpha</h1>${identityHtml(source.identity)}</div><div class='hero-footer'><div class='hero-meta'><div class='meta-item hero-file'><span>Trace analysée</span><strong class='source-name'>${esc(source.name||'Trace analysée')}</strong></div><div class='meta-item hero-period'><span>Période observée</span><strong>${esc(sourcePeriodText(source))}</strong></div><div class='meta-item hero-duration'><span>Durée</span><strong>${esc(source.duration)}</strong></div></div><button class='primary' data-pdf><svg aria-hidden='true' viewBox='0 0 24 24' width='20' height='20' fill='none' stroke='currentColor' stroke-width='1.7'><path d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/><path d='M14 2v6h6M12 11v7m-3-3 3 3 3-3'/></svg>Exporter PDF</button></div></header><div class='report-layout ${data.camera?.available?'has-camera':''}'><div class='report-content'><section class='section priorities'><div class='priority-heading'><div class='section-heading'><span class='eyebrow'>Synthèse terrain</span><h2>À vérifier en premier</h2><div class='priority-totals'><span><b>${counts.error||0}</b> problèmes critiques</span><span><b>${counts.warning||0}</b> alertes</span><span><b>${integer(counts.analyzed_boxes)}</b> boîtes observées</span></div></div>${unknownCounter(data.unknown)}</div><p class='priority-intro'>${esc(data.verdict?.text)}</p><div class='priority-grid'>${(data.priority||[]).slice(0,3).map((group,i)=>`<button data-priority='${esc(group.id)}'><span class='priority-number'>${i+1}</span><span class='badge ${severity(group)}'>${esc(severityLabel(group))}</span><strong>${esc(group.title)}</strong><span>${group.priority_lines?group.priority_lines.map(esc).join('<br>'):esc(group.field_explanation||group.impact)}</span><span class='priority-action'><b>Premier contrôle</b><br>${esc(action(group))}</span></button>`).join('')||'<p>Aucun problème prioritaire détecté.</p>'}</div></section><details class='section' data-open='measurements' ${state.open.has('measurements')?'open':''}><summary>Bilan des mesures de la trace <span class='muted'>Longueur · Largeur · Hauteur</span></summary>${measurementHtml(data.measurements,data,state)}</details>${orientationHtml(data,state)}<section class='diagnostic-list'><h2>Tous les diagnostics</h2><p class='muted'>Choisir un problème pour consulter ses contrôles et ses exemples. Les chiffres des mesures sont regroupés dans le bilan ci-dessus.</p><div class='filters'><input type='search' aria-label='Rechercher un diagnostic' placeholder='Rechercher un problème, une référence…' value='${esc(state.search)}'><select aria-label='Niveau' data-level>${[['all','Tous les niveaux'],['error','Critiques'],['warning','Alertes'],['info','Informations']].map(([key,label])=>`<option value='${key}' ${state.level===key?'selected':''}>${label}</option>`).join('')}</select><select aria-label='Famille' data-family>${(data.families||[]).filter(item=>item.id!=='critical').map(item=>`<option value='${item.id}' ${state.family===item.id?'selected':''}>${esc(item.label)}</option>`).join('')}</select></div><p id='problems' class='muted'>${filtered.length} type(s) de problème affichés sur ${groups.length}</p>${filtered.map(group=>groupHtml(group,state)).join('')||'<div class=empty>Aucun diagnostic pour ces critères.</div>'}</section><details class='section' data-open='zones' ${state.open.has('zones')?'open':''}><summary>Répartition par zone</summary>${list((data.zones||[]).map(zone=>`${zone.label||zone.family} : ${zone.occurrences} occurrences, ${zone.errors} critiques, ${zone.warnings} alertes`))}</details></div>${data.camera?.available?`<aside class='camera-sidebar' aria-label='Lecture des caméras'>${cameraHtml(data.camera,state.open.has('camera'),groups)}</aside>`:''}</div><p class='footer'>Les constats proviennent de la trace. Les causes et pistes de réglage restent à confirmer sur la machine. Généré le ${esc(data.generated_at)}.</p></main>`;
+      root.innerHTML = `<main class='report ${data.camera?.available?'has-sidebar':''}'><header class='hero'><div class='hero-top'><div class='hero-brand'><span class='brand-mark' aria-hidden='true'><svg viewBox='0 0 24 24' width='22' height='22' fill='none' stroke='currentColor' stroke-width='1.6'><path d='M4 18V6m4 12v-4m4 4V9m4 9V5m4 13v-7M3 21h18'/></svg></span><span class='eyebrow'>TraceAlphaViewer</span></div><p class='status' role='status' hidden></p></div><div class='hero-title'><h1>Rapport d’analyse Alpha</h1>${identityHtml(source.identity)}</div><div class='hero-footer'><div class='hero-meta'><div class='meta-item hero-file'><span>Trace analysée</span><strong class='source-name'>${esc(source.name||'Trace analysée')}</strong></div><div class='meta-item hero-period'><span>Période observée</span><strong>${esc(sourcePeriodText(source))}</strong></div><div class='meta-item hero-duration'><span>Durée</span><strong>${esc(source.duration)}</strong></div></div><button class='primary' data-pdf><svg aria-hidden='true' viewBox='0 0 24 24' width='20' height='20' fill='none' stroke='currentColor' stroke-width='1.7'><path d='M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z'/><path d='M14 2v6h6M12 11v7m-3-3 3 3 3-3'/></svg>Exporter PDF</button></div></header><div class='report-layout ${data.camera?.available?'has-camera':''}'><div class='report-content'><section class='section priorities'><div class='priority-heading'><div class='section-heading'><span class='eyebrow'>Synthèse terrain</span><h2>À vérifier en premier</h2><div class='priority-totals'><span><b>${counts.error||0}</b> problèmes critiques</span><span><b>${counts.warning||0}</b> alertes</span><span><b>${integer(counts.analyzed_boxes)}</b> boîtes observées</span></div></div>${unknownCounter(data.unknown)}</div><p class='priority-intro'>${esc(data.verdict?.text)}</p><div class='priority-grid'>${(data.priority||[]).slice(0,3).map((group,i)=>`<button data-priority='${esc(group.id)}'><span class='priority-number'>${i+1}</span><span class='badge ${severity(group)}'>${esc(severityLabel(group))}</span><strong>${esc(group.title)}</strong><span>${group.priority_lines?group.priority_lines.map(esc).join('<br>'):esc(group.field_explanation||group.impact)}</span><span class='priority-action'><b>Premier contrôle</b><br>${esc(action(group))}</span></button>`).join('')||'<p>Aucun problème prioritaire détecté.</p>'}</div></section><details class='section' data-open='measurements' ${state.open.has('measurements')?'open':''}><summary>Bilan des mesures de la trace <span class='muted'>Longueur · Largeur · Hauteur</span></summary>${measurementHtml(data.measurements,data,state)}</details>${orientationHtml(data,state)}<section class='diagnostic-list'><h2>Tous les diagnostics</h2><p class='muted'>Choisir un problème pour consulter ses contrôles et ses exemples. Les chiffres des mesures sont regroupés dans le bilan ci-dessus.</p><div class='filters'><input type='search' aria-label='Rechercher un diagnostic' placeholder='Rechercher un problème, une référence…' value='${esc(state.search)}'><select aria-label='Niveau' data-level>${[['all','Tous les niveaux'],['error','Critiques'],['warning','Alertes'],['info','Informations']].map(([key,label])=>`<option value='${key}' ${state.level===key?'selected':''}>${label}</option>`).join('')}</select><select aria-label='Famille' data-family>${(data.families||[]).filter(item=>item.id!=='critical').map(item=>`<option value='${item.id}' ${state.family===item.id?'selected':''}>${esc(item.label)}</option>`).join('')}</select></div><p id='problems' class='muted'>${filtered.length} type(s) de problème affichés sur ${groups.length}</p>${filtered.map(group=>groupHtml(group,state)).join('')||'<div class=empty>Aucun diagnostic pour ces critères.</div>'}</section><details class='section' data-open='zones' ${state.open.has('zones')?'open':''}><summary>Répartition par zone</summary>${list((data.zones||[]).map(zone=>`${zone.label||zone.family} : ${zone.occurrences} occurrences, ${zone.errors} critiques, ${zone.warnings} alertes`))}</details></div>${data.camera?.available?`<aside class='camera-sidebar' aria-label='Lecture des caméras'>${cameraHtml(data.camera,state.open.has('camera'),groups)}</aside>`:''}</div><p class='footer'>Les constats proviennent de la trace. Les causes et pistes de réglage restent à confirmer sur la machine. Généré le ${esc(data.generated_at)}.</p></main>`;
       root.querySelectorAll('details[data-open]').forEach(node=>node.open=state.open.has(node.dataset.open));
+      const health=healthHtml(data,state);
+      {
+        const heading=root.querySelector('.priority-heading');
+        const section=root.querySelector('.priorities');
+        const grid=section.querySelector('.priority-grid');
+        grid.classList.toggle('has-health',data.health_radar?.version===2&&Boolean(health));
+        const empty=grid.querySelector(':scope > p');if(empty)grid.insertAdjacentElement('beforebegin',empty);
+        if(health)grid.insertAdjacentHTML('beforeend',health);
+        const count=Math.max(1,grid.children.length);
+        grid.style.setProperty('--priority-count',count);
+        grid.style.setProperty('--priority-tablet-count',Math.min(2,count));
+        const detail=grid.querySelector('.health-detail');if(detail)grid.insertAdjacentElement('afterend',detail);
+      }
       renderRobotAlert();
+      refreshStatus();
     }
     function renderRobotAlert() {
       const group=groups.find(item=>item.code==='DemVidageComplet');
@@ -156,12 +206,17 @@
     function refreshStatus() {
       root.querySelectorAll('[data-navigate],[data-source-navigate]').forEach(button => button.disabled=!state.connected || button.hasAttribute('data-missing-source'));
       const label = root.querySelector('.status');
-      if(label) label.textContent = state.message || (state.connected?'Liaison avec la trace ouverte dans AlphaViewer.':'La trace source est fermée ou la liaison est indisponible.');
+      if(label){
+        label.textContent=state.message||(state.connectionChecked&&!state.connected&&local?'La trace source est fermée ou la liaison est indisponible.':'');
+        label.hidden=!label.textContent;
+      }
+      root.dataset.connected=String(state.connected);
     }
     async function status() {
       if(!local || disposed) return;
       try { const response=await fetch('status',{signal:controller.signal}); state.connected=response.ok && (await response.json()).connected; }
       catch { state.connected=false; }
+      state.connectionChecked=true;
       if(!disposed) refreshStatus();
     }
     async function navigateSample(id,axis) {
@@ -181,7 +236,16 @@
       if(!disposed)refreshStatus();
     }
     async function click(event) {
+      const health=event.target.closest('[data-health-axis]');
+      if(health){const axis=health.dataset.healthAxis;state.healthAxis=state.healthAxis===axis?null:axis;render();root.querySelector('.health-label[data-health-axis="'+axis+'"]')?.focus({preventScroll:true});return;}
+      if(event.target.closest('[data-health-close]')){const axis=state.healthAxis;state.healthAxis=null;render();root.querySelector('.health-label[data-health-axis="'+axis+'"]')?.focus({preventScroll:true});return;}
       const button=event.target.closest('button'); if(!button) return;
+      if(button.dataset.healthGroup){
+        state.family='all';state.level='all';state.search='';render();
+        const card=[...root.querySelectorAll('details[data-group]')].find(node=>node.dataset.group===button.dataset.healthGroup);
+        const target=card||root.querySelector('[data-open="'+(state.healthAxis==='camera'?'camera':'measurements')+'"]');
+        if(target){target.open=true;target.scrollIntoView({behavior:'smooth',block:'start'});}return;
+      }
       if(button.hasAttribute('data-pdf')) {downloadPdf(data);return;}
       if(button.dataset.distributionAxis){const axis=button.dataset.distributionAxis;state.distributions.has(axis)?state.distributions.delete(axis):state.distributions.add(axis);render();root.querySelector(`[data-distribution-axis='${axis}']`)?.focus({preventScroll:true});return;}
       if(button.dataset.orientationBarcode){const kind=button.dataset.orientationKind,row=data.orientation_references?.[kind]?.find(row=>row.barcode===button.dataset.orientationBarcode);state.orientations[kind]={page:0,barcode:button.dataset.orientationBarcode};{const detail=kind==='probable'?root.querySelector('.orientation-all'):root.querySelector(`[data-orientation-category='${kind}']`);if(detail)detail.open=true;}render();await navigateSample(row?.navigation_sample_id);return;}
@@ -220,6 +284,7 @@
       }
     }
     root.addEventListener('click',click);root.addEventListener('input',input);
+    root.addEventListener('keydown',event=>{if(event.target.matches('.health-label')&&['Enter',' '].includes(event.key)){event.preventDefault();event.target.dispatchEvent(new MouseEvent('click',{bubbles:true}));}},{signal:controller.signal});
     render();status();const timer=setInterval(status,10000);
     return ()=>{disposed=true;controller.abort();clearTimeout(debounce);clearInterval(timer);root.removeEventListener('click',click);root.removeEventListener('input',input);};
   }
@@ -285,7 +350,7 @@
   }
   function compactGroupHtml(group,state) {
     const level=severity(group);
-    return `<details class='group ${level}' data-group='${esc(group.id)}' data-open='${esc(group.id)}' ${state.open.has(group.id)?'open':''}><summary><div><div class='badges'><span class='badge ${level}'>${severityLabel(group)}</span><span class='badge'>${esc(group.field_zone_label||group.family_label)}</span></div><h3>${esc(group.title)}</h3><p>${esc(group.metric)}</p><p class='muted'>Observations : ${esc(group.start_time_str)} → ${esc(group.end_time_str)}</p></div></summary><div class='group-body'><p>${esc(group.symptom)}</p><p><strong>Premier contrôle</strong><br>${esc(action(group))}</p>${group.code==='diffT4'?`<p class='muted'>${esc(group.checks?.[1])}</p>`:''}<details><summary>Causes et contrôles complémentaires</summary>${list(group.probable_causes)}${list((group.checks||[]).slice(1))}</details><section class='evidence'><h3>${group.code==='diffT4'?'Observations par fichier':'Interruptions critiques'}</h3><p class='muted'>${integer(group.displayed_example_count ?? group.examples.length)} exemples présentés sur ${integer(group.evidence_total ?? group.examples.length)} preuves.</p>${seriesHtml(group,state)}</section></div></details>`;
+    return `<details class='group ${level}' data-group='${esc(group.id)}' data-open='${esc(group.id)}' ${state.open.has(group.id)?'open':''}><summary><div><div class='badges'><span class='badge ${level}'>${severityLabel(group)}</span><span class='badge'>${esc(group.field_zone_label||group.family_label)}</span></div><h3>${esc(group.title)}</h3><p>${esc(group.metric)}</p><p class='muted'>Observations : ${esc(group.start_time_str)} → ${esc(group.end_time_str)}</p></div></summary><div class='group-body'><p>${esc(group.symptom)}</p>${group.code==='MOTOR_COMM'?`<p class='muted'>${esc(group.field_explanation)}</p>`:''}<p><strong>Premier contrôle</strong><br>${esc(action(group))}</p>${group.code==='diffT4'?`<p class='muted'>${esc(group.checks?.[1])}</p>`:''}<details><summary>Causes et contrôles complémentaires</summary>${list(group.probable_causes)}${list((group.checks||[]).slice(1))}</details><section class='evidence'><h3>${group.code==='diffT4'?'Observations par fichier':'Épisodes avec défaut de communication'}</h3><p class='muted'>${integer(group.displayed_example_count ?? group.examples.length)} exemples présentés sur ${integer(group.evidence_total ?? group.examples.length)} preuves.</p>${seriesHtml(group,state)}</section></div></details>`;
   }
   function identityText(identity) {
     if(!identity?.pharmacy || !identity.alpha_database || !identity.pharmacy_database)return '';
@@ -321,7 +386,7 @@
     add(sourcePeriodText(data.source),'note');
     add((data.source?.files?.length||1)+' fichier(s) analysé(s) · '+(data.source?.duration||'Durée indisponible'),'note');
     if(data.source?.gaps?.length)add(data.source.gaps.length+' période(s) non couverte(s) : une absence de trace ne prouve pas un fonctionnement normal.','note');
-    add('','kpis',{values:[
+    add('','kpis',{radar:data.health_radar?.version===2?data.health_radar:null,values:[
       [integer(data.counts?.analyzed_boxes),'boîtes observées','neutral'],
       [integer(data.counts?.error),'types de problèmes critiques','error'],
       [integer(data.counts?.warning),'types de problèmes en alerte','warning'],
@@ -461,6 +526,28 @@
       ensure(h);if(kind==='example')rect(38,y+3,519,h,pale.neutral);
       paragraph(value,kind==='example'?50:38,y,kind==='example'?495:519,size,bold,kind==='identity'?palette.ink:palette.muted);y-=h;
     };
+    const drawHealth=radar=>{
+      const {unit,points,complete}=healthGeometry(radar.axes,0,0,1),cx=148,cy=y-84,radius=40;
+      const color=axis=>(axis.color||healthColors.unavailable).slice(1).match(/../g).map(part=>parseInt(part,16)/255);
+      const position=p=>({x:cx+p.x*radius,y:cy-p.y*radius});
+      const path=(items,close=false)=>items.map((p,index)=>p.x.toFixed(2)+' '+p.y.toFixed(2)+(index?' l':' m')).join(' ')+(close?' h':'');
+      text(radar.title,38,y,11,true,palette.blue);
+      body+='0.6 w\n'+rgb(palette.line,true);
+      for(const level of [1/3,2/3,1])body+=path(unit.map(p=>position({x:p.x*level,y:p.y*level})),true)+' S\n';
+      unit.forEach((p,index)=>{body+=(points[index]?'[]':'[2 3]')+' 0 d\n'+rgb(points[index]?palette.line:color({}),true)+path([{x:cx,y:cy},position(p)])+' S\n';});
+      body+='[] 0 d\n1.3 w\n'+rgb(palette.blue,true);
+      if(complete)body+=path(points.map(position),true)+' S\n';
+      else points.forEach((p,index)=>{const next=points[(index+1)%points.length];if(p&&next)body+=path([position(p),position(next)])+' S\n';});
+      radar.axes.forEach((axis,index)=>{
+        const p=points[index],u=unit[index],labelX=cx+u.x*64,labelY=cy-u.y*64;
+        if(p){const point=position(p);rect(point.x-2,point.y+2,4,4,color(axis));}
+        const words=axis.id==='motors'?['Communication','moteurs']:[axis.label];
+        words.push(healthMetric(axis)+(axis.coverage==='partial'?' *':''));
+        words.forEach((word,line)=>{const w=width(word,6.5,line===0);const x=u.x>.3?labelX+4:u.x<-.3?labelX-w-4:labelX-w/2;text(word,x,labelY-line*8,6.5,line===0,color(axis));});
+      });
+      text('Impact faible vers fort : extérieur vers centre. Gravité des cartes indépendante.',38,y-169,6.5,false,palette.muted);
+      text('Fréquences : heures couvertes, interruptions exclues. * Population partielle : détail dans le web.',38,y-179,6,false,palette.muted);
+    };
     for(const item of pdfLines(data)){
       if(item.kind==='page'){begin(item.text,item.subtitle);continue;}
       if(item.kind==='examples'){
@@ -475,6 +562,14 @@
         continue;
       }
       if(item.kind==='kpis'){
+        if(item.radar){
+          ensure(190);drawHealth(item.radar);
+          item.values.forEach(([value,label,tone],index)=>{
+            const x=300+(index%2)*130,top=y-18-Math.floor(index/2)*66;
+            rect(x,top,124,59,pale[tone]);text(value,x+8,top-6,17,true,palette[tone]);
+            paragraph(label,x+8,top-31,108,7,false,palette.muted);
+          });y-=187;continue;
+        }
         ensure(114);
         item.values.forEach(([value,label,tone],index)=>{
           const x=38+(index%2)*265,top=y-Math.floor(index/2)*58;

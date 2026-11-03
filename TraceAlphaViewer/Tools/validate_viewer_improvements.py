@@ -154,6 +154,84 @@ class WidgetTests(unittest.TestCase):
                 panel.destroy()
             self.root.update()
 
+    def test_raw_loading_yields_to_timers_during_idle_updates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'fictive.old'
+            path.write_text('Ligne fictive\n' * 1500, encoding='latin-1')
+            panel = TracePanel(self.root)
+            try:
+                panel.load_file(str(path))
+                deadline = time.monotonic() + 5
+                while panel._load_results.qsize() < 3 and time.monotonic() < deadline:
+                    time.sleep(.001)
+                self.assertGreaterEqual(panel._load_results.qsize(), 3)
+                panel.after_cancel(panel._poll_job)
+                append = panel._append_lines
+                def slow_append(lines):
+                    append(lines)
+                    time.sleep(.010)
+                panel._append_lines = slow_append
+                panel._poll_results()
+                self.assertEqual(panel._total_lines, 500)
+                self.root.update_idletasks()
+                self.assertEqual(panel._total_lines, 500,
+                                 'Les mises a jour de geometrie ne doivent pas drainer la trace')
+                ticks = []
+                self.root.after(0, lambda: ticks.append(panel._total_lines))
+                self.pump_until(lambda: not panel._loading)
+                self.assertTrue(ticks and ticks[0] < 1500)
+                self.assertEqual(panel._total_lines, 1500)
+            finally:
+                panel.destroy()
+
+    def test_prepared_text_peer_survives_owner_and_preserves_tags(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'fictive.old'
+            path.write_text('CIP-FICTIF\nDeuxieme ligne\n', encoding='latin-1')
+            source, target = TracePanel(self.root), TracePanel(self.root)
+            try:
+                source.load_file(str(path))
+                self.pump_until(lambda: not source._loading)
+                expected = source._text.get('1.0', 'end')
+                target._text.tag_configure('known', foreground='#123456')
+                target.adopt_loaded(source)
+                self.assertEqual(target._text.tag_cget('known', 'foreground'), '#123456')
+                source.destroy()
+                source = None
+                self.assertEqual(target._text.get('1.0', 'end'), expected)
+                self.assertEqual(target._total_lines, 2)
+                self.assertIn('linenum', target._text.tag_names('1.0'))
+                self.assertIn('known', target._text.tag_names('1.10'))
+                target._search_var.set('CIP-FICTIF')
+                self.pump_until(lambda: target._search_job is None)
+                self.assertEqual(len(target._search_matches), 1)
+                target.highlight_lines(2, 2)
+                self.assertIn('hi', target._text.tag_names('2.10'))
+                path.write_text('Nouvelle trace\n', encoding='latin-1')
+                target.load_file(str(path))
+                self.pump_until(lambda: not target._loading)
+                self.assertNotIn('CIP-FICTIF', target._text.get('1.0', 'end'))
+            finally:
+                if source is not None:
+                    source.destroy()
+                target.destroy()
+
+    def test_prepared_text_rejects_changed_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'fictive.old'
+            path.write_text('Initial\n', encoding='latin-1')
+            source, target = TracePanel(self.root), TracePanel(self.root)
+            try:
+                source.load_file(str(path))
+                self.pump_until(lambda: not source._loading)
+                path.write_text('Source modifiee\n', encoding='latin-1')
+                with self.assertRaisesRegex(OSError, 'change'):
+                    target.adopt_loaded(source)
+                self.assertEqual(target._text.get('1.0', 'end-1c'), '')
+            finally:
+                source.destroy()
+                target.destroy()
+
     def test_trace_blocks_preserve_text_tags_and_navigation(self):
         clicked = []
         lines = [(i, 'CIP:3400931234567 ete' if i in (3000, 3001) else '')

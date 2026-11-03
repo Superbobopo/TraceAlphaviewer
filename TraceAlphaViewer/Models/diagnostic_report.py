@@ -22,7 +22,8 @@ from Models.c2_analysis import signal_metric_text
 from Models.c5_analysis import c5_metric_text
 from Models.priority_impact import order_impact, prepare_impact, IMPACT_CODES
 from Models.trace_observations import OBSERVATION_CODES, observation_metric_text, observation_is_priority
-from Models.diagnostic_summary import normalize_summary_incidents, t4_metric_text, T4_CHECK, T4_SYMPTOM
+from Models.diagnostic_summary import normalize_summary_incidents, t4_metric_text, T4_CHECK, T4_SYMPTOM, repeated_fault_severity
+from Models.health_radar import build_health_radar
 from Models.robot_drain import drain_compact_box_text, drain_box_ratio
 
 
@@ -35,7 +36,7 @@ _SEVERITY_LABELS = {
 _SEVERITY_ORDER = {"error": 0, "warning": 1, "info": 2}
 _REFERENCE_REJECTION_CODES = {'REFERENCE_ABSENT', 'REFERENCE_NON_ALPHATISABLE'}
 _SIGNAL_CODES = {'C2_SIGNAL_ANOMALY', 'C3_SIGNAL_ANOMALY'}
-_STRUCTURED_PROOF_CODES = _REFERENCE_REJECTION_CODES | _SIGNAL_CODES | {'C5_SIGNAL_ANOMALY'} | OBSERVATION_CODES
+_STRUCTURED_PROOF_CODES = _REFERENCE_REJECTION_CODES | _SIGNAL_CODES | {'C5_SIGNAL_ANOMALY', 'T5_DRIVE_SUSPECTED'} | OBSERVATION_CODES
 
 _FAMILY_LABELS = {
     "motors": "Communication moteurs",
@@ -86,6 +87,8 @@ def _duration_label(start: float, end: float) -> str:
 
 def _metric_from_summary(summary: str, code: str, occurrence_count: int, metrics=None) -> str:
     metrics = metrics or {}
+    if code == 'T5_DRIVE_SUSPECTED':
+        return f"{occurrence_count} boîte(s) sans mesures T5 exploitables, puis supprimée(s)"
     if code == 'diffT4':
         return t4_metric_text(metrics, occurrence_count)
     if code in OBSERVATION_CODES and metrics.get('observation_metrics_version'):
@@ -158,6 +161,8 @@ def _family_for(belt: str, code: str, title: str) -> str:
 
 
 def _action_label(code: str, belt: str, title: str) -> str:
+    if code == 'T5_DRIVE_SUSPECTED':
+        return "Vérifier le mouvement réel de T5 et son entraînement mécanique."
     if code == 'diffT4':
         return T4_CHECK
     if code in _SIGNAL_CODES | {'C5_SIGNAL_ANOMALY'}:
@@ -193,6 +198,8 @@ def _action_label(code: str, belt: str, title: str) -> str:
 
 
 def _impact_label(code: str, belt: str) -> str:
+    if code == 'T5_DRIVE_SUSPECTED':
+        return "Après une mesure T4 et un transfert confirmé, les mesures T5 échouent et la boîte est supprimée informatiquement."
     if code == 'diffT4':
         return T4_SYMPTOM
     if code == 'C5_SIGNAL_ANOMALY':
@@ -306,6 +313,8 @@ def _stale_t5_business_lines(group: dict[str, object]) -> list[str]:
 def _field_zone_label(group: dict[str, object]) -> str:
     belt = str(group["belt"])
     code = str(group["code"])
+    if code == 'T5_DRIVE_SUSPECTED':
+        return 'T5 entraînement'
     if code == 'diffT4':
         return 'T4/C6'
     if code == 'C5_SIGNAL_ANOMALY':
@@ -331,6 +340,10 @@ def _field_zone_label(group: dict[str, object]) -> str:
 
 def _field_explanation(group: dict[str, object], total_boxes: int, c9_massive: bool) -> tuple[str, str, str]:
     code = str(group["code"])
+    if code == 'T5_DRIVE_SUSPECTED':
+        return (str(group['metric']),
+                "Défaut d’entraînement mécanique suspecté ; la cause reste à confirmer sur la machine. Une variation de pT5 ne prouve pas le mouvement réel du tapis.",
+                str(group['action']))
     if code == 'diffT4':
         return str(group['metric']), T4_SYMPTOM, T4_CHECK
     if code in OBSERVATION_CODES:
@@ -472,8 +485,8 @@ def _field_severity_for(group: dict[str, object], total_boxes: int, c9_massive: 
 
     if code == "C9_WIDTH_INVALID":
         return "error" if count >= 5 or ratio >= 0.10 else "warning"
-    if code == "T5_STALE_UNMEASURED_BOX":
-        return "error"
+    if code in {'T5_STALE_UNMEASURED_BOX', 'MOTOR_COMM'}:
+        return repeated_fault_severity(group)
     if code == "CUBESTOP_C4_BLOCKED":
         return "error" if count >= 2 or str(group["severity"]) == "error" else "warning"
     if code in _DIMENSION_CODES and code != "ORIENTATION":
@@ -497,16 +510,18 @@ def _field_severity_for(group: dict[str, object], total_boxes: int, c9_massive: 
 
 
 def _field_priority_score(group: dict[str, object]) -> int:
-    shared = t5_priority_score(str(group['code']), str(group['field_severity']),
-                               int(group['occurrence_count']), group.get('metrics'))
+    shared = (None if group['code'] == 'T5_STALE_UNMEASURED_BOX' else
+              t5_priority_score(str(group['code']), str(group['field_severity']),
+                                int(group['occurrence_count']), group.get('metrics')))
     if shared is not None:
         return shared
     severity_score = {"error": 500, "warning": 190, "info": 80}.get(str(group["field_severity"]), 0)
     code = str(group["code"])
     belt = str(group["belt"])
     code_bonus = {
+        "T5_DRIVE_SUSPECTED": 140,
         "C9_WIDTH_INVALID": 100,
-        "T5_STALE_UNMEASURED_BOX": 120,
+        "T5_STALE_UNMEASURED_BOX": 20,
         "CUBESTOP_C4_BLOCKED": 110,
         "ALPHA_CARD_RESET": 130,
         "GLOBAL": 90,
@@ -524,6 +539,9 @@ def _field_priority_score(group: dict[str, object]) -> int:
     elif belt == "T3" and code == "-48":
         code_bonus = 20
     count = int(group["occurrence_count"])
+    if code == 'T5_STALE_UNMEASURED_BOX':
+        impact = group.get('priority_impact') or prepare_impact(group.get('incidents', []))
+        count = impact.get('cycles', 0)
     measurement_bonus = (round(1000 * float(group.get("affected_ratio", 0)))
                          if code in _DIMENSION_CODES and code != "ORIENTATION" and count >= 10 else 0)
     return severity_score + code_bonus + min(count, 60) + measurement_bonus
@@ -539,6 +557,10 @@ def _apply_field_severity(grouped: list[dict[str, object]], total_boxes: int) ->
         count = int(group["occurrence_count"])
         severity = _field_severity_for(group, total_boxes, c9_massive)
         explanation, impact, action = _field_explanation(group, total_boxes, c9_massive)
+        if group['code'] in {'T5_STALE_UNMEASURED_BOX', 'MOTOR_COMM'}:
+            threshold = 3 if group['code'] == 'MOTOR_COMM' else 10
+            unit = 'épisodes avec défaut explicite' if group['code'] == 'MOTOR_COMM' else 'cycles de boîtes distincts'
+            explanation += f' Priorité terrain : alerte ; critique à partir de {threshold} {unit} sur 24 h glissantes dans un même fichier. Les répétitions de messages ne sont pas des incidents supplémentaires.'
         if group['code'] in IMPACT_CODES:
             group['priority_impact'] = prepare_impact(group['incidents'])
             if not group['priority_impact']['available']:
@@ -680,6 +702,13 @@ def _group_incidents(incidents: list[DiagnosticIncident]) -> list[dict[str, obje
     for group in grouped:
         code = str(group["code"])
         belt = str(group["belt"])
+        if code == 'T5_DRIVE_SUSPECTED':
+            group['metrics'] = {'t5_drive_metrics_version': 1, 'cycle_count': group['occurrence_count'],
+                                'cycles': [dict(item['metrics']['cycle'], source_segment=item['metrics'].get('source_segment', 0))
+                                           for item in group['incidents']]}
+            group['summary'] = _metric_from_summary('', code, group['occurrence_count'])
+            group['business_lines'] = [group['summary'],
+                                      'Gravité critique dès une séquence complète ; cause mécanique à confirmer.']
         if code == 'DemVidageComplet':
             group['metrics'] = dict(group['metrics'], total=group['occurrence_count'])
             group['summary'] = drain_metric_text(group['metrics'])
@@ -736,6 +765,7 @@ def _priority_groups(grouped: list[dict[str, object]]) -> list[dict[str, object]
     for group in grouped:
         key = (str(group["severity"]), str(group["belt"]), str(group["code"]), str(group["title"]))
         important_code = str(group["code"]) in {
+            "T5_DRIVE_SUSPECTED",
             "C9_WIDTH_INVALID", "CUBESTOP_C4_BLOCKED", "ALPHA_CARD_RESET",
             "GLOBAL", "T5_WIDTH", "UNKNOWN", "CAM-NO-READ", "REFERENCE_ABSENT", "REFERENCE_NON_ALPHATISABLE",
         }
@@ -1143,11 +1173,14 @@ def build_report_payload(
                 item = frames.source_location(row['line'])
                 row['source_label'] = f"{item['name']} · L.{item['source_line']}"
     priority = _priority_groups([group for group in grouped if group['code'] != 'ORIENTATION'])
+    health_radar = build_health_radar(getattr(frames, 'health_observations', None), grouped,
+                                     camera=camera_stats, measurements=analysis['summary'])
     for group in grouped:
         if group['code'] not in _DIMENSION_CODES:
             _compact_evidence_payload(group)
     return {
         "generated_at": datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        **({'health_radar': health_radar} if health_radar is not None else {}),
         "source": source,
         "measurements": analysis['summary'],
         "measurement_references": reference_lists,

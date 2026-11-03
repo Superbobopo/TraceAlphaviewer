@@ -144,7 +144,7 @@ class BrowserTests(unittest.TestCase):
                     local = url.startswith('http:')
                     page.goto(url)
                     if local:
-                        page.get_by_role('status').filter(has_text='Liaison avec').wait_for()
+                        page.locator('[data-connected="true"]').wait_for()
                     self.assertIn('1 / 3', page.locator('.unknown-counter').inner_text())
                     page.locator('[data-family]').select_option('references')
                     group = page.locator('details[data-group]')
@@ -302,7 +302,7 @@ class BrowserTests(unittest.TestCase):
                 for url in (bridge.register(report),fallback.as_uri()):
                     local=url.startswith('http:')
                     page.goto(url)
-                    if local:page.get_by_role('status').filter(has_text='Liaison avec').wait_for()
+                    if local:page.locator('[data-connected="true"]').wait_for()
                     section=page.locator('.orientations')
                     self.assertIn('Orientation probable d’après les dimensions',section.inner_text())
                     self.assertEqual(page.locator('details[data-group]').filter(has_text='ORIENTATION').count(),0)
@@ -356,7 +356,7 @@ class BrowserTests(unittest.TestCase):
                         self.assertIn(text,content)
                     document.close()
                 page.goto(bridge.register(report))
-                page.get_by_role('status').filter(has_text='Liaison avec').wait_for()
+                page.locator('[data-connected="true"]').wait_for()
                 bridge.close()
                 self._open_reference(page,page.locator('.orientation-preview'),'ORIENTATION-FICTIVE')
                 self.assertTrue(page.locator('.orientation-all').evaluate('node=>node.open'))
@@ -386,7 +386,7 @@ class BrowserTests(unittest.TestCase):
                 for url in (bridge.register(report),fallback.as_uri()):
                     local=url.startswith('http:')
                     page.goto(url)
-                    if local:page.get_by_role('status').filter(has_text='Liaison avec').wait_for()
+                    if local:page.locator('[data-connected="true"]').wait_for()
                     button=page.locator('[data-measure-axis=length][data-measure-side=over]')
                     self.assertIn('+4,0 mm',button.inner_text())
                     self.assertNotIn('136',button.inner_text())
@@ -551,7 +551,7 @@ class BrowserTests(unittest.TestCase):
                 browser=playwright.chromium.launch(channel='msedge',headless=True)
                 page=browser.new_page()
                 page.goto(bridge.register(report))
-                page.get_by_role('status').filter(has_text='Liaison avec').wait_for()
+                page.locator('[data-connected="true"]').wait_for()
                 page.locator('[data-measure-axis=length][data-measure-side=under]').click()
                 panel=page.locator('.measurement-reference-list')
                 panel.get_by_role('button',name='DEMO-0',exact=True).click()
@@ -604,7 +604,7 @@ class BrowserTests(unittest.TestCase):
                 for url in (bridge.register(report),fallback.as_uri()):
                     local=url.startswith('http:')
                     page.goto(url)
-                    if local:page.get_by_role('status').filter(has_text='Liaison avec').wait_for()
+                    if local:page.locator('[data-connected="true"]').wait_for()
                     self.assertEqual(page.locator('[data-priority]').count(),3)
                     self.assertEqual(page.locator('.axis-grid > .axis').count(),3)
                     self.assertNotIn('Décalage moyen',page.locator('.axis-grid').inner_text())
@@ -673,7 +673,7 @@ class BrowserTests(unittest.TestCase):
                 for url in (bridge.register(report),bridge.register(fallback),fallback.as_uri()):
                     local=url.startswith('http:')
                     page.goto(url)
-                    if local:page.get_by_role('status').filter(has_text='Liaison avec').wait_for()
+                    if local:page.locator('[data-connected="true"]').wait_for()
                     for axis in fields:
                         for side in ('under','over'):
                             page.locator(f'[data-measure-axis={axis}][data-measure-side={side}]').click()
@@ -707,7 +707,7 @@ class BrowserTests(unittest.TestCase):
                         self.assertIn(text,contents)
                     document.close()
                 page.goto(bridge.register(report))
-                page.get_by_role('status').filter(has_text='Liaison avec').wait_for()
+                page.locator('[data-connected="true"]').wait_for()
                 page.locator('[data-measure-axis=length][data-measure-side=under]').click()
                 bridge.close()
                 page.locator('.measurement-reference-list').get_by_role('button',name='length-under',exact=True).click()

@@ -148,10 +148,15 @@ class UiProgressTests(unittest.TestCase):
             with patch.object(panel, '_poll_results', return_value=None):
                 panel.load_file(str(path), on_ready=lambda: callbacks.append(True))
                 cancel = panel._load_cancel
+                reader = panel._load_thread
                 panel.destroy()
                 self.app.update()
                 self.assertTrue(cancel.is_set())
                 self.assertEqual(callbacks, [])
+                # L'annulation UI est immediate ; la fermeture du fichier est asynchrone.
+                reader.join(timeout=5)
+                self.assertFalse(reader.is_alive(), 'Le lecteur brut ne termine pas apres annulation')
+                path.unlink()
 
     def test_missing_raw_file_reports_failure_without_readiness(self):
         from Views.traceView import TraceView

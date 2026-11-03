@@ -103,6 +103,32 @@ Depuis la racine du depot :
 python TraceAlphaViewer\Main.py
 ```
 
+### Acceleration locale des calculs
+
+Les calculs du parser, des references et des diagnostics peuvent etre compiles
+depuis leurs sources Python avec Cython et Zig, sous CPython Windows 64 bits
+avec GIL. Pour preparer cette acceleration sur le poste :
+
+```powershell
+python TraceAlphaViewer\Tools\build_acceleration.py --bootstrap
+python TraceAlphaViewer\Tools\build_acceleration.py --check
+```
+
+La chaine est installee uniquement sous `build/python-acceleration`, sans
+modifier Python ni le PATH utilisateur. Les extensions restent locales sous
+`TraceAlphaViewer/bin/python-acceleration`, ignore par Git. Cette commande ne
+reconstruit pas le viewer `.exe`. Le premier lancement de l'application ne
+telecharge et ne compile rien.
+
+Au demarrage, le lot actif doit correspondre aux sources, a la version de Python et aux
+empreintes de toutes ses extensions. Sinon, l'application utilise les sources
+Python ; relancer la commande de construction pour retrouver l'acceleration.
+Les sources conservent les memes frames, analyses et fonctions du viewer.
+Pour un controle comparatif, `TRACE_ALPHA_ACCELERATION=python` force les sources
+Python dans le processus concerne. Une construction explicite ulterieure du
+viewer peut embarquer le lot valide ; un lot present mais perime bloque ce
+packaging jusqu'a sa reconstruction.
+
 ## Dossiers de traces par Alpha
 
 `Ouvrir un dossier de traces` parcourt les sous-dossiers et presente les groupes
@@ -499,6 +525,32 @@ utile. Les boites sans identite ne creent pas de fiches temporaires. Le texte br
 est insere par blocs en conservant les tags et la navigation ; les callbacks
 entre blocs laissent l'interface traiter les autres actions.
 
+Pour une trace seule, l'accueil peut preparer le texte brut pendant les calculs
+si les ressources disponibles sont suffisantes. Le viewer reprend le meme
+tampon Tk, sans recopier ses lignes ni relire le fichier. L'affichage attend
+toujours les analyses, les premieres pages et le texte complet. Sur un poste
+moins equipe, la preparation reste sequentielle. La fermeture ou une erreur
+annule aussi cette preparation temporaire.
+
+La nouvelle passe combine les calculs compiles depuis les memes sources Python,
+les decodages textuels bornes au fichier, les copies independantes des snapshots,
+la repartition des diagnostics, la projection diagnostique transmise par blocs
+et la reutilisation de la base horaire consecutive du parser. La reference est
+une copie figee des sources locales avant cette intervention, incluant les
+modifications deja presentes. Mesures sans profileur ni cache applicatif de
+trace, depuis l'accueil jusqu'au viewer entierement pret :
+
+| Trace | Ouverture avant | Apres | Temps en moins | Repetitions par version |
+| --- | ---: | ---: | ---: | ---: |
+| Monistrol | 103,8 s | 39,2 s | 62,2 % | 3 (medianes) |
+| Marche | 65,6 s | 31,4 s | 52,1 % | 1 |
+
+Les trois ouvertures Monistrol conservent un percentile 95 UI sous 18,8 ms et
+une pause maximale de 486,5 ms. La preparation anticipee du texte etait active
+dans ces essais ; son activation depend de la memoire disponible. Ces mesures
+qualifient ce poste et ces traces, sans promettre le meme gain sur chaque
+fichier ou avec moins de ressources.
+
 Mesures locales du 8 octobre 2026, sans profileur et sans cache applicatif,
 jusqu'a la fin du chargement du texte brut :
 
@@ -688,6 +740,27 @@ sous 8 %, jaune de 8 a 12 % inclus, rouge au-dela de 12 % et neutre si le taux e
 indisponible. Il remplace l'encart et le detail UNKNOWN dedies. Le diagnostic
 habituel reste dans la liste au-dessus de 7 % strictement. Les UNKNOWN temporaires
 reconnues ensuite sont exclues.
+
+Le badge UNKNOWN se place a droite du titre des priorites. Le radar
+`health_radar` v2 est une quatrieme carte apres les priorites 1, 2 et 3, sans
+numero. La grille passe de quatre colonnes a deux sous 1100 px, puis une sous
+700 px. Il mesure l'impact relatif sans changer la gravite des
+diagnostics : rayon `1 - proportion concernee` pour les boites, et
+`1 / (1 + incidents par heure couverte)` pour moteurs et resets. Ainsi, 25 boites
+evacuees sur 1945 sorties representent 1,29 %, meme avec une carte critique.
+Le clic donne les populations, limites et diagnostics associes ; une population
+inconnue reste grise et les transferts partiellement attribuables sont signales.
+Web et PDF partagent les valeurs. Recharger les traces et regenerer les anciens
+rapports pour disposer des nouvelles metriques.
+Pour Cameras, la couleur souligne le taux UNKNOWN : vert a 0 %, orange a 8 %,
+rouge des 12 %, avec interpolation continue, sans changer le rayon proportionnel.
+Pour Transferts, un meme blocage ou probleme d'initialisation T4 repete des deux
+occurrences impose au moins l'orange, meme si le ratio de cycles reste faible.
+Les effectifs des diagnostics ne sont pas additionnes aux cycles concernes.
+Pour Mesures, la part de boites hors tolerance est en alerte strictement au-dela
+de 8 %, critique strictement au-dela de 15 %, tous axes confondus sans doublons.
+Le message normal de liaison au viewer est masque ; erreurs et retours de
+navigation restent affiches.
 
 Les vidages T5 demandes par le robot restent en Information sous 10 demandes sur
 24 heures glissantes, sans bandeau ni presence dans les priorites. Ils deviennent
