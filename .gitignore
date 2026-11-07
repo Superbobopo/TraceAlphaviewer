@@ -1,4 +1,7 @@
 .venv/
+/traces-locales/
+*.old
+TracAlpha*.txt
 __pycache__/
 *.pyc
 *.pyo

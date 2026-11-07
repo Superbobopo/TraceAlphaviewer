@@ -10,7 +10,7 @@ import json
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from Widgets.diagnostic_panel import DiagnosticPanel
 from Models.frame_store import FrameStore
-from Models.resource_policy import Resources, GIB
+from Models.resource_policy import Resources, ResourceGovernor, GIB
 
 
 class PreparationTests(unittest.TestCase):
@@ -19,7 +19,9 @@ class PreparationTests(unittest.TestCase):
         from Models.frame_store import write_frame_store
         from Models.state import MachineState
         from Models.diagnostic_report import build_report_payload, report_files_available
-        session = LoadingSession()
+        governor = ResourceGovernor(probe=lambda: Resources(4 * GIB, GIB // 4, 2, True), monitor=False)
+        self.assertEqual(governor.budget, 0)
+        session = LoadingSession(resource_governor=governor)
         try:
             directory = session.directory / 'store'
             frames = [MachineState(line_num=1, timestamp_str='12:00:00')]
@@ -59,7 +61,7 @@ class PreparationTests(unittest.TestCase):
             _report_prepare_job=None, _report_task=None, _report_path=None,
             _report_requested=False, _report_retained=False, _report_promoting=False,
             _report_btn=Mock(), _load_session=session, _incidents=[], _source_name='FICTIF',
-            after=Mock(return_value='callback'), _launch_report=Mock())
+            after=Mock(return_value='callback'), after_cancel=Mock(), _launch_report=Mock())
         panel._report_btn.cget.return_value = SimpleNamespace(measure=lambda text: len(text) * 7)
         for name in ('prepare_web_report', '_prepare_web_report', '_start_report',
                      '_set_report_button', '_report_failed', '_retain_report', '_open_web_report', '_poll_report'):
@@ -88,14 +90,45 @@ class PreparationTests(unittest.TestCase):
         self.assertEqual(panel._load_session.start.call_count, 2)
 
     @patch('Widgets.diagnostic_panel.report_files_available', return_value=True)
-    def test_preparation_without_click_stays_temporary(self, available):
+    def test_preparation_without_click_is_retained_without_opening(self, available):
         panel, task = self.panel()
         panel._start_report()
         self.complete(panel, task, Path('session/report.html'))
         panel._launch_report.assert_not_called()
-        self.assertEqual(panel._load_session.start.call_count, 1)
+        self.assertEqual(panel._load_session.start.call_args.args, ('retain_report',))
+        self.complete(panel, task, Path('permanent/report.html'))
+        self.assertTrue(panel._report_retained)
+        panel._launch_report.assert_not_called()
         panel._open_web_report()
-        self.assertTrue(panel._report_promoting)
+        panel._launch_report.assert_called_once_with(Path('permanent/report.html'))
+        self.assertEqual(panel._load_session.start.call_count, 2)
+
+    @patch('Widgets.diagnostic_panel.report_files_available', return_value=True)
+    def test_click_during_automatic_retention(self, available):
+        panel, task = self.panel()
+        panel._start_report()
+        self.complete(panel, task, Path('session/report.html'))
+        panel._open_web_report()
+        panel._open_web_report()
+        self.assertEqual(panel._load_session.start.call_count, 2)
+        panel._launch_report.assert_not_called()
+        self.complete(panel, task, Path('permanent/report.html'))
+        panel._launch_report.assert_called_once_with(Path('permanent/report.html'))
+
+    @patch('Widgets.diagnostic_panel.messagebox.showerror')
+    @patch('Widgets.diagnostic_panel.report_files_available', return_value=True)
+    def test_automatic_retention_failure_can_be_retried_on_click(self, available, error):
+        panel, task = self.panel()
+        panel._start_report()
+        self.complete(panel, task, Path('session/report.html'))
+        task.results.put(('error', 'Echec de copie fictif'))
+        panel._poll_report()
+        error.assert_not_called()
+        self.assertFalse(panel._report_retained)
+        panel._open_web_report()
+        self.assertEqual(panel._load_session.start.call_args.args, ('retain_report',))
+        self.complete(panel, task, Path('permanent/report.html'))
+        panel._launch_report.assert_called_once_with(Path('permanent/report.html'))
 
     @patch('Widgets.diagnostic_panel.messagebox.showerror')
     def test_failure_is_silent_until_requested_and_retry(self, error):
@@ -110,13 +143,28 @@ class PreparationTests(unittest.TestCase):
         panel._poll_report()
         error.assert_called_once()
 
-    def test_memory_pressure_defers_preparation(self):
+    def test_preparation_starts_under_memory_pressure_without_click(self):
+        for resources in (Resources(4 * GIB, GIB // 4, 2, True),
+                          Resources(32 * GIB, 4 * GIB, 16, True), Resources()):
+            with self.subTest(resources=resources):
+                panel, _ = self.panel()
+                with patch('Models.resource_policy.detect_resources', return_value=resources):
+                    panel.prepare_web_report()
+                    panel.after.assert_called_once_with(500, panel._prepare_web_report)
+                    panel._prepare_web_report()
+                panel._load_session.start.assert_called_once()
+                self.assertEqual(panel._load_session.start.call_args.args, ('report',))
+                self.assertIsNone(panel._report_prepare_job)
+                self.assertFalse(panel._report_requested)
+
+    def test_click_before_scheduled_preparation_starts_only_one_worker(self):
         panel, _ = self.panel()
-        with patch('Models.resource_policy.detect_resources',
-                   return_value=Resources(32 * GIB, GIB, 16, True)):
-            panel._prepare_web_report()
-        panel._load_session.start.assert_not_called()
-        panel.after.assert_called_with(1000, panel._prepare_web_report)
+        panel.prepare_web_report()
+        panel._open_web_report()
+        panel.after_cancel.assert_called_once_with('callback')
+        self.assertIsNone(panel._report_prepare_job)
+        panel._prepare_web_report()
+        panel._load_session.start.assert_called_once()
 
 
 if __name__ == '__main__':

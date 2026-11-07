@@ -31,7 +31,7 @@ def _events_for(frames) -> list:
 
 
 def main() -> None:
-    trace_path = ROOT / "TraceAlphaViewer" / "TracAlpha1ortiz.txt"
+    trace_path = ROOT / "traces-locales" / "TracAlpha1ortiz.txt"
     if not trace_path.exists():
         print(f"Trace absente, controle ignore: {trace_path}")
         return

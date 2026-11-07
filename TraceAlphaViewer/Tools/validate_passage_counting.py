@@ -188,10 +188,10 @@ class CopiedTraceTests(unittest.TestCase):
 
 
 class LocalTraceTests(unittest.TestCase):
-    @unittest.skipUnless((ROOT / 'TraceAlphaViewer/TracAlpha1_001.old').exists(), 'Trace locale absente')
+    @unittest.skipUnless((ROOT / 'traces-locales/TracAlpha1_001.old').exists(), 'Trace locale absente')
     def test_001_counts_provenance_retries_and_navigation(self):
         meta = {}
-        frames = parse_file(str(ROOT / 'TraceAlphaViewer/TracAlpha1_001.old'), min_dt=0.0,
+        frames = parse_file(str(ROOT / 'traces-locales/TracAlpha1_001.old'), min_dt=0.0,
                             source_metadata_output=meta)
         lines = _frame_line_states(frames)
         stats = _camera_stats(lines)

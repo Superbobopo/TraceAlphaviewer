@@ -31,7 +31,7 @@ def _zero_alerts(stats: dict[str, object]) -> set[tuple[str, str]]:
 
 
 def _stats_for(trace_name: str) -> dict[str, object] | None:
-    trace_path = ROOT / "TraceAlphaViewer" / trace_name
+    trace_path = ROOT / "traces-locales" / trace_name
     if not trace_path.exists():
         print(f"Trace absente, controle ignore: {trace_path}")
         return None

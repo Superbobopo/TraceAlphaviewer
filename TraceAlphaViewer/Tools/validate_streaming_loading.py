@@ -141,6 +141,9 @@ class StreamingLoadingTests(unittest.TestCase):
         self.assertEqual(len(actual['frames']), len(expected['frames']))
         for index, (frame, old_frame) in enumerate(zip(actual['frames'], expected['frames'])):
             with self.subTest(frame=index):
+                # La reference historique precede le suivi des fantomes T5.
+                if not hasattr(old_frame, 't5_ghost_boxes'):
+                    old_frame.t5_ghost_boxes = []
                 self.assertEqual(frame, old_frame)
         for key in set(actual) - {'frames'}:
             with self.subTest(artifact=key):

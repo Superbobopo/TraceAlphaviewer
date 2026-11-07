@@ -1,0 +1,65 @@
+{
+  "folders": [
+    {
+      "name": "Projet",
+      "path": "."
+    },
+    {
+      "name": "Application Python",
+      "path": "TraceAlphaViewer"
+    },
+    {
+      "name": "Outils et validations",
+      "path": "TraceAlphaViewer/Tools"
+    },
+    {
+      "name": "Rapport web",
+      "path": "TraceAlphaViewer/report_app"
+    },
+    {
+      "name": "Documentation",
+      "path": "docs"
+    },
+    {
+      "name": "Traces locales",
+      "path": "traces-locales"
+    }
+  ],
+  "settings": {
+    "files.exclude": {
+      "**/.git": true,
+      "**/.venv": true,
+      "**/__pycache__": true,
+      "**/*.pyc": true,
+      "**/*.pyo": true,
+      "**/*.pyd": true,
+      "**/.trace_work": true,
+      "**/node_modules": true,
+      "**/.next": true,
+      "**/.pytest_cache": true,
+      "**/.mypy_cache": true,
+      "build": true,
+      "dist": true,
+      "native": true,
+      "TraceAlphaViewer": true,
+      "Tools": true,
+      "report_app": true,
+      "docs": true,
+      "traces-locales": true,
+      "bin": true,
+      "out": true
+    },
+    "search.exclude": {
+      "**/build/**": true,
+      "**/dist/**": true,
+      "**/native/**": true,
+      "**/traces-locales/**": true,
+      "**/.trace_work/**": true,
+      "**/node_modules/**": true,
+      "**/.next/**": true,
+      "**/out/**": true,
+      "**/.venv/**": true
+    },
+    "explorer.compactFolders": false
+  }
+}

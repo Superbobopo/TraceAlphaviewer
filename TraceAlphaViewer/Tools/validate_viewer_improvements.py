@@ -353,7 +353,7 @@ class WidgetTests(unittest.TestCase):
                   boxes_on_T5=[BoxInfo(id_alpha=201, x_pos=942, width_mm=40, length_mm=70)]),
                   MachineState(eT4=-44, flag_poubelle_pleine=True, lzb=50), MachineState()]
         try:
-            trace = ROOT / 'TraceAlphaViewer' / 'TracAlpha1_012.old'
+            trace = ROOT / 'traces-locales' / 'TracAlpha1_012.old'
             if trace.exists():
                 frames = parse_file(str(trace), min_dt=0.0)
                 windows = (('08:31:15', '08:31:18'), ('08:31:52', '08:31:55'), ('08:15:02', '08:15:03'))

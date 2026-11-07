@@ -134,7 +134,7 @@ class RobotDrainTests(unittest.TestCase):
 
     def test_loire_source_commands(self):
         import re
-        trace = ROOT / 'TraceAlphaViewer' / 'TracAlphaloire.txt'
+        trace = ROOT / 'traces-locales' / 'TracAlphaloire.txt'
         if not trace.exists():
             self.skipTest('Trace Loire locale absente')
         origin = read_trace_origin(trace)

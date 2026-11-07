@@ -58,6 +58,8 @@ pub struct BoxInfo {
     pub t5_visual_x_pos: i64,
     pub t5_entry_aligned: bool,
     pub t5_after_c9: bool,
+    pub t5_deleted_line: u64,
+    pub t5_ghost_x_mm: f64,
     pub color: String,
 }
 
@@ -75,7 +77,8 @@ impl Default for BoxInfo {
             measured_height_line: 0, measured_t5_width_mm: 0, measured_t5_height_mm: 0,
             measured_t5_length_mm: 0, measurement_status: String::new(), t5_footprint_mm: 0,
             id_b: 0, id_alpha: 0, t5_transfer_id: 0, x_pos: 0, t5_visual_x_pos: 0,
-            t5_entry_aligned: false, t5_after_c9: false, color: "#4FC3F7".into(),
+            t5_entry_aligned: false, t5_after_c9: false, t5_deleted_line: 0,
+            t5_ghost_x_mm: 0.0, color: "#4FC3F7".into(),
         }
     }
 }
@@ -116,6 +119,7 @@ pub struct MachineState {
     pub box_on_T3: Option<BoxInfo>,
     pub box_on_T4: Option<BoxInfo>,
     pub boxes_on_T5: Vec<BoxInfo>,
+    pub t5_ghost_boxes: Vec<BoxInfo>,
     pub raw_lines: Vec<(u64, String, bool)>,
     pub events: Vec<MachineEvent>,
 }
@@ -134,7 +138,7 @@ impl Default for MachineState {
             t5_visual_offset_mm: 0, cubestop_present: 0, cubestop_position: String::new(),
             cubestop_reason: String::new(), idCB1_state: String::new(), idCB1_barcode: String::new(),
             box_in_EA: None, box_on_T3: None, box_on_T4: None,
-            boxes_on_T5: Vec::new(), raw_lines: Vec::new(), events: Vec::new(),
+            boxes_on_T5: Vec::new(), t5_ghost_boxes: Vec::new(), raw_lines: Vec::new(), events: Vec::new(),
         }
     }
 }

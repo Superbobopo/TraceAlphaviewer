@@ -87,7 +87,7 @@ def main() -> None:
     _validate_fixtures()
 
     for name in ('TracAlpha1.txt', 'TracAlpha1_017.old'):
-        blocked_path = ROOT / 'TraceAlphaViewer' / name
+        blocked_path = ROOT / 'traces-locales' / name
         if not blocked_path.exists():
             print(f'Controle terrain ignore : {name} absent')
             continue
@@ -114,7 +114,7 @@ def main() -> None:
             _check(token in joined, f"diagnostic CubeStop incomplet: {token}")
         _check(bool(proof_lines.intersection(incident.event_lines)), "preuve ligne blocage C4 absente")
 
-    no_cubestop_path = ROOT / "TraceAlphaViewer" / "TracAlpha1_005.old"
+    no_cubestop_path = ROOT / "traces-locales" / "TracAlpha1_005.old"
     if no_cubestop_path.exists():
         frames, incidents = _diagnostics_for(no_cubestop_path)
         _check(

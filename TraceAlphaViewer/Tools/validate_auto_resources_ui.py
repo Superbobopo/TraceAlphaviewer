@@ -148,8 +148,11 @@ class PerformancePanelTests(unittest.TestCase):
                             time.sleep(.005)
                         self.assertIsNone(panel._report_task)
                         self.assertTrue(panel._report_path.is_file())
-                        self.assertFalse(panel._report_retained)
+                        self.assertTrue(panel._report_retained)
+                        retained_path = panel._report_path
                     panel.destroy()
+                    if wait_for_report:
+                        self.assertTrue(retained_path.is_file())
                     self.assertTrue(task.finished.wait(10))
                     deadline = time.monotonic() + 5
                     while directory.exists() and time.monotonic() < deadline:

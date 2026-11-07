@@ -342,6 +342,53 @@ fn update_visual(s: &mut MachineState, pos: i64, ctx: &mut Context) {
     }
 }
 
+// Meme geometrie et suivi visuel que Models/t5_ghosts.py, hors analyses.
+const GHOST_SCALE: f64 = 618.0 / 770.0;
+
+fn ghost_width(b: &BoxInfo) -> i64 {
+    let length=b.length_mm.max(0);let width=b.width_mm.max(0);let fallback=b.t5_footprint_mm.max(0);
+    let horizontal=if width>0 {width} else if fallback>0 {fallback} else if length>0 {length} else {40};
+    let vertical=if length>0 {length} else if width>0 {width} else if fallback>0 {fallback.min(80)} else {40};
+    let scale=(GHOST_SCALE*0.75).min(96.0 / vertical.max(1) as f64);
+    8.max((horizontal as f64*scale) as i64)
+}
+
+fn remember_deleted(s: &mut MachineState, b: &BoxInfo, line: u64) {
+    let reference=if b.identified_barcode.is_empty() {&b.barcode} else {&b.identified_barcode};
+    if reference.is_empty() || !unknown(reference) {return;}
+    let mut ghost=b.clone();ghost.t5_deleted_line=line;
+    let width=ghost_width(b);
+    let mut x;
+    if b.t5_entry_aligned {
+        let delta=s.t5_visual_offset_mm+if b.t5_visual_x_pos!=0 {b.t5_visual_x_pos-if b.x_pos!=0 {b.x_pos} else {1060}} else {0};
+        x=618-154-width/2;
+        if delta!=0 {x=(x-(delta as f64*GHOST_SCALE) as i64).min(618-width).max(0);}
+    } else {
+        let mut base=if b.t5_visual_x_pos!=0 {b.t5_visual_x_pos} else if b.x_pos!=0 {b.x_pos} else {942};
+        if s.t5_x_butee>1750 && base>1750 {base=942+(base-s.t5_x_butee).abs();}
+        let origin=if s.t5_x_butee>0 && s.t5_x_butee<=1750 {s.t5_x_butee} else {942};
+        x=618-((base+s.t5_visual_offset_mm-origin) as f64*GHOST_SCALE) as i64-width;
+    }
+    if x+width<=0 {return;}
+    x=x.min(618-width-2).max(2);
+    let right=(x+width.max(6)).min(616);
+    ghost.t5_ghost_x_mm=(618-right) as f64/GHOST_SCALE;
+    s.t5_ghost_boxes.push(ghost);
+}
+
+fn delete_t5(s: &mut MachineState, id_a: i64, line: u64) {
+    let victims:Vec<_>=s.boxes_on_T5.iter().filter(|b|b.id_alpha==id_a).cloned().collect();
+    for b in victims {remember_deleted(s,&b,line);}
+    s.boxes_on_T5.retain(|b|b.id_alpha!=id_a);
+}
+
+fn same_ghost_cycle(g: &BoxInfo, b: &BoxInfo) -> bool {
+    if g.id_alpha!=0 && b.id_alpha!=0 && g.id_alpha!=b.id_alpha {return false;}
+    if g.id_b!=0 && b.id_b!=0 && g.id_b!=b.id_b {return false;}
+    if g.t5_transfer_id!=0 && b.t5_transfer_id!=0 {return g.t5_transfer_id==b.t5_transfer_id;}
+    g.id_alpha!=0 && g.id_alpha==b.id_alpha
+}
+
 fn apply_list_pack(s: &mut MachineState, text: &str, ctx: &mut Context) {
     if !text.contains("ALPHA:T5-LIST-PACK") {return;}
     let mut parsed=Vec::new();
@@ -449,6 +496,10 @@ fn update(s: &mut MachineState, text: &str, ctx: &mut Context, line: u64) {
         else if let Some(prev)=ctx.last_pT5.filter(|v| *v!=pos) {
             s.t5_direction=if pos-prev>0 {-1} else {1};ctx.last_t5_direction=s.t5_direction;
         } else {s.t5_direction=ctx.last_t5_direction;}
+        if let Some(previous)=ctx.last_pT5 {
+            for ghost in &mut s.t5_ghost_boxes {ghost.t5_ghost_x_mm+=(pos-previous) as f64;}
+            s.t5_ghost_boxes.retain(|g|g.t5_ghost_x_mm<770.0 && g.t5_ghost_x_mm+ghost_width(g) as f64/GHOST_SCALE>0.0);
+        }
         s.pT5=pos;update_visual(s,pos,ctx);ctx.last_pT5=Some(pos);s.eT5useO=n(&c,6);s.eT5useA=n(&c,7);
         track_motor_error(s,line,ctx,"T5",s.eT5,text);
     }
@@ -493,18 +544,20 @@ fn update(s: &mut MachineState, text: &str, ctx: &mut Context, line: u64) {
     if let Some(c)=BOX_REMOVE.captures(text) {
         let (id_a,bc)=(n(&c,1),&c[2]);
         if id_a!=0 {
-            s.boxes_on_T5.retain(|b|b.id_alpha!=id_a);
+            delete_t5(s,id_a,line);
             if s.t5_active_id_alpha==id_a {s.t5_active_id_alpha=0;reset_visual(s,ctx,true);}
-        } else if let Some(i)=unique_barcode(&s.boxes_on_T5,bc) {s.boxes_on_T5.remove(i);}
+        } else if let Some(i)=unique_barcode(&s.boxes_on_T5,bc) {
+            let victim=s.boxes_on_T5.remove(i);remember_deleted(s,&victim,line);
+        }
         add_event(s,line,"info","BOITE",format!("Robot prend IdA={id_a}"),bc);
     }
     if let Some(c)=BOX_REMOVE2.captures(text) {
-        let id_a=n(&c,1);s.boxes_on_T5.retain(|b|b.id_alpha!=id_a);
+        let id_a=n(&c,1);delete_t5(s,id_a,line);
         if s.t5_active_id_alpha==id_a {s.t5_active_id_alpha=0;reset_visual(s,ctx,true);}
         add_event(s,line,"info","BOITE",format!("Robot prend IdA={id_a}"),"");
     }
     if let Some(c)=BOX_REMOVE3.captures(text) {
-        let id_a=n(&c,1);s.boxes_on_T5.retain(|b|b.id_alpha!=id_a);
+        let id_a=n(&c,1);delete_t5(s,id_a,line);
         if s.t5_active_id_alpha==id_a {s.t5_active_id_alpha=0;reset_visual(s,ctx,true);}
         add_event(s,line,"info","BOITE",format!("Boite retiree de T5 IdA:{id_a}"),"");
     }
@@ -670,6 +723,7 @@ fn update(s: &mut MachineState, text: &str, ctx: &mut Context, line: u64) {
     if s.t5_active_id_alpha!=0 && !s.boxes_on_T5.iter().any(|b|b.id_alpha==s.t5_active_id_alpha) {
         s.t5_active_id_alpha=0;commit_visual(s);
     }
+    s.t5_ghost_boxes.retain(|g|!s.boxes_on_T5.iter().any(|b|same_ghost_cycle(g,b)));
     track_signals(s,line,ctx);
     // Les pointeurs Python de contexte suivent les boites encore actives.
     for b in [&s.box_in_EA,&s.box_on_T3,&s.box_on_T4].into_iter().flatten() {
@@ -808,6 +862,6 @@ mod tests {
         let b=BoxInfo::default();
         let value=serde_json::to_value(&b).unwrap();
         assert!(value.get("parser_object_id").is_none());
-        assert_eq!(value.as_object().unwrap().len(),38);
+        assert_eq!(value.as_object().unwrap().len(),40);
     }
 }

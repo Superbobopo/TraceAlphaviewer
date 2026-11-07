@@ -131,7 +131,7 @@ figure{margin:20px 0;break-inside:avoid;border:1px solid #cad7e5;border-radius:8
 <tr><td>Boîte sur T5</td><td>Bleu clair : non évaluée. Vert : écart jusqu'à ±2 mm en hauteur et ±3 mm en longueur/largeur inclus. Orange : orientation probable ou indécidable. Au-delà de ces seuils : violet pour la longueur T4/C6, turquoise pour la largeur T5/C9, jaune pour la hauteur T5/LzB, rouge pour plusieurs dimensions. Rose : largeur invalide avec C9 actif. La légende reste en bas à droite ; survolez une boîte pour lire les valeurs et écarts.</td></tr>
 </tbody></table>
 <div class="callout tip"><strong>Un point rouge ne signifie pas forcément une panne.</strong> Sur plusieurs capteurs, rouge signifie simplement « actif ». Interprétez la couleur avec l'emplacement, le moment du cycle et les messages.</div>
-<p>Les positions et dimensions ne sont affichées que si la trace fournit les informations nécessaires. Le schéma aide à comprendre un cycle ; pour une valeur précise ou une identification, consultez les lignes sources et les références.</p>
+<p>Les <strong>UNKNOWN supprimées informatiquement</strong> restent visibles en fantômes : fond léger et contour pointillé. Elles suivent le mouvement estimé de T5 jusqu’à leur sortie, sans compter comme boîtes actives. Présence physique supposée ; ligne de suppression au survol. Positions et dimensions dépendent de la trace : vérifiez les lignes sources.</p>
 </section>
 
 <section class="page" id="capteurs">
@@ -253,7 +253,7 @@ figure{margin:20px 0;break-inside:avoid;border:1px solid #cad7e5;border-radius:8
 <h3>Cliquer sur une ligne ou sur une boîte mesurée</h3>
 <p>Dans <strong>Sources et contexte technique</strong>, cliquez sur un numéro <strong>L.…</strong> pour arrêter la lecture et rejoindre la frame correspondante dans le viewer. La ligne choisie est surlignée ; le panneau de trace s'ouvre s'il était masqué. Le clavier permet également d'atteindre ces liens et de les activer avec Entrée.</p>
 <p>Le bouton <strong>Voir la boîte mesurée dans AlphaViewer</strong> conserve un autre usage : afficher la boîte après ses trois mesures. Un clic sur sa ligne T4C peut donc rejoindre un instant antérieur. Si la trace source est fermée ou remplacée, les preuves restent lisibles mais leur navigation est désactivée.</p>
-<p>Le rapport se prépare en arrière-plan pendant la consultation du viewer. Il reste temporaire tant que vous ne cliquez pas sur <strong>Rapport web</strong> ; fermer la vue sans le demander supprime cette préparation. Au clic, il est conservé dans <strong>Alpha reports</strong> sur le Bureau, dans le sous-dossier de la pharmacie. Si la préparation n'est pas terminée, le bouton indique l'attente. Les clics suivants réutilisent le même rapport.</p>
+<p>Le rapport se prépare automatiquement en arrière-plan, sans minimum de RAM libre imposé. Dès qu'il est prêt, il est conservé dans <strong>Alpha reports</strong> sur le Bureau, dans le sous-dossier de la pharmacie, même sans clic. <strong>Rapport web</strong> l'ouvre ; si la préparation ou l'enregistrement continue, le bouton indique l'attente. Les clics suivants réutilisent le même rapport. Fermer la vue annule les travaux en cours ; les rapports déjà enregistrés restent disponibles.</p>
 </div>
 <div class="report-evidence-guide">
 <span class="chapter">14 • Vidage T5 robot</span><h2>Repérer les incidents de prise robot</h2>

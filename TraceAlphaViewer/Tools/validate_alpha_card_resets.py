@@ -68,7 +68,7 @@ def _validate_daily_threshold() -> None:
 
 def main() -> None:
     _validate_daily_threshold()
-    reset_path = ROOT / "TraceAlphaViewer" / "TracAlpha1_002centre.old"
+    reset_path = ROOT / "traces-locales" / "TracAlpha1_002centre.old"
     if not reset_path.exists():
         print(f"Trace absente, controle terrain ignore: {reset_path}")
         return
@@ -90,7 +90,7 @@ def main() -> None:
     _check("1 reset(s) sur" in group["affected_label"], "metrique reset/duree absente")
     _check("boite" not in group["affected_label"].lower(), "ratio boites trompeur sur reset")
 
-    stable_path = ROOT / "TraceAlphaViewer" / "TracAlpha1centre.txt"
+    stable_path = ROOT / "traces-locales" / "TracAlpha1centre.txt"
     if stable_path.exists():
         _, stable_incidents = _diagnostics_for(stable_path)
         stable = next(item for item in stable_incidents if item.code == "ALPHA_CARD_RESET")

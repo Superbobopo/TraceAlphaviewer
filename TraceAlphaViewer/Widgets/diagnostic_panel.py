@@ -1084,13 +1084,11 @@ class DiagnosticPanel(ctk.CTkFrame):
         self._report_prepare_job = self.after(500, self._prepare_web_report)
 
     def _prepare_web_report(self):
+        if self._report_prepare_job is not None:
+            self.after_cancel(self._report_prepare_job)
         self._report_prepare_job = None
-        from Models.resource_policy import detect_resources, GIB
-        resources = detect_resources()
-        if resources.reliable and resources.available < max(2 * GIB, resources.total // 5):
-            self._report_prepare_job = self.after(1000, self._prepare_web_report)
-            return
-        self._start_report()
+        if self._report_task is None:
+            self._start_report()
 
     def _start_report(self):
         try:
@@ -1142,8 +1140,7 @@ class DiagnosticPanel(ctk.CTkFrame):
             self._set_report_button(preparing=True)
             if self._report_task is not None:
                 return
-            if self._report_prepare_job is None:
-                self._prepare_web_report()
+            self._prepare_web_report()
             return
         try:
             report_path = write_diagnostic_report(self._incidents, frames=self._frames, source_name=self._source_name)
@@ -1173,9 +1170,11 @@ class DiagnosticPanel(ctk.CTkFrame):
                         if self._report_promoting:
                             self._report_promoting = False
                             self._report_retained = True
-                            self._launch_report(self._report_path)
-                        elif self._report_requested:
-                            self._set_report_button(preparing=True)
+                            if self._report_requested:
+                                self._launch_report(self._report_path)
+                        else:
+                            if self._report_requested:
+                                self._set_report_button(preparing=True)
                             self._retain_report()
                     return
         except Empty:

@@ -1,5 +1,13 @@
 # TraceAlphaViewer
 
+## Espace de travail et rangement
+
+Ouvrir `TraceAlphaViewer.code-workspace` dans VS Code (Fichier > Ouvrir l'espace de travail à partir du fichier). L'explorateur sépare Projet, Application Python, Outils et validations, Rapport web, Documentation et Traces locales. Les caches, dépendances, builds et anciens composants Rust sont masqués ; ils restent sur disque. Ces réglages sont propres à cet espace de travail.
+
+Les traces terrain sont regroupées dans `traces-locales/`, à la racine du dépôt, et exclues de Git et des recherches courantes de cet espace. Les contrôles terrain utilisent ce dossier ; les scénarios fictifs restent dans les outils. Pour ouvrir une trace dans le viewer, sélectionner son nouvel emplacement. Sur un autre poste, créer ce dossier local si nécessaire ; aucune trace terrain n'est distribuée avec le dépôt.
+
+Les sources, outils et commandes de lancement gardent leurs chemins habituels. Aucun cache, exécutable ou outil n'est supprimé par ce rangement.
+
 Les cartes CB1 et CB2 montrent les boites decodees par chaque groupement sur
 le meme total de passages decodes, avec leur pourcentage. Chaque passage compte
 une fois, pour le premier lecteur qui reussit. Les passages sans decodage sont
@@ -239,9 +247,11 @@ Pour une meme vue, un nouveau clic sur `Rapport web` rouvre le rapport et sa
 liaison locale sans recalculer les preuves. Une nouvelle trace ou des fichiers
 de rapport supprimes imposent une nouvelle generation.
 Le rapport se prepare dans la session temporaire apres affichage du viewer,
-sans attendre le premier clic. Seul le clic le conserve dans `Alpha reports` ;
-une preparation jamais demandee est supprimee avec la vue. Si le calcul est
-encore en cours, le bouton indique l'attente avant ouverture.
+sans attendre le premier clic et sans seuil minimal de RAM libre. Une fois genere,
+il est automatiquement conserve dans `Alpha reports`, meme sans clic.
+Le bouton ouvre ce rapport ; si sa preparation ou sa conservation est encore
+en cours, il indique l'attente avant ouverture. Fermer la vue annule les travaux
+encore en cours et supprime les fichiers temporaires ; les rapports deja conserves restent disponibles.
 
 Les boites T5 disposent d'une legende permanente : bleu clair non evalue,
 vert conforme (hauteur jusqu'a 2 mm, longueur/largeur jusqu'a 3 mm inclus), orange orientation probable

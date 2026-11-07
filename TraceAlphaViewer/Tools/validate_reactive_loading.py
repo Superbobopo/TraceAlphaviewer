@@ -201,7 +201,7 @@ class WorkerTests(unittest.TestCase):
             close_session(session)
 
     def test_file_frames_analyses_business_and_report(self):
-        path = ROOT / 'TraceAlphaViewer' / 'TracAlpha1 - Domineuc.txt'
+        path = ROOT / 'traces-locales' / 'TracAlpha1 - Domineuc.txt'
         if not path.exists():
             self.skipTest('Trace Domineuc absente')
         expected = parse_file(str(path), min_dt=0.0)

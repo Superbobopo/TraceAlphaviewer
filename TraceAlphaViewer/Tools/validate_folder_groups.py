@@ -129,8 +129,9 @@ class FolderGroupsTests(unittest.TestCase):
             self.assertEqual(list(frames.line_numbers), list(range(1, 11)))
             self.assertEqual(frames[-1].timestamp, 86400)
             box = frames[5].boxes_on_T5[0]
+            self.assertEqual(box.t5_deleted_line, 0)
             for field in fields(BoxInfo):
-                if field.name.endswith('_line') or field.name == 't5_transfer_id':
+                if (field.name.endswith('_line') and field.name != 't5_deleted_line') or field.name == 't5_transfer_id':
                     self.assertEqual(getattr(box, field.name), 6, field.name)
             self.assertEqual(frames.source_location(6)['name'], 'second.old')
             self.assertEqual(frames.source_location(6)['source_line'], 1)

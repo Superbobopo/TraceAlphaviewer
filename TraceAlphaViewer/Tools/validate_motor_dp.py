@@ -136,8 +136,8 @@ class ObservationTests(unittest.TestCase):
 
     def test_available_local_sequences(self):
         from Parser.trace_parser import parse_file
-        cases=[(ROOT/'TraceAlphaViewer/TracAlpha1_005.old',3735,3815,'motor'),
-               (ROOT/'TraceAlphaViewer/TracAlpha1 - Domineuc.txt',47700,48280,'final'),
+        cases=[(ROOT/'traces-locales/TracAlpha1_005.old',3735,3815,'motor'),
+               (ROOT/'traces-locales/TracAlpha1 - Domineuc.txt',47700,48280,'final'),
                (Path(os.environ.get('USERPROFILE',''))/'Desktop/trace alpha/TracAlpha1.txt',6200,6505,'recovery')]
         for source,first,last,kind in cases:
             if not source.is_file():continue

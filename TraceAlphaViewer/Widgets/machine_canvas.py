@@ -30,6 +30,7 @@ from Models.measurement_identity import measurement_exclusion, EXCLUSION_LABELS
 from typing import Optional
 
 from Models.state import BoxInfo, MachineState
+from Models.t5_ghosts import box_size_px
 from Models.dimension_check import MEASUREMENT_STYLES, MEASUREMENT_STATUS_COLORS, measurement_label
 
 # ── Couleurs ──────────────────────────────────────────────────────────────────
@@ -308,20 +309,7 @@ def _t5_box_dims_px(box: BoxInfo, belt_rect: tuple, scale_t5: float) -> tuple[in
     _, y1, _, y2 = belt_rect
     max_h = max(12, (y2 - y1) - 2 * T5_BOX_Y_PAD)
 
-    length_mm = max(0, int(box.length_mm or 0))
-    width_mm = max(0, int(box.width_mm or 0))
-
-    fallback_mm = max(0, int(box.t5_footprint_mm or 0))
-    horizontal_mm = width_mm or fallback_mm or length_mm or 40
-    vertical_mm = length_mm or width_mm or min(fallback_mm, 80) or 40
-
-    dim_scale = scale_t5 * T5_BOX_DIM_SCALE
-    if vertical_mm * dim_scale > max_h:
-        dim_scale = max_h / max(vertical_mm, 1)
-
-    w_px = max(8, int(horizontal_mm * dim_scale))
-    h_px = max(12, int(vertical_mm * dim_scale))
-    return w_px, h_px
+    return box_size_px(box, scale_t5, max_h)
 
 
 def _draw_t5_box(cv: tk.Canvas, belt_rect: tuple, x_px: int, w_px: int,
@@ -331,20 +319,28 @@ def _draw_t5_box(cv: tk.Canvas, belt_rect: tuple, x_px: int, w_px: int,
     if x_px + w_px <= x1:
         return None
 
-    bx1 = max(x1 + 2, min(x_px, x2 - w_px - 2))
-    bx2 = min(x2 - 2, bx1 + max(w_px, 6))
+    ghost = bool(box.t5_deleted_line)
+    if ghost:
+        if x_px >= x2:
+            return None
+        bx1, bx2 = max(x1, x_px), min(x2, x_px + w_px)
+    else:
+        bx1 = max(x1 + 2, min(x_px, x2 - w_px - 2))
+        bx2 = min(x2 - 2, bx1 + max(w_px, 6))
     cy = (y1 + y2) // 2
     by1 = max(y1 + T5_BOX_Y_PAD, cy - h_px // 2)
     by2 = min(y2 - T5_BOX_Y_PAD, by1 + h_px)
     by1 = max(y1 + T5_BOX_Y_PAD, by2 - h_px)
 
     fill = _box_fill_color(box)
-    cv.create_rectangle(bx1, by1, bx2, by2,
-                        fill=fill, outline=C['box_bdr'], width=1)
+    style = dict(fill=fill, outline=C['box_bdr'], width=1)
+    if ghost:
+        style.update(fill='#afc0d0', stipple='gray25', outline='#a4b3c2', dash=(3, 3))
+    cv.create_rectangle(bx1, by1, bx2, by2, **style)
     lbl = box.short_label()
     if lbl:
         cv.create_text((bx1 + bx2) // 2, (by1 + by2) // 2,
-                       text=lbl, fill='#111122',
+                       text=lbl, fill='#d0d9e2' if ghost else '#111122',
                        font=('Consolas', 7, 'bold'),
                        width=max(bx2 - bx1 - 4, 10))
     return bx1, by1, bx2, by2
@@ -635,6 +631,12 @@ class MachineCanvas(tk.Canvas):
             f'IdA:{box.id_alpha}' if box.id_alpha else 'IdA:-',
             f'idB:{box.id_b}' if box.id_b else 'idB:-',
         ]
+        if box.t5_deleted_line:
+            lines[:0] = [
+                'UNKNOWN supprimée informatiquement',
+                '— présence physique supposée',
+                f'Suppression : ligne {box.t5_deleted_line} ; position estimée',
+            ]
         if box.barcode:
             lines.append(box.barcode)
         if box.identified_barcode and box.identified_barcode != box.barcode:
@@ -861,6 +863,13 @@ class MachineCanvas(tk.Canvas):
         t5       = L['T5']
         t5_origin = _t5_visual_origin(st)
         scale_t5 = _t5_physical_scale()
+
+        for box in st.t5_ghost_boxes:
+            w_px, h_px = _t5_box_dims_px(box, t5, scale_t5)
+            x_px = t5[2] - round(box.t5_ghost_x_mm * scale_t5) - w_px
+            bbox = _draw_t5_box(cv, t5, x_px, w_px, h_px, box)
+            if bbox:
+                self._t5_hitboxes.append((bbox, box))
 
         for box in st.boxes_on_T5:
             w_px, h_px = _t5_box_dims_px(box, t5, scale_t5)

@@ -956,6 +956,8 @@ class TraceView(BaseView):
     def _t5_transition_is_continuous(self, start: MachineState, end: MachineState) -> bool:
         if self._has_t5_discrete_line(end):
             return False
+        if [b.t5_deleted_line for b in start.t5_ghost_boxes] != [b.t5_deleted_line for b in end.t5_ghost_boxes]:
+            return False
         start_boxes = {
             self._box_key(box): box
             for box in start.boxes_on_T5
@@ -994,10 +996,15 @@ class TraceView(BaseView):
             st.t5_x_butee = start.t5_x_butee
             st.t5_active_id_alpha = start.t5_active_id_alpha
             st.boxes_on_T5 = [copy.copy(box) for box in start.boxes_on_T5]
+            st.t5_ghost_boxes = [copy.copy(box) for box in start.t5_ghost_boxes]
         if self._same_box(start.box_on_T4, end.box_on_T4):
             st.pT4 = self._lerp_number(start.pT4, end.pT4, ratio)
             st.LgBtT4 = self._lerp_number(start.LgBtT4, end.LgBtT4, ratio)
         if t5_continuous:
+            for previous, ghost in zip(start.t5_ghost_boxes, st.t5_ghost_boxes):
+                ghost.t5_ghost_x_mm = previous.t5_ghost_x_mm + (
+                    ghost.t5_ghost_x_mm - previous.t5_ghost_x_mm
+                ) * ratio
             previous_t5 = {
                 self._box_key(box): box
                 for box in start.boxes_on_T5

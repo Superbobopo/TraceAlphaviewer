@@ -55,7 +55,7 @@ def _check_statuses() -> None:
 
 
 def _check_routes_trace() -> None:
-    trace_path = ROOT / "TraceAlphaViewer" / "TracAlpharoutes.txt"
+    trace_path = ROOT / "traces-locales" / "TracAlpharoutes.txt"
     if not trace_path.exists():
         print(f"Trace absente, controle terrain ignore: {trace_path}")
         return

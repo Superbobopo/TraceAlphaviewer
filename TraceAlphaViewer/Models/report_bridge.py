@@ -77,9 +77,36 @@ class ReportBridge:
 
             def do_POST(self):
                 report, route = self.route()
-                if (report is None or route != 'navigate' or
+                if (report is None or route not in ('navigate', 'copy-report') or
                         self.headers.get('Origin') != 'http://' + bridge.address):
                     self.reply(403, {'error': 'Cette liaison ne correspond pas a la session courante.'})
+                    return
+                if route == 'copy-report':
+                    try:
+                        from Models.diagnostic_report import build_diagnostic_report_html
+                        from Models.report_clipboard import copy_report_file, report_filename
+                        with bridge._registration_lock:
+                            source = report['path']
+                            data_path = source.with_name(source.name.replace('diagnostic_report_', 'report_data_')).with_suffix('.json')
+                            payload = json.loads(data_path.read_text(encoding='utf-8'))
+                            destination = source.with_name(report_filename(payload))
+                            content = build_diagnostic_report_html([], payload=payload).encode('utf-8')
+                            number = 1
+                            base = destination
+                            while True:
+                                try:
+                                    with destination.open('xb') as output:
+                                        output.write(content)
+                                    break
+                                except FileExistsError:
+                                    if destination.read_bytes() == content:
+                                        break
+                                    number += 1
+                                    destination = base.with_stem(f'{base.stem}_{number}')
+                            copy_report_file(destination)
+                        self.reply(200, {'ok': True})
+                    except (OSError, ValueError):
+                        self.reply(409, {'error': 'Copie impossible. Vérifiez le presse-papiers et réessayez.'})
                     return
                 try:
                     size = int(self.headers.get('Content-Length', '0'))

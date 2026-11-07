@@ -70,6 +70,8 @@ class BoxInfo:
     t5_visual_x_pos: int = 0  # base de rendu continue, separee de la verite Alpha
     t5_entry_aligned: bool = False  # arrivee T4->T5 encore alignee sous T4
     t5_after_c9: bool = False  # etat de cycle, pas une contrainte de placement
+    t5_deleted_line: int = 0  # provenance de la suppression informatique du fantome
+    t5_ghost_x_mm: float = 0.0  # distance visuelle signee du bord droit a la butee
     color: str = "#4FC3F7"
 
     def short_label(self) -> str:
@@ -160,6 +162,7 @@ class MachineState:
     box_on_T3: Optional[BoxInfo] = None     # boite sur T3 / C5 / CB2
     box_on_T4: Optional[BoxInfo] = None     # boite sur T4 / C6
     boxes_on_T5: List[BoxInfo] = field(default_factory=list)  # boîtes sur T5
+    t5_ghost_boxes: List[BoxInfo] = field(default_factory=list)  # presence physique supposee uniquement
 
     # -- Lignes brutes de ce timestamp : List[Tuple[int, str]] ---------------
     # Chaque élément = (numéro_ligne_fichier, texte)
@@ -174,6 +177,7 @@ class MachineState:
         state.box_on_T3 = self.box_on_T3.clone() if self.box_on_T3 else None
         state.box_on_T4 = self.box_on_T4.clone() if self.box_on_T4 else None
         state.boxes_on_T5 = [box.clone() for box in self.boxes_on_T5]
+        state.t5_ghost_boxes = [box.clone() for box in self.t5_ghost_boxes]
         state.raw_lines = list(self.raw_lines)
         state.events = list(self.events)
         return state

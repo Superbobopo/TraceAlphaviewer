@@ -19,6 +19,7 @@ from typing import Callable, Iterator, List, Optional
 
 from Models.dimension_check import dimension_finding_code, measurement_status_from_code
 from Models.measurement_identity import is_unknown_reference, record_identification, measurement_exclusion
+from Models.t5_ghosts import remember_deleted, advance_ghosts, reconcile_ghosts
 from Models.state import BoxInfo, MachineEvent, MachineState, box_color
 from Parser.trace_source import canonical_lines
 
@@ -833,6 +834,8 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int, matches=No
         else:
             state.t5_direction = int(ctx.get('last_t5_direction') or 0)
         state.pT5 = new_pT5
+        if previous_pT5 is not None:
+            advance_ghosts(state, new_pT5 - previous_pT5)
         _update_t5_visual_offset(state, new_pT5, ctx)
         ctx['last_pT5'] = new_pT5
         state.eT5useO = int(mo.group(6))
@@ -915,6 +918,9 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int, matches=No
         id_a = int(mo.group(1))   # Id: (id_alpha)
         bc   = mo.group(2)        # ref: (barcode)
         if id_a:
+            for box in state.boxes_on_T5:
+                if box.id_alpha == id_a:
+                    remember_deleted(state, box, line_num)
             state.boxes_on_T5 = [b for b in state.boxes_on_T5 if b.id_alpha != id_a]
             if state.t5_active_id_alpha == id_a:
                 state.t5_active_id_alpha = 0
@@ -922,6 +928,7 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int, matches=No
         else:
             victim = _find_unique_barcode(state.boxes_on_T5, bc)
             if victim:
+                remember_deleted(state, victim, line_num)
                 state.boxes_on_T5 = [b for b in state.boxes_on_T5 if b is not victim]
         _add_event(state, line_num, 'info', 'BOITE', f'Robot prend IdA={id_a}', bc)
 
@@ -929,6 +936,9 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int, matches=No
     mo = matches.BOX_REMOVE2
     if mo:
         id_a = int(mo.group(1))
+        for box in state.boxes_on_T5:
+            if box.id_alpha == id_a:
+                remember_deleted(state, box, line_num)
         state.boxes_on_T5 = [
             b for b in state.boxes_on_T5
             if b.id_alpha != id_a
@@ -942,6 +952,9 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int, matches=No
     mo = matches.BOX_REMOVE3
     if mo:
         id_a = int(mo.group(1))
+        for box in state.boxes_on_T5:
+            if box.id_alpha == id_a:
+                remember_deleted(state, box, line_num)
         state.boxes_on_T5 = [
             b for b in state.boxes_on_T5
             if b.id_alpha != id_a
@@ -1324,12 +1337,15 @@ def _update(state: MachineState, text: str, ctx: dict, line_num: int, matches=No
             _add_event(state, line_num, 'warning', 'TRACE', 'Message erreur trace', text.strip())
 
     _clear_missing_active_t5(state)
+    reconcile_ghosts(state)
     _track_signal_edges(state, line_num, ctx)
 
 
 # ── Détection de changements significatifs ────────────────────────────────────
 def _is_significant(prev: MachineState, curr: MachineState) -> bool:
     """Retourne True si l'état a changé de façon notable (événement clé)."""
+    if prev.t5_ghost_boxes != curr.t5_ghost_boxes:
+        return True
     if curr.events:
         return True
     # Changement de capteur (transition d'état front montant/descendant)
